@@ -1,0 +1,173 @@
+{
+  "project": {
+    "name": "Electronic Circuit Design Chatbot",
+    "version": "1.0",
+    "level": "Basic",
+    "phase": 1
+  },
+  "priority_order": [
+    "power",
+    "analog",
+    "oscillator"
+  ],
+  "keyword_match_mode": "case_insensitive",
+  "fallback_response": "Mình chưa hiểu rõ bạn đang hỏi về mạch nào. Bạn có thể mô tả chi tiết hơn hoặc dùng các từ khóa như 'tăng áp', 'giảm áp', 'khuếch đại đảo', 'mạch nhạc' không?",
+  "out_of_scope": {
+    "description": "Các mạch không được hỗ trợ trong Phase 1 (Vì lý do an toàn, phức tạp hoặc ngoài phạm vi cơ bản)",
+    "items": [
+      "Mạch cao tần RF",
+      "Mạch công suất lớn (> 30W)",
+      "Mạch liên quan trực tiếp đến điện lưới AC (220V/110V)",
+      "Mạch vi điều khiển (micro controller)",
+      "Thiết kế PCB đa lớp",
+      "Mạch yêu cầu kiến thức nâng cao (SMT, EMC, v.v.)"
+    ],
+    "response_template": "Xin lỗi, chủ đề này hiện tại nằm ngoài phạm vi hỗ trợ. Bạn có thể hỏi về buck/boost converter, khuếch đại đảo LM358 hoặc mạch nhạc 555 không?"
+  },
+  "circuits": [
+    {
+      "id": "boost_mt3608",
+      "category": "power",
+      "name": "Boost Converter MT3608",
+      "ic": "MT3608",
+      "keywords": [
+        "tăng áp",
+        "mạch tăng áp",
+        "module tăng áp",
+        "mt3608 tăng áp",
+        "nâng áp",
+        "mạch nâng áp",
+        "module nâng áp",
+        "mt3608 nâng áp",
+        "boost",
+        "mạch boost",
+        "module boost",
+        "mt3608 boost",
+        "boost converter",
+        "step-up converter",
+        "dc-dc boost converter",
+        "module boost converter",
+        "boost converter dc-dc",
+        "mt3608",
+        "mt3608 module",
+        "mt3608 dc-dc",
+        "mt3608 step-up"
+      ],
+      "specs": {
+        "input": {
+          "vin_min": 2.0,
+          "vin_max": 24.0
+        },
+        "output": {
+          "vout_min": 5.0,
+          "vout_max": 28.0,
+          "iout_max": 2.0,
+          "description": "DC ổn định, hiệu suất > 93%"
+        }
+      }
+    },
+    {
+      "id": "buck_lm2596",
+      "category": "power",
+      "name": "Buck Converter LM2596",
+      "ic": "LM2596",
+      "keywords": [
+        "giảm áp",
+        "mạch giảm áp",
+        "module giảm áp",
+        "lm2596 giảm áp",
+        "hạ áp",
+        "mạch hạ áp",
+        "module hạ áp",
+        "lm2596 hạ áp",
+        "buck",
+        "mạch buck",
+        "module buck",
+        "lm2596 buck",
+        "buck converter",
+        "step-down converter",
+        "dc-dc buck converter",
+        "module buck converter",
+        "buck converter dc-dc",
+        "lm2596",
+        "lm2596 module",
+        "lm2596 dc-dc",
+        "lm2596 step-down"
+      ],
+      "specs": {
+        "input": {
+          "vin_min": 4.5,
+          "vin_max": 35.0
+        },
+        "output": {
+          "vout_min": 1.5,
+          "vout_max": 30.0,
+          "iout_max": 3.0,
+          "description": "DC ổn định, hiệu suất > 92%"
+        }
+      }
+    },
+    {
+      "id": "opamp_inverting_lm358",
+      "category": "analog",
+      "name": "Op-Amp Inverting Amplifier LM358",
+      "ic": "LM358",
+      "keywords": [
+        "khuếch đại đảo",
+        "khuếch đại âm bản",
+        "khuếch đại đảo lm358",
+        "mạch khuếch đại đảo",
+        "mạch khuếch đại opamp đảo",
+        "mạch khuếch đại đảo pha",
+        "op-amp inverting",
+        "op-amp amplifier inverting",
+        "op-amp khuếch đại đảo pha",
+        "inverting amplifier",
+        "inverting op-amp circuit",
+        "lm358 inverting amplifier",
+        "lm358 op-amp inverting",
+        "lm358 amplifier"
+      ],
+      "specs": {
+        "supply": {
+          "single_min": 3.0,
+          "single_max": 32.0,
+          "dual_min": 1.5,
+          "dual_max": 16.0
+        },
+        "input_signal": "Tín hiệu analog nhỏ (typical mV đến vài V)",
+        "output_signal": "Tín hiệu analog khuếch đại, đảo pha (Gain = -Rfd/Rin, typical 1-100)"
+      }
+    },
+    {
+      "id": "oscillator_ne555_music",
+      "category": "oscillator",
+      "name": "NE555 Music Circuit",
+      "ic": "NE555",
+      "keywords": [
+        "mạch âm thanh",
+        "mạch nhạc",
+        "mạch tạo âm thanh",
+        "mạch tạo nhạc",
+        "ne555 âm thanh",
+        "ne555 nhạc",
+        "ne555 music circuit",
+        "ne555 sound circuit",
+        "ne555 oscillator",
+        "ne555 tone generator",
+        "music circuit",
+        "sound circuit",
+        "tone generator"
+      ],
+      "specs": {
+        "input": {
+          "vin_min": 5.0,
+          "vin_max": 15.0
+        },
+        "output": {
+          "description": "Tín hiệu square wave (tần số điều chỉnh R-C), âm thanh đơn giản qua loa/buzzer"
+        }
+      }
+    }
+  ]
+}
