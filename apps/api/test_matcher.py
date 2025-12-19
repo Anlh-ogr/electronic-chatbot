@@ -1,14 +1,8 @@
 from app.services.circuit_store import CircuitStore
 from app.services.matcher import match_circuit
-from pathlib import Path
 
-# Ensure the JSON file exists
-json_path = "D:/Work/thesis/electronic-chatbot/apps/api/app/data/circuit_scope.json"
-if not Path(json_path).exists():
-    raise FileNotFoundError(f"The file '{json_path}' does not exist.")
-
-# Load the circuit store
-store = CircuitStore(json_path)  # Keep store as a CircuitStore object
+# Load the circuit store using default path
+store = CircuitStore()
 store.load()  # Load the data into the store object
 meta = store.meta()
 
@@ -23,10 +17,12 @@ tests = [
 
 for t in tests:
     r = match_circuit(t, store.circuits, meta.get("priority_order", []))
-    print("\nQues:", t)
-    if r.get("match_keys"):
-        print("Matched:", True)
-        print("Ans:", r["circuit"].get("id"), r["circuit"].get("name"))
-        print("KeyWords:", r.get("match_keys"))
+    print("\nQ:", t)
+    print("Matched:", r["matched"])
+    if r["matched"]:
+        print("-> Circuit ID:", r["circuit"].get("id"))
+        print("-> Circuit Name:", r["circuit"].get("name"))
+        print("Matched Keywords:", r["debug"]["matched_keywords"])
     else:
-        print("Matched:", False)
+        print("No matching circuit found.")
+        print("Debug Info:", r["debug"])
