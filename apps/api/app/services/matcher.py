@@ -1,6 +1,6 @@
 # matcher nhan dang loai mach tu request text
 import re           # match các keyword trong request text
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 # Chuan hoa input text -> lowercase + loai bo khoang trang thua 
@@ -24,16 +24,23 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
             if key and key in msg:
                 score += 1
                 match_keys.append(keyword)
-            
-            # Tang diem neu tim thay keyword trong message
-            if score > 0:
-                hits.append({ "circuit": circ,
-                              "score": score,
-                              "matched_keywords": match_keys })
+        
+        # Tang diem neu tim thay keyword trong message
+        if score > 0:
+            hits.append({ "circuit": circ,
+                          "score": score,
+                          "matched_keywords": match_keys })
     
-    # Neu khong co mach nao duoc tim thay -> tra ve match_keys = False
+    # Neu khong co mach nao duoc tim thay -> tra ve matched = False
     if not hits:
-        return {"match_keys": False}
+        return {
+            "matched": False,
+            "circuit": None,
+            "debug": {
+                "matched_keywords": [],
+                "message": msg
+            }
+        }
 
     # Sap xep hits theo score giam dan + theo thu tu uu tien priority_order: power > analog > oscillator
     priority = { cat: idx for idx, cat in enumerate(priority_order or []) }
@@ -41,6 +48,11 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
     top_hit = hits[0]
     
     # Tra ve mach co diem cao nhat -> gui ve thong tin mach + diem + keyword duoc tim thay
-    return { "circuit": top_hit["circuit"],
-             "score": top_hit["score"],
-             "match_keys": top_hit["matched_keywords"] }
+    return {
+        "matched": True,
+        "circuit": top_hit["circuit"],
+        "debug": {
+            "matched_keywords": top_hit["matched_keywords"],
+            "message": msg
+        }
+    }
