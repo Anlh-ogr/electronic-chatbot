@@ -1,4 +1,4 @@
-# 
+# Create a script to test loading the circuit store and print some information
 from app.services.circuit_store import CircuitStore
 
 def main():
