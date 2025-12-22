@@ -13,7 +13,7 @@ tests = [
     "Khuếch đại đảo LM358 gain 10",
     "Mạch nhạc 555",
     "Thiết kế mạch RF 2.4GHz",
-]
+]  # Properly close the list
 
 for t in tests:
     r = match_circuit(t, store.circuits, meta.get("priority_order", []))
