@@ -1,4 +1,4 @@
-# Read database first when server starts
+# Load Circuit DataBase Json + provide access methods for matcher 
 import json
 from pathlib import Path
 
