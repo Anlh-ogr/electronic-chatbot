@@ -35,14 +35,7 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
 
     # If no circuits are found, return consistent structure
     if not hits:
-        return {
-            "matched": False,
-            "circuit": None,
-            "debug": {
-                "matched_keywords": [],
-                "message": msg
-            }
-        }
+        return {"matched": False}
 
     # Sort hits by score descending and priority order
     priority = {cat: idx for idx, cat in enumerate(priority_order or [])}
@@ -54,7 +47,7 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
         "matched": True,
         "circuit": top_hit["circuit"],
         "debug": {
-            "matched_keywords": top_hit["matched_keywords"],
-            "message": msg
+            "score": top_hit["score"],
+            "matched_keywords": top_hit["matched_keywords"]
         }
     }
