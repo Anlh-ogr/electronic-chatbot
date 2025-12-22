@@ -12,26 +12,28 @@ def normalize (text: str) -> str:
 # Ham tim kiem mach phu hop trong danh sach circuits dua tren message va thu tu uu tien
 def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[str, Any]:
     msg = normalize(message)
-    
-    hits = []                   # luu tru cac mach(kha phu hop) duoc tim thay
+
+    hits = []  # Store potential matching circuits
     for circ in circuits:
-        score = 0               # dem keyword
-        match_keys = []            # luu tru keyword duoc tim thay
-        
-        # Kiem tra tung keyword trong circuit
+        score = 0  # Count matching keywords
+        match_keys = []  # Store matched keywords
+
+        # Check each keyword in the circuit
         for keyword in circ.get("keywords", []):
             key = normalize(keyword)
             if key and key in msg:
                 score += 1
                 match_keys.append(keyword)
-        
-        # Tang diem neu tim thay keyword trong message
+
+        # Add to hits if any keyword matches
         if score > 0:
-            hits.append({ "circuit": circ,
-                          "score": score,
-                          "matched_keywords": match_keys })
-    
-    # Neu khong co mach nao duoc tim thay -> tra ve matched = False
+            hits.append({
+                "circuit": circ,
+                "score": score,
+                "matched_keywords": match_keys
+            })
+
+    # If no circuits are found, return consistent structure
     if not hits:
         return {
             "matched": False,
@@ -42,12 +44,12 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
             }
         }
 
-    # Sap xep hits theo score giam dan + theo thu tu uu tien priority_order: power > analog > oscillator
-    priority = { cat: idx for idx, cat in enumerate(priority_order or []) }
-    hits.sort(key = lambda hit : (priority.get(hit["circuit"].get("category"), 999), -hit["score"]))
+    # Sort hits by score descending and priority order
+    priority = {cat: idx for idx, cat in enumerate(priority_order or [])}
+    hits.sort(key=lambda hit: (priority.get(hit["circuit"].get("category"), 999), -hit["score"]))
     top_hit = hits[0]
-    
-    # Tra ve mach co diem cao nhat -> gui ve thong tin mach + diem + keyword duoc tim thay
+
+    # Return the top matching circuit with consistent structure
     return {
         "matched": True,
         "circuit": top_hit["circuit"],
