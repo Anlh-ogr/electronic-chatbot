@@ -15,6 +15,8 @@ Tồn đọng:
 - Chưa có formatter chuẩn hoá câu trả lời.
 - Chưa có UI/web.
 
+=> Hoàn thành Phase 0
+
 PHASE 1 - CHATBOT RULE-BASED CỐT LÕI (TUẦN 2–4)
 Mục tiêu:
 - Người dùng nhập text → hệ thống nhận dạng đúng mạch cơ bản → trả lời chuẩn hóa (không AI).
@@ -32,6 +34,8 @@ Tồn đọng:
 - Chưa parse Vin/Vout/Iout từ câu người dùng để check với specs.
 - Chưa có knowledge chi tiết (BOM cụ thể, công thức đầy đủ, hình ảnh...).
 - Chưa tách Data Access Layer (CircuitRepo) để thay DB.
+
+=> Hoàn thành Phase 1 chưa xử lý tồn động
 
 PHASE 2 - MỞ RỘNG KIẾN THỨC & HẠ TẦNG DỮ LIỆU (TUẦN 5–8)
 Mục tiêu:
