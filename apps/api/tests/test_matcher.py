@@ -28,7 +28,9 @@ for t in tests:
     if r["matched"]:
         print("-> Circuit ID:", r["circuit"].get("id"))
         print("-> Circuit Name:", r["circuit"].get("name"))
-        print("Matched Keywords:", r["debug"]["matched_keywords"])
+        print("Matched Keywords:", r["debug"].get("matched_keywords"))
+        print("Score:", r["debug"].get("score"))
     else:
         print("No matching circuit found.")
-        print("Debug Info:", r["debug"])
+        if "debug" in r:
+            print("Debug Info:", r["debug"])
