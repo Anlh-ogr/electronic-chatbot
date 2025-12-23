@@ -44,10 +44,12 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
 
     # Return the top matching circuit with consistent structure
     return {
-        "matched": True,
-        "circuit": top_hit["circuit"],
-        "debug": {
-            "score": top_hit["score"],
-            "matched_keywords": top_hit["matched_keywords"]
-        }
-    }
+    "matched": True,
+    "circuit": top_hit["circuit"],
+    "debug": {
+        "score": top_hit["score"],
+        "matched_keywords": top_hit["matched_keywords"],
+        "candidates": len(hits),
+    },
+}
+
