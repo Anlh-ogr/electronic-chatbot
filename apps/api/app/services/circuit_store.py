@@ -1,37 +1,42 @@
-# Load Circuit DataBase Json + provide access methods for matcher 
-import json
-from pathlib import Path
+""" Đọc dữ liệu mạch từ Database Json - Phase 0-2 """
+""" Không quyết định logic match, chỉ load và cung cấp dữ liệu mạch """
 
-# create class call json file
+import json                               # đọc database json - phase 2
+from pathlib import Path                  # xử lý đường dẫn file an toàn, không phụ thuộc OS
+from app.core.config import settings      # gọi config - cấu hình trung tâm ứng dụng
+
+
+""" CircuitStore class:  để load và truy cập dữ liệu mạch từ file JSON """
 class CircuitStore:
-    # Initialize with path to json file
-    def __init__(self, json_path: str = None):
-        # Set default path if json_path is not provided
-        default_path = Path(__file__).parent.parent / "data" / "circuit_scope.json"
-        self.json_path = Path(json_path) if json_path else default_path
-        self.database = None
+    """ Load Json database và hiển thị các truy cập read-only """
+    
+    # Khởi tạo đường dẫn file json
+    def __init__(self, json_path: str | Path | None = None):
+        # Đặt đường dẫn mặc định nếu không cung cấp json_path -> config.DB_PATH
+        self.json_path = Path(json_path) if json_path else settings.DB_PATH
+        self.database: dict | None = None
 
-        # Check if the file exists
+        # file tồn tại?
         if not self.json_path.exists():
-            raise FileNotFoundError(f"The file '{self.json_path}' does not exist. Please check the path.")
+            raise FileNotFoundError(f"Database not found: {self.json_path}. Please check the path!")
 
-    # Load json file
-    def load(self):
-        # Ensure self.json_path is a Path object
-        if not isinstance(self.json_path, Path):
-            self.json_path = Path(self.json_path)
+    # Load database từ file json
+    def load(self) -> "CircuitStore":
+        # Đọc file json và parse thành dict
         self.database = json.loads(self.json_path.read_text(encoding="utf-8"))
-        return self.database
+        return self
 
-    # Property to get circuits from database
+    # Truy cập danh sách mạch
     @property
-    def circuits(self):
-        return self.database.get("circuits", []) if self.database else []
+    def circuits(self) -> list:
+        return (self.database or {}).get("circuits", [])
     
-    
-    def meta(self):
-        if not self.database:
-            return {}
-        return { "priority_order": self.database.get("priority_order", []),
-                 "fallback_response": self.database.get("fallback_response", ""),
-                 "out_of_scope": self.database.get("out_of_scope", {}) }
+    # Truy cập metadata
+    def meta(self) -> dict:
+        db = self.database or {}
+        return {
+            "priority_order": db.get("priority_order", []),
+            "fallback_response": db.get("fallback_response", ""),
+            "out_of_scope": db.get("out_of_scope", {}),
+            "project": db.get("project", {}),
+        }
