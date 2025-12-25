@@ -1,31 +1,41 @@
-# matcher nhan dang loai mach tu request text
-import re           # match các keyword trong request text
-from typing import List, Dict, Any, Optional
+# Hiểu cách hệ thống "Suy Nghĩ" hoạt động để tìm mạch phù hợp dựa trên từ khóa trong yêu cầu của người dùng.
+""" Phân tích câu     | Chuẩn hóa input
+    So khớp keywords  | Chấm điểm score
+    Ưu tiên loại mạch | Không liên quan HTTP, Json, Frontend """
 
 
-# Chuan hoa input text -> lowercase + loai bo khoang trang thua 
+import re                          # Xử lý chuỗi nâng cao > in/split/replace -> user nhập tự do
+from typing import Dict, Any       # Dict, Any -> dùng cho type hinting, không ảnh hưởng runtime -> IDE auto-complete | test + review thesis | code dễ
+
+
+# Chuẩn hóa input text
 def normalize (text: str) -> str:
+    """ lowercase + loai bo khoang trang thua  """
     text = text.lower()
-    text = re.sub(r"\s+", " ", text.strip())   # chuan hoa khoang trang giua cac tu
+    # Chuẩn hóa khoảng trắng thừa
+    text = re.sub(r"\s+", " ", text.strip())
     return text
 
-# Ham tim kiem mach phu hop trong danh sach circuits dua tren message va thu tu uu tien
+# Hàm tìm kiếm mạch phù hợp trong danh sách circuits dựa trên message và thứ tự ưu tiên
 def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[str, Any]:
+    """ Keyword-based match.
+        - Score = number of matched keywords.
+        - Tie-break by category priority_order (power > analog > oscillator). file.json[8-12]"""
     msg = normalize(message)
 
-    hits = []  # Store potential matching circuits
+    hits = []                   # Lưu trữ các mạch phù hợp
     for circ in circuits:
-        score = 0  # Count matching keywords
-        match_keys = []  # Store matched keywords
+        score = 0               # Đếm số key khớp
+        match_keys = []         # Lưu trữ các key đã khớp
 
-        # Check each keyword in the circuit
+        # Kiểm tra từng key trong mạch
         for keyword in circ.get("keywords", []):
             key = normalize(keyword)
             if key and key in msg:
                 score += 1
                 match_keys.append(keyword)
 
-        # Add to hits if any keyword matches
+        # Nếu key khớp, add vào danh sách hits -> [circuit, score, matched_keywords]
         if score > 0:
             hits.append({
                 "circuit": circ,
@@ -33,16 +43,17 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
                 "matched_keywords": match_keys
             })
 
-    # If no circuits are found, return consistent structure
+    # Nếu không có mạch nào khớp -> trả về không khớp [matched: False]
     if not hits:
         return {"matched": False}
 
-    # Sort hits by score descending and priority order
+    # Sắp xếp: ưu tiên loại mạch (thấp hơn = ưu tiên cao hơn), sau đó là điểm số (cao hơn = ưu tiên cao hơn)
     priority = {cat: idx for idx, cat in enumerate(priority_order or [])}
     hits.sort(key=lambda hit: (priority.get(hit["circuit"].get("category"), 999), -hit["score"]))
+    
+    
     top_hit = hits[0]
-
-    # Return the top matching circuit with consistent structure
+    # Trả về mạch phù hợp nhất với cấu trúc nhất quán
     return {
     "matched": True,
     "circuit": top_hit["circuit"],
@@ -52,4 +63,3 @@ def match_circuit(message: str, circuits: list, priority_order: list) -> Dict[st
         "candidates": len(hits),
     },
 }
-
