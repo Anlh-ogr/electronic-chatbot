@@ -1,23 +1,26 @@
-# API route
-from fastapi import APIRouter, HTTPException
-from app.models.schemas import ChatRequest, ChatResponse
-from app.services.circuit_store import CircuitStore
-from app.services.matcher import match_circuit
-from app.services.formatter import render_circuit_answer, render_fallback
+# Cửa ngõ giao tiếp giữa User - toàn bộ hệ thống qua API | Không chứa logic nghiệp vụ, chỉ điều phối luồng dữ liệu
+""" Định nghĩa API endpoint ( /chat)
+    Nhận request từ frontend
+    Gọi repository (dữ liệu + logic) - formatter (diễn đạt)
+    Trả về response theo schema """
 
-# Tao api router
+
+from fastapi import APIRouter, HTTPException                                # API router: Gom nhóm các API endpoint - tách router theo chức năng | HTTPException: Xử lý lỗi HTTP chuẩn 
+from app.models.schemas import ChatRequest, ChatResponse                    # Schema định nghĩa cấu trúc request/response của API -> Swagger auto-generate, dễ test
+from app.services.formatter import render_circuit_answer, render_fallback   # Chuyển kết quả logic -> câu trả lời cho user cuối [render_circuit_answer: match thành công | render_fallback: không match được]
+from app.repositories.json_repo import JsonCircuitRepo                      # Implementation của CircuitRepo sử dụng JSON làm nguồn dữ liệu - load data + logic match + rule engine
+
+# API endpoint
 router = APIRouter()
+# Singleton Endpoint repo: Load data 1 lần, tái sử dụng cho tất cả các request
+repo = JsonCircuitRepo()
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(req: ChatRequest):
+@router.post("/chat", response_model=ChatResponse, summary="Chat")
+def chat_endpoint(req: ChatRequest):
     try:
-        # Load store an toan
-        store = CircuitStore()
-        store.load()
-        meta = store.meta()
-        
         # Match circuit
-        result = match_circuit(req.message, store.circuits, meta.get("priority_order", []))
+        result = repo.search_best(req.message) # fix: lỗi repo.match_circuit không tồn tại -> repo.search_best
+        meta = repo.meta()
     
         # Xu ly ca 2 truong hop
         if not result.get("matched", False):
@@ -41,14 +44,18 @@ async def chat_endpoint(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
     
-@router.get("/circuits", summary="Danh sách các mạch trong cơ sở dữ liệu")
-async def list_circuits():
+@router.get("/circuits", summary="List circuits")
+def list_circuits():
     try:
-        store = CircuitStore()
-        store.load()
+        items = repo.list_circuits()
         return {
-            "total_circuits": len(store.circuits),
-            "circuits": [{"id": cir["id"], "name": cir["name"], "category": cir["category"]} for cir in store.circuits]
+            "total_circuits": len(items),
+            # fix lỗi /circuits
+            "circuits": [
+                {"id": cir.get("id"), "name": cir.get("name"), "category": cir.get("category")}
+                for cir in items
+            ],
         }
+    
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
