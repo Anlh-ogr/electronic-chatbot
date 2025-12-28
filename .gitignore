@@ -2,3 +2,8 @@
 apps/api/.venv/
 **/__pycache__/
 *.pyc
+
+
+# pgdata, pglogs
+.pgdata/
+.pglogs/
