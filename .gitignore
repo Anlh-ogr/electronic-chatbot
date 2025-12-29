@@ -4,6 +4,5 @@ apps/api/.venv/
 *.pyc
 
 
-# pgdata, pglogs
-.pgdata/
-.pglogs/
+# .env local files
+apps/api/.env.local
