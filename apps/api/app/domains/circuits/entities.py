@@ -70,6 +70,14 @@ class ParameterValue:
             raise TypeError(
                 f"ParameterValue.value chỉ chấp nhận int|float|str, nhận {type(self.value)}"
             )
+            
+    # Method to_dict for serialization
+    def to_dict(self) -> dict:
+        return {
+            "value": self.value,
+            "unit": self.unit
+        }
+        
 
 @dataclass(frozen=True)
 class PinRef:
@@ -84,6 +92,12 @@ class PinRef:
     def __post_init__(self):
         if not self.component_id or not self.pin_name:
             raise ValueError("PinRef không hợp lệ")
+        
+    def to_dict(self) -> dict:
+        return {
+            "component_id": self.component_id,
+            "pin_name": self.pin_name
+        }
 
 
 # ===== ENTITIES =====
@@ -97,7 +111,7 @@ class Component:
     type: ComponentType
     pins: Tuple[str, ...] # VD: ("1", "2") cho resistor; ("C", "B", "E") cho BJT
     # Ngăn chặn việc immutable bị phá (circuit.component.clear()/circuit.component["R1"]=some_fake_component -> phá vỡ SOA)
-    _parameters: Dict[str, ParameterValue] = field(default_factory=dict)
+    parameters: Dict[str, ParameterValue] = field(default_factory=dict)
     
     def __post_init__(self):
         # 1. Check cơ bản (type/shape)
@@ -109,15 +123,13 @@ class Component:
             raise ValueError(f"Linh kiện {self.id} phải có ít nhất một chân")
         
         # 2. Defensive copy + validate parameters
-        params_copy = dict(self._parameters)
+        params_copy = dict(self.parameters)
         for key, val in params_copy.items():
             if not isinstance(val, ParameterValue):
                 raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue")
 
-        # Set lại internal field với bản copy
-        object.__setattr__(self, "_parameters", params_copy)
-        # Tạo public proxy từ internal đã được copy
-        object.__setattr__(self, "parameters", MappingProxyType(self._parameters))
+        # Set lại field với bản copy immutable
+        object.__setattr__(self, "parameters", MappingProxyType(params_copy))
         
         # 3. Business validation
         # TODO [PRIORITY]: Dời logic này sang rules.py (ComponentParameterRule)
@@ -138,6 +150,14 @@ class Component:
         elif self.type == ComponentType.VOLTAGE_SOURCE:
             if "voltage" not in self.parameters:
                 raise ValueError(f"Voltage source {self.id} phải có tham số 'voltage'")
+            
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "type": self.type.value,
+            "pins": self.pins,
+            "parameters": {key: val.to_dict() for key, val in self.parameters.items()}
+        }
 
 
 @dataclass(frozen=True)
@@ -167,6 +187,12 @@ class Net:
             if key in seen:
                 raise ValueError(f"Net '{self.name}' có duplicate pin {ref.component_id}.{ref.pin_name}")
             seen.add(key)
+            
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "connected_pins": [ref.to_dict() for ref in self.connected_pins]
+        }
 
 
 
@@ -196,6 +222,12 @@ class Port:
         if self.direction is not None and not isinstance(self.direction, PortDirection):
             raise TypeError("Port.direction phải là PortDirection enum")
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "net_name": self.net_name,
+            "direction": self.direction.value if self.direction else None
+        }
 
 @dataclass(frozen=True)
 class Constraint:
@@ -210,6 +242,13 @@ class Constraint:
     def __post_init__(self):
         if not self.name:
             raise ValueError("Tên constraint không được để trống")
+        
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "value": self.value,
+            "unit": self.unit
+        }
 
 
 # ===== AGGREGATE ROOT =====
@@ -327,3 +366,13 @@ class Circuit:
             _ports=dict(self.ports),            # Từ proxy
             _constraints=dict(self.constraints) # Từ proxy
         )
+    
+    # moi them
+    def to_dict(self): 
+        return {
+            "name": self.name,
+            "components": [comp.to_dict() for comp in self.components.values()],
+            "nets": [net.to_dict() for net in self.nets.values()],
+            "ports": [port.to_dict() for port in self._ports.values()],
+            "constraints": [constraint.to_dict() for constraint in self._constraints.values()],
+        }
