@@ -57,12 +57,8 @@ class CircuitIRSerializer:
                     "id": comp.id,
                     "type": comp.type.value,
                     "pins": list(comp.pins),
-                    
-                    """ 
-                        ParameterValue là entity object
-                        JSON serializer không hiểu
-                        DB layer / frontend sẽ chết
-                    """
+                    # ParameterValue là entity object, JSON serializer không hiểu
+                    # DB layer / frontend cần dict format
                     "parameters": {
                         key: {"value": val.value, "unit": val.unit} 
                         for key, val in comp.parameters.items()              
@@ -78,7 +74,7 @@ class CircuitIRSerializer:
                     "connected_pins": [
                         {
                             "component_id": ref.component_id, 
-                            "pin": ref.pin_name
+                            "pin_name": ref.pin_name
                         }
                         for ref in net.connected_pins
                     ]
@@ -149,7 +145,7 @@ class CircuitIRSerializer:
                 connected_pins=tuple(
                     PinRef(
                         component_id=conn["component_id"],
-                        pin_name=conn["pin"]
+                        pin_name=conn["pin_name"]
                     )
                     for conn in net_data["connected_pins"]
                 )
@@ -253,8 +249,8 @@ class CircuitIRSerializer:
                             continue
                         if "component_id" not in conn:
                             errors.append(f"net[{i}].connected_pins[{j}] thiếu 'component_id'")
-                        if "pin" not in conn:
-                            errors.append(f"net[{i}].connected_pins[{j}] thiếu 'pin'")
+                        if "pin_name" not in conn:
+                            errors.append(f"net[{i}].connected_pins[{j}] thiếu 'pin_name'")
         
         # Kiểm chứng cấu trúc ports
         if "ports" in ir_data:
@@ -294,14 +290,75 @@ class CircuitIRSerializer:
         return errors
     
     @staticmethod
-    def serialize(ir_data: Dict[str, Any]) -> str:
-        """Serialize IR to chuỗi JSON"""
-        return json.dumps(ir_data, indent=2)
+    def serialize(circuit: Circuit) -> Dict[str, Any]:
+        """ Chuyển circuit -> string json với ir wrapper"""
+        ir = CircuitIRSerializer.build_ir(circuit)
+        return CircuitIRSerializer.to_dict(ir)
     
     @staticmethod
-    def deserialize(json_str: str) -> Dict[str, Any]:
-        """Deserialize chuỗi JSON thành IR"""
-        return json.loads(json_str)
+    def deserialize(ir_data: Dict[str, Any]) -> Circuit:
+        """
+        IR dict → Circuit object (for tests)
+        
+        Args:
+            ir_data: Dict từ serialize(), structure: {meta, components, nets, ports, constraints}
+        
+        Returns:
+            Circuit object
+        """
+        # Reconstruct all entities from flat IR structure
+        components = {
+            comp_data["id"]: Component(
+                id=comp_data["id"],
+                type=ComponentType(comp_data["type"]),
+                pins=tuple(comp_data["pins"]),
+                parameters={
+                    key: ParameterValue(value=val["value"], unit=val["unit"])
+                    for key, val in comp_data["parameters"].items()
+                }
+            )
+            for comp_data in ir_data["components"]
+        }
+        
+        nets = {
+            net_data["name"]: Net(
+                name=net_data["name"],
+                connected_pins=tuple(
+                    PinRef(
+                        component_id=pin["component_id"],
+                        pin_name=pin["pin_name"]
+                    )
+                    for pin in net_data["connected_pins"]
+                )
+            )
+            for net_data in ir_data["nets"]
+        }
+        
+        ports = {
+            port_data["name"]: Port(
+                name=port_data["name"],
+                net_name=port_data["net_name"],
+                direction=PortDirection(port_data["direction"]) if port_data["direction"] else None
+            )
+            for port_data in ir_data["ports"]
+        }
+        
+        constraints = {
+            const_data["name"]: Constraint(
+                name=const_data["name"],
+                value=const_data["value"],
+                unit=const_data["unit"]
+            )
+            for const_data in ir_data["constraints"]
+        }
+        
+        return Circuit(
+            name=ir_data["meta"]["circuit_name"],
+            _components=components,
+            _nets=nets,
+            _ports=ports,
+            _constraints=constraints
+        )
     
     @staticmethod
     def build_ir(
