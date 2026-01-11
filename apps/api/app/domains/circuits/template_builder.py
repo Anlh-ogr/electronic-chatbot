@@ -732,9 +732,12 @@ class OpAmpAmplifierBuilder:
         Components: U1, R1, R2 (+ Cin, Cout nếu coupling)
         """
         cfg = self.config
+
+        # For inverting topology, treat cfg.gain as magnitude (user may pass -10 or 10)
+        gain_mag = abs(cfg.gain)
         
         resistors = self.calc.calculate_feedback_resistors(
-            cfg.gain, "inverting", cfg.r1 or 10_000
+            gain_mag, "inverting", cfg.r1 or 10_000
         )
         r1_val = cfg.r1 or resistors["R1"]
         r2_val = cfg.r2 or resistors["R2"]
@@ -778,10 +781,15 @@ class OpAmpAmplifierBuilder:
         nets = {}
         
         if cfg.include_coupling and cfg.cin and cfg.cout:
+            # Input coupling cap creates an external input node and an internal signal node.
             nets["INPUT"] = Net("INPUT", (PinRef("Cin", "1"),))
-            nets["FEEDBACK"] = Net("FEEDBACK", (
+            nets["IN_SIGNAL"] = Net("IN_SIGNAL", (
                 PinRef("Cin", "2"),
                 PinRef("R1", "1"),
+            ))
+            # Inverting summing node: R1 -> IN-, R2 feedback -> IN-
+            nets["IN_NEG"] = Net("IN_NEG", (
+                PinRef("R1", "2"),
                 PinRef("R2", "1"),
                 PinRef("U1", "IN-"),
             ))
@@ -793,7 +801,7 @@ class OpAmpAmplifierBuilder:
             nets["VOUT_EXT"] = Net("VOUT_EXT", (PinRef("Cout", "2"),))
         else:
             nets["INPUT"] = Net("INPUT", (PinRef("R1", "1"),))
-            nets["FEEDBACK"] = Net("FEEDBACK", (
+            nets["IN_NEG"] = Net("IN_NEG", (
                 PinRef("R1", "2"),
                 PinRef("R2", "1"),
                 PinRef("U1", "IN-"),
@@ -816,12 +824,12 @@ class OpAmpAmplifierBuilder:
         }
         
         constraints = {
-            "gain": Constraint("gain", -cfg.gain, None),
+            "gain": Constraint("gain", -gain_mag, None),
             "topology": Constraint("topology", "inverting", None),
         }
         
         return Circuit(
-            name=f"Inverting Op-Amp (Av={-cfg.gain})",
+            name=f"Inverting Op-Amp (Av={-gain_mag})",
             _components=components,
             _nets=nets,
             _ports=ports,
