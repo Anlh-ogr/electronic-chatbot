@@ -27,7 +27,7 @@ class TestCircuitIRSerialization:
         
         ir_dict = CircuitIRSerializer.serialize(circuit)
         
-        assert ir_dict["name"] == "Empty"
+        assert ir_dict["meta"]["circuit_name"] == "Empty"
         assert ir_dict["components"] == []
         assert ir_dict["nets"] == []
         assert ir_dict["ports"] == []
@@ -55,7 +55,7 @@ class TestCircuitIRSerialization:
         assert len(ir_dict["components"]) == 1
         comp = ir_dict["components"][0]
         assert comp["id"] == "R1"
-        assert comp["type"] == "RESISTOR"
+        assert comp["type"] == ComponentType.RESISTOR.value
         assert "resistance" in comp["parameters"]
         assert comp["parameters"]["resistance"]["value"] == 1000
         assert comp["parameters"]["resistance"]["unit"] == "ohm"
@@ -63,11 +63,15 @@ class TestCircuitIRSerialization:
     def test_deserialize_circuit_with_resistor(self):
         """Deserialize circuit từ dict"""
         ir_dict = {
-            "name": "Test",
+            "meta": {
+                "version": "1.0",
+                "schema_version": "1.0",
+                "circuit_name": "Test",
+            },
             "components": [
                 {
                     "id": "R1",
-                    "type": "RESISTOR",
+                    "type": ComponentType.RESISTOR.value,
                     "pins": ["1", "2"],
                     "parameters": {
                         "resistance": {
@@ -173,12 +177,21 @@ class TestCircuitIRSerialization:
         assert net.name == "VCC"
         assert len(net.connected_pins) == 2
         
-        pins = [f"{p.component_id}.{p.pin}" for p in net.connected_pins]
+        pins = [f"{p.component_id}.{p.pin_name}" for p in net.connected_pins]
         assert "R1.1" in pins
         assert "R2.1" in pins
     
     def test_roundtrip_circuit_with_ports(self):
         """Roundtrip với ports"""
+        r1 = Component(
+            id="R1",
+            type=ComponentType.RESISTOR,
+            pins=("1", "2"),
+            parameters={"resistance": ParameterValue(1000, "ohm")}
+        )
+        net_in = Net(name="IN", connected_pins=(PinRef("R1", "1"),))
+        net_out = Net(name="OUT", connected_pins=(PinRef("R1", "2"),))
+
         port_in = Port(
             name="INPUT",
             net_name="IN",
@@ -193,8 +206,8 @@ class TestCircuitIRSerialization:
         
         original = Circuit(
             name="With Ports",
-            _components={},
-            _nets={},
+            _components={"R1": r1},
+            _nets={"IN": net_in, "OUT": net_out},
             _ports={"INPUT": port_in, "OUTPUT": port_out},
             _constraints={}
         )
@@ -306,6 +319,11 @@ class TestCircuitIRSerialization:
                 PinRef("RE", "1")
             )
         )
+
+        net_base = Net(
+            name="BASE",
+            connected_pins=(PinRef("Q1", "B"),)
+        )
         
         net_gnd = Net(
             name="GND",
@@ -350,6 +368,7 @@ class TestCircuitIRSerialization:
                 "VCC": net_vcc,
                 "COLLECTOR": net_collector,
                 "EMITTER": net_emitter,
+                "BASE": net_base,
                 "GND": net_gnd
             },
             _ports={
@@ -380,7 +399,7 @@ class TestCircuitIRSerialization:
         
         # Verify net connections
         net_collector_restored = restored.nets["COLLECTOR"]
-        pins = [f"{p.component_id}.{p.pin}" for p in net_collector_restored.connected_pins]
+        pins = [f"{p.component_id}.{p.pin_name}" for p in net_collector_restored.connected_pins]
         assert "RC.2" in pins
         assert "Q1.C" in pins
     
@@ -440,22 +459,25 @@ class TestIRSchemaValidation:
     """Test IR schema validation"""
     
     def test_deserialize_missing_name_field(self):
-        """Deserialize với missing 'name' → KeyError"""
+        """Deserialize với missing 'meta' → ValueError"""
         ir_dict = {
-            # Missing "name"
             "components": [],
             "nets": [],
             "ports": [],
             "constraints": []
         }
         
-        with pytest.raises(KeyError):
+        with pytest.raises(ValueError):
             CircuitIRSerializer.deserialize(ir_dict)
     
     def test_deserialize_invalid_component_type(self):
         """Deserialize với invalid ComponentType"""
         ir_dict = {
-            "name": "Test",
+            "meta": {
+                "version": "1.0",
+                "schema_version": "1.0",
+                "circuit_name": "Test",
+            },
             "components": [
                 {
                     "id": "X1",
@@ -469,7 +491,7 @@ class TestIRSchemaValidation:
             "constraints": []
         }
         
-        with pytest.raises((ValueError, KeyError)):
+        with pytest.raises(ValueError):
             CircuitIRSerializer.deserialize(ir_dict)
     
     def test_serialize_to_json_and_back(self):
