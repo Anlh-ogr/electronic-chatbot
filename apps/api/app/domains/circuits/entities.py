@@ -108,10 +108,10 @@ class Component:
         KHÔNG chứa: vị trí, footprint, symbol
     """
     id: str               # VD: "R1", "C2", "Q3"
-    type: ComponentType
+    type: ComponentType   # VD: ComponentType.RESISTOR
     pins: Tuple[str, ...] # VD: ("1", "2") cho resistor; ("C", "B", "E") cho BJT
     # Ngăn chặn việc immutable bị phá (circuit.component.clear()/circuit.component["R1"]=some_fake_component -> phá vỡ SOA)
-    parameters: Dict[str, ParameterValue] = field(default_factory=dict)
+    parameters: Dict[str, ParameterValue] = field(default_factory=dict) # VD: {"resistance": ParameterValue(1000, "Ohm")}
     
     def __post_init__(self):
         # 1. Check cơ bản (type/shape)
@@ -126,7 +126,7 @@ class Component:
         params_copy = dict(self.parameters)
         for key, val in params_copy.items():
             if not isinstance(val, ParameterValue):
-                raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue")
+                raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue") # vd: {"bjt_model": "2N2222"} sai -> phải {"bjt_model": ParameterValue("2N2222")}
 
         # Set lại field với bản copy immutable
         object.__setattr__(self, "parameters", MappingProxyType(params_copy))
