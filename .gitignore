@@ -6,3 +6,7 @@ apps/api/.venv/
 
 # .env local files
 apps/api/.env.local
+
+
+# Backup template_builders
+apps/api/app/domains/circuits/templates.py
