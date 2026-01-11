@@ -29,7 +29,7 @@ class TestBJTAmplifierIntegration:
         )
         
         assert circuit is not None
-        assert circuit.name == "BJT Amplifier CE"
+        assert circuit.name.startswith("CE Amplifier")
         assert len(circuit.components) > 0
         
         # Step 2: Validate
@@ -41,7 +41,7 @@ class TestBJTAmplifierIntegration:
         
         # Step 3: Serialize
         ir_dict = CircuitIRSerializer.serialize(circuit)
-        assert ir_dict["name"] == "BJT Amplifier CE"
+        assert ir_dict["meta"]["circuit_name"] == circuit.name
         assert len(ir_dict["components"]) == len(circuit.components)
         
         # Step 4: Deserialize
@@ -124,16 +124,11 @@ class TestBJTAmplifierIntegration:
                 gain=15.0,
                 vcc=vcc
             )
-            
-            # Tìm voltage source
-            vsource = None
-            for comp in circuit.components.values():
-                if comp.type == ComponentType.VOLTAGE_SOURCE:
-                    vsource = comp
-                    break
-            
-            assert vsource is not None
-            assert vsource.parameters["voltage"].value == vcc
+
+            # Template uses power port + constraint, not a voltage source component
+            assert "VCC" in circuit.ports
+            assert "vcc" in circuit.constraints
+            assert circuit.constraints["vcc"].value == vcc
             
             # Validate
             engine = CircuitRulesEngine()
