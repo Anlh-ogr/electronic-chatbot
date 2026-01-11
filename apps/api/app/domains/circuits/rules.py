@@ -417,7 +417,8 @@ class ConstraintFeasibilityRule(CircuitRule):
             if isinstance(constraint.value, (int, float)):
                 # 1. Không âm cho một số constraint
                 non_negative_constraints = [
-                    "gain", "bandwidth", "supply_voltage", 
+                    # NOTE: "gain" can be negative for inverting amplifiers (phase inversion)
+                    "bandwidth", "supply_voltage", 
                     "current", "power", "resistance", "capacitance"
                 ]
                 
@@ -430,7 +431,7 @@ class ConstraintFeasibilityRule(CircuitRule):
                     ))
                 
                 # 2. Giá trị quá lớn/cực đoan
-                if constraint.name == "gain" and constraint.value > 1000:
+                if constraint.name == "gain" and abs(constraint.value) > 1000:
                     violations.append(self._create_violation(
                         f"Gain quá lớn ({constraint.value}). "
                         "Gain thực tế thường dưới 1000",
