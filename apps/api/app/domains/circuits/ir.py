@@ -50,8 +50,9 @@ class CircuitIRSerializer:
     def to_dict(ir: CircuitIR) -> Dict[str, Any]:
         circuit = ir.circuit
         return {
-            "meta": ir.meta,
-            "intent_snapshot": ir.intent_snapshot,
+            # MappingProxyType is not JSON serializable; export as plain dict
+            "meta": dict(ir.meta),
+            "intent_snapshot": dict(ir.intent_snapshot),
             "components": [
                 {
                     "id": comp.id,
@@ -306,6 +307,10 @@ class CircuitIRSerializer:
         Returns:
             Circuit object
         """
+        errors = CircuitIRSerializer.validate_schema(ir_data)
+        if errors:
+            raise ValueError(f"IR schema không hợp lệ: {errors}")
+
         # Reconstruct all entities from flat IR structure
         components = {
             comp_data["id"]: Component(
@@ -417,6 +422,9 @@ class CircuitIRSerializer:
             # So sánh dict1 và dict2 (bỏ qua timestamp)
             dict1_copy = dict(dict1)
             dict2_copy = dict(dict2)
+            # Defensive: ensure nested meta is mutable dict
+            dict1_copy["meta"] = dict(dict1_copy.get("meta", {})) # gán lại bản sao
+            dict2_copy["meta"] = dict(dict2_copy.get("meta", {}))
             dict1_copy["meta"].pop("created_at", None)
             dict2_copy["meta"].pop("created_at", None)
             
