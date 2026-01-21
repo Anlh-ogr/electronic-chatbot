@@ -1,4 +1,4 @@
-# thesis/electronic-chatbot/apps/api/app/domains/circuits/entities.py
+# .\thesis\electronic-chatbot\apps\api\app\domains\circuits\entities.py
 """ Thông tin chung:
 Thiết kế hệ thống theo kiến trúc Domain-Driven Design (DDD), đặt domain (nghiệp vụ) là cốt lõi trung tâm, xây dựng mô hình kiến trúc phản ánh chính xác các quy tắt và logic.
 Đóng vai trò là tầng domain trong kiến trúc nhiều tầng, tách biệt rõ ràng với các tầng khác như application, infrastructure, interface, tool,...
