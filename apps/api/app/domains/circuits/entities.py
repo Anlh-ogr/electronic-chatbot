@@ -1,93 +1,114 @@
 # thesis/electronic-chatbot/apps/api/app/domains/circuits/entities.py
-""" Info:
-    Circuit Domain Entities - Luật vật lý của vũ trụ mạch điện
-    TUYỆT ĐỐI KHÔNG: AI logic, KiCad logic, UI logic
-    Chỉ pure domain entities với validation invariants.
+""" Thông tin chung:
+Thiết kế hệ thống theo kiến trúc Domain-Driven Design (DDD), đặt domain (nghiệp vụ) là cốt lõi trung tâm, xây dựng mô hình kiến trúc phản ánh chính xác các quy tắt và logic.
+Đóng vai trò là tầng domain trong kiến trúc nhiều tầng, tách biệt rõ ràng với các tầng khác như application, infrastructure, interface, tool,...
+ * Trong hệ thống tổng quan Domain Entities nằm trong lớp Service Layer, chứa các nghiệp vụ xử lý.
+ * Trong hệ thống kiến trúc Domain Entities nằm trong Khối xử lý trung tâm, đóng vai trò "bộ não" của hệ thống.
+Circuit Domain Entities là tập hợp các thực thể (entities) và đối tượng giá trị (value objects) đại diện cho các khái niệm và quy tắc trong lĩnh vực mạch điện tử, bao gồm ("linh kiện", "dây nối", "ports", "ràng buộc", "mạch").
+Tuyệt đối không được chứa AI Logic, KiCad Logic, UI Logic tránh phá vỡ Source of Truth.
+Chỉ được chứa nghiệp vụ thuần túy của domain với các bất biến (validation invariants) đảm bảo tính toàn vẹn và nhất quán của dữ liệu.
 """
+
 
 from __future__ import annotations
-
-""" Giải thích thư viện
-    annotations: cho phép sử dụng kiểu dữ liệu chưa được định nghĩa trong cùng module nhằm hỗ trợ kiểu dữ liệu đệ quy và tham chiếu chéo.
-    dataclass: Sử dụng frozen để ngăn chặn việc các layer khác sửa CircuitCircuit. Hạn chế việc Source of Truth bị Phá
-    field: để tùy chỉnh các trường trong dataclass, ví dụ như thiết lập giá trị mặc định.
-    enum: để định nghĩa các kiểu dữ liệu liệt kê (enumerations) như ComponentType.
-    mappingproxytype: để tạo các dict bất biến, cần thiết trong trường hợp là source of truth.
-    typing: cung cấp các kiểu dữ liệu tổng quát như Dict, Optional, Tuple, Any để định nghĩa kiểu dữ liệu phức tạp hơn.
-"""
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Dict, Optional, Tuple, Any
 
-# ===== ENUMS =====
+""" Lý do sử dụng thư viện
+__future__ : do không thể sử dụng một class làm kiểu dữ liệu cho một biến trong chính class đó (class chưa khởi tạo xong), nên cần import từ "annotations" để hỗ trợ kiểu dữ liệu tham chiếu chéo (forward references).
+dataclasses dataclass: gọi frozen = True để tạo bất biến (immutability) cho component, net, circuit. Ngăn chặn việc các layer khác sửa đổi trực tiếp các entity này, bảo vệ Source of Truth.
+dataclasses field: tạo trường dữ liệu mạch định là một dict bất biến (immutable dict) để ngăn chặn việc sửa đổi trực tiếp từ bên ngoài.
+enum: tự động định nghĩa các hằng số cho từng loại linh kiện, hướng port, ép do người/AI code phải đúng giá trị định nghĩa sẵn (ComponentType.Resistor, v.v).
+mappingproxytype: frozen=True chỉ bảo vệ các biến đơn giản, có thể bị can thiệp do người. MappingProxy sẽ bọc Dict và biến nó thành read-only, mọi hành động sửa đổi đều bị báo lỗi ngay lập tức.
+typing: cung cấp thông tin về kiểu dữ liệu cho các biến, hàm:
+ * Dict[str, param value]: dùng key là str và value là object. VD: {"resistance": ParameterValue(1000, "Ohm")}.
+ * Optional[str]: biến có thể là str hoặc None. VD: {"unit": "Ohm"} hoặc {"unit": None}.
+ * Tuple[str, ...]: dùng tuple thay list vì tuple có tính bất biến (không thêm bớt các phần tử sau khi tạo) phù hợp với danh sách Pin linh kiện.
+ * Any: sử dụng các trường dữ liệu linh hoạt (giá trị ràng buộc), kiểu dữ liệu có thể tùy ý (int, float, str).
+"""
+
+# ====== ENUMS ======
+""" Định nghĩa các loại linh kiện
+ Điện trở: "resistor"
+ Tụ điện: "capacitor"
+ Cuộn cảm: "inductor"
+ Transistor lưỡng cực: "bjt"
+ Transistor hiệu ứng trường: "mosfet"
+ Op-amp: "opamp"
+ Nguồn điện áp: "voltage_source"
+ Nguồn dòng điện: "current_source"
+ Mass (Ground): "ground"
+ Đi-ot: "diode"
+"""
 class ComponentType(Enum):
-    """Loại linh kiện - KHÔNG cho phép user định nghĩa thêm"""
     RESISTOR = "resistor"
     CAPACITOR = "capacitor"
     INDUCTOR = "inductor"
     BJT = "bjt"
     MOSFET = "mosfet"
     OPAMP = "opamp"
-    VOLTAGE_SOURCE = "voltage_source" # nguồn điện
-    CURRENT_SOURCE = "current_source" # nguồn dòng
+    VOLTAGE_SOURCE = "voltage_source"
+    CURRENT_SOURCE = "current_source"
     GROUND = "ground"
     DIODE = "diode"
 
+
+""" Định nghĩa hướng Port
+ Input : "input"
+ Output : "output"
+ Nguồn : "power"
+ Mass : "ground"
+"""
 class PortDirection(Enum):
-    """
-        Tạo Direction chuẩn cho direction của class Port
-        Hướng của port - KHÔNG cho phép user định nghĩa thêm
-        Giải quyết tai họa typo, auto-complete
-        Rule engine xử lý dễ dàng
-    """
     INPUT = "input"
     OUTPUT = "output"
     POWER = "power"
     GROUND = "ground"
 
 
-# ===== VALUE OBJECTS =====
-# Tạo Parameter chuẩn cho parameter của class Component
+
+# ====== VALUE OBJECTS ======
+""" Giá trị tham số
+Lưu trữ các giá trị tham số của linh kiện.
+ * Value không được None, bắt buộc phải có giá trị thực tế.
+ * Kiểm tra kiểu dữ liệu để tránh lỗi khi tính toán hoặc truyền vào kiểu không hợp lệ (dict, list, function).
+In/Out:
+ * In: Any {int | float | str}
+ * Out: dict {"value": int | float | str, "unit": str|None}
+Chuyển đổi các Object phức tạp thành dữ liệu đơn giản (cỗ máy phiên dịch) để truyền qua API, lưu trữ database, hiển thị UI.
+"""
 @dataclass(frozen=True)
 class ParameterValue:
-    """ Value Object cho tham số linh kiện.
-        Mục đích:
-        * Ngăn Any linh hoạt quá mức gây mất kiểm soát
-        * Chuẩn hóa để Rules engine xử lý đồng nhất
-        * Đảm bảo IR stable, AI không phá kiểu dữ liệu
-        Chỉ chấp nhận: int, float, str (từ chối dict/list/function)
-    """
-    value: Any                  # int | float | str only
-    unit: Optional[str] = None  # VD: "Ohm", "F", "V", "A"
+    value: Any
+    unit: Optional[str] = None
     
-    """ Validation cho parameters từ chối cho dict/list/function lọt vào"""
     def __post_init__(self):
         if self.value is None:
-            raise ValueError("ParameterValue.value không được None")
-
+            raise ValueError("Value không được None")
         if not isinstance(self.value, (int, float, str)):
-            raise TypeError(
-                f"ParameterValue.value chỉ chấp nhận int|float|str, nhận {type(self.value)}"
-            )
+            raise TypeError(f"Value chỉ chấp nhận int|float|str, nhận {type(self.value)}")
             
-    # Method to_dict for serialization
     def to_dict(self) -> dict:
         return {
             "value": self.value,
             "unit": self.unit
         }
         
-
+""" Tham chiếu chân linh kiện
+ * Tạo id và tên chân cụ thể cho từng linh kiện.
+ * Khi kết nối các chân trong mạch, cần tham chiếu đến đúng chân linh kiện.
+ * Đảm bảo id và tên chân của linh kiện không được để trống.
+ In/Out:
+  * In: str (component_id), str (pin_name)
+  * Out: dict {"component_id": str, "pin_name": str}
+Chuyển đổi các Object phức tạp thành dữ liệu đơn giản (cỗ máy phiên dịch) để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class PinRef:
-    """
-        Chuẩn hóa "Connection Object" trong Net
-        Tham chiếu đến chân của một linh kiện
-        Giúp chuẩn hóa connected_pins trong Net
-    """
-    component_id: str  # VD: "R1", "C2"
-    pin_name: str      # VD: "A", "B", "C"
+    component_id: str
+    pin_name: str
     
     def __post_init__(self):
         if not self.component_id or not self.pin_name:
@@ -100,33 +121,38 @@ class PinRef:
         }
 
 
+
 # ===== ENTITIES =====
+""" Linh kiện vật lý trong mạch
+Đại diện cho một linh kiện với id, loại, danh sách chân và các tham số.
+Đảm bảo id không trống, pins là tuple và có ít nhất hai chân.
+Mọi tham số phải là ParameterValue, kiểm tra chặt chẽ kiểu dữ liệu.
+In/Out:
+ * In: str (id), ComponentType (type), tuple[str, ...] (pins), dict[str, ParameterValue] (parameters)
+ * Out: dict {"id": str, "type": str, "pins": tuple[str, ...], "parameters": dict[str, dict]}
+Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class Component:
-    """
-        Linh kiện vật lý. Immutable.
-        KHÔNG chứa: vị trí, footprint, symbol
-    """
-    id: str               # VD: "R1", "C2", "Q3"
-    type: ComponentType   # VD: ComponentType.RESISTOR
-    pins: Tuple[str, ...] # VD: ("1", "2") cho resistor; ("C", "B", "E") cho BJT
+    id: str
+    type: ComponentType
+    pins: Tuple[str, ...]
     # Ngăn chặn việc immutable bị phá (circuit.component.clear()/circuit.component["R1"]=some_fake_component -> phá vỡ SOA)
-    parameters: Dict[str, ParameterValue] = field(default_factory=dict) # VD: {"resistance": ParameterValue(1000, "Ohm")}
+    parameters: Dict[str, ParameterValue] = field(default_factory=dict)
     
     def __post_init__(self):
-        # 1. Check cơ bản (type/shape)
         if not self.id:
-            raise ValueError("Mã linh kiện không được để trống")
+            raise ValueError("Mã linh kiện không được trống")
         if not isinstance(self.pins, tuple):
-            raise TypeError(f"pins của {self.id} phải là Tuple[str, ...], không được dùng list")
+            raise TypeError(f"Pins của {self.id} phải là Tuple")
         if not self.pins:
-            raise ValueError(f"Linh kiện {self.id} phải có ít nhất một chân")
+            raise ValueError(f"Linh kiện {self.id} phải có ít nhất hai chân")
         
-        # 2. Defensive copy + validate parameters
         params_copy = dict(self.parameters)
         for key, val in params_copy.items():
             if not isinstance(val, ParameterValue):
-                raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue") # vd: {"bjt_model": "2N2222"} sai -> phải {"bjt_model": ParameterValue("2N2222")}
+                raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue")
+                # {"bjt_model": "2N2222"} sai -> phải {"bjt_model": ParameterValue("2N2222")}
 
         # Set lại field với bản copy immutable
         object.__setattr__(self, "parameters", MappingProxyType(params_copy))
@@ -160,32 +186,35 @@ class Component:
         }
 
 
+
+""" Dây nối giữa các chân linh kiện
+Đại diện cho một net (dây nối) với tên và danh sách các chân kết nối.
+Đảm bảo tên net không trống, danh sách chân hợp lệ, "không trùng lặp".
+In/Out:
+ * In: str (name), tuple[PinRef, ...] (connected_pins)
+ * Out: dict {"name": str, "connected_pins": list[dict]}
+Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class Net:
-    """
-        Net = kết nối điện giữa các pin
-        KHÔNG chứa: logic mạch, tính toán
-    """
-    name: str  # VD: "net1", "VCC", "GND"
-    connected_pins: Tuple[PinRef, ...]  # Chuẩn hóa trong class PinRef
+    name: str
+    connected_pins: Tuple[PinRef, ...]
     
     def __post_init__(self):
         if not self.name:
             raise ValueError("Tên net không được trống")
         if not self.connected_pins:
-            raise ValueError(f"Net '{self.name}' phải có ít nhất 1 pin")
+            raise ValueError(f"Net '{self.name}' phải có ít nhất hai pin")
         
-        # Check kiểu
         for ref in self.connected_pins:
             if not isinstance(ref, PinRef):
-                raise TypeError("connected_pins phải là PinRef")
+                raise TypeError(f"Mỗi phần tử trong connected_pins phải là PinRef, nhận {type(ref)}")
         
-        # Check duplicate (MỚI)
         seen = set()
         for ref in self.connected_pins:
             key = (ref.component_id, ref.pin_name)
             if key in seen:
-                raise ValueError(f"Net '{self.name}' có duplicate pin {ref.component_id}.{ref.pin_name}")
+                raise ValueError(f"Net '{self.name}' chứa nhiều lần cùng một chân: {ref.component_id}.{ref.pin_name}")
             seen.add(key)
             
     def to_dict(self) -> dict:
@@ -196,31 +225,31 @@ class Net:
 
 
 
+""" Cổng Ports
+Đại diện cho giao diện giữa mạch và thế giới bên ngoài (VD: VIN, VOUT, VCC, GND).
+Đảm bảo tên port và tên net không được để trống, direction (hướng) phải là Enum PortDirection nếu có.
+In/Out:
+ * In: str (name), str (net_name), Optional[PortDirection] (direction)
+ * Out: dict {"name": str, "net_name": str, "direction": str|None}
+Validation:
+ * name: không được rỗng
+ * net_name: không được rỗng
+ * direction: nếu có, phải là PortDirection
+Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class Port:
-    """
-    Port = giao diện mạch với thế giới ngoài
-    Ví dụ: Vin, Vout, VCC, GND
-    """
-    name: str  # VD: "VIN", "VOUT", "VCC", "GND"
-    net_name: str  # Tên net mà port này kết nối đến
-    
-    """
-        Thành phần Optional[str] - String dễ thành TAI HỌA
-        * typo = bug("power")
-        * không auto-complete
-        * rule engine khó xử lý
-        -> Viết class Enum để kiểm soát chặt chẽ hơn
-    """
+    name: str
+    net_name: str
     direction: Optional[PortDirection] = None
-    
+
     def __post_init__(self):
         if not self.name:
             raise ValueError("Tên port không được để trống")
         if not self.net_name:
-            raise ValueError(f"Port {self.name} phải kết nối đến một dây nối")
+            raise ValueError(f"Port '{self.name}' phải kết nối đến một net (net_name không được để trống)")
         if self.direction is not None and not isinstance(self.direction, PortDirection):
-            raise TypeError("Port.direction phải là PortDirection enum")
+            raise TypeError(f"Port '{self.name}': direction phải là PortDirection enum, nhận {type(self.direction)}")
 
     def to_dict(self) -> dict:
         return {
@@ -229,19 +258,27 @@ class Port:
             "direction": self.direction.value if self.direction else None
         }
 
+
+
+""" Ràng buộc giữa các tham số
+Đại diện cho ý định kỹ thuật (không phải rule), dùng làm input cho rules engine.
+Đảm bảo tên constraint không được để trống.
+In/Out:
+ * In: str (name), Any (value), Optional[str] (unit)
+ * Out: dict {"name": str, "value": Any, "unit": str|None}
+Validation:
+ * name: không được rỗng
+Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class Constraint:
-    """
-        Constraint = ý định kỹ thuật (KHÔNG PHẢI rule)
-        Input cho rules engine (sẽ xử lý ở tuần 2)
-    """
-    name: str  # VD: "supply_voltage", "target_gain", "bandwidth"
-    value: Any  # Có thể là số, string, dict
-    unit: Optional[str] = None  # VD: "V", "Hz", "dB"
-    
+    name: str
+    value: Any
+    unit: Optional[str] = None
+
     def __post_init__(self):
         if not self.name:
-            raise ValueError("Tên constraint không được để trống")
+            raise ValueError("Ràng buộc phải có tên")
         
     def to_dict(self) -> dict:
         return {
@@ -252,122 +289,142 @@ class Constraint:
 
 
 # ===== AGGREGATE ROOT =====
+"""
+Toàn bộ mạch điện tử (Aggregate Root)
+Đại diện cho toàn bộ mạch điện tử, kiểm soát và xác thực tất cả thành phần: linh kiện, dây nối (net), cổng (port), ràng buộc (constraint).
+- Đảm bảo bất biến (immutability):
+    * Sử dụng dataclass(frozen=True) và MappingProxyType để ngăn chặn sửa đổi trực tiếp từ bên ngoài.
+    * Mọi trường dữ liệu đều là immutable, bảo vệ Source of Truth (SOA).
+- Kiểm soát toàn vẹn dữ liệu:
+    * Xác thực tên mạch không được rỗng.
+    * Mỗi component/net/port/constraint phải có key khớp với id/name.
+    * Net: mọi chân phải tham chiếu đúng linh kiện và pin.
+    * Port: phải kết nối đến net hợp lệ.
+    * Không có pin nào thuộc nhiều net (duy nhất).
+- Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+
+Input:
+    - name: str
+    - id: Optional[str]
+    - _components: Dict[str, Component] (key là id linh kiện)
+    - _nets: Dict[str, Net] (key là tên net)
+    - _ports: Dict[str, Port] (key là tên port)
+    - _constraints: Dict[str, Constraint] (key là tên constraint)
+Output:
+    - dict: {
+        "name": str,
+        "components": list[dict],
+        "nets": list[dict],
+        "ports": list[dict],
+        "constraints": list[dict]
+    }
+
+Validation:
+    - name: không được rỗng
+    - Mỗi component/net/port/constraint phải có key khớp với id/name
+    - Net: mọi chân phải tham chiếu đúng linh kiện và pin
+    - Port: phải kết nối đến net hợp lệ
+    - Không có pin nào thuộc nhiều net
+
+Bất biến:
+    - Ngăn chặn mutable phá vỡ SOA
+    - Toàn bộ trường là immutable (frozen=True, MappingProxyType)
+    - Không cho phép sửa đổi trực tiếp từ bên ngoài
+
+Chuyển đổi:
+    - to_dict(): Chuyển object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
+"""
 @dataclass(frozen=True)
 class Circuit:
-    """Entity cao nhất - đại diện cho toàn bộ mạch"""
     name: str
-    
-    """Ngăn chặn việc mutable phá vỡ SOA"""
-    _components: Dict[str, Component] = field(default_factory=dict) # component_id -> Component
-    _nets: Dict[str, Net] = field(default_factory=dict)  # net_name -> Net
-    _ports: Dict[str, Port] = field(default_factory=dict)  # port_name -> Port
-    _constraints: Dict[str, Constraint] = field(default_factory=dict)  # constraint_name -> Constraint
+    id: Optional[str] = None
+    _components: Dict[str, Component] = field(default_factory=dict)     # component_id -> Component: key là id linh kiện, value la Component
+    _nets: Dict[str, Net] = field(default_factory=dict)                 # net_name -> Net : key la ten net, value la Net
+    _ports: Dict[str, Port] = field(default_factory=dict)               # port_name -> Port : key la ten port, value la Port
+    _constraints: Dict[str, Constraint] = field(default_factory=dict)   # constraint_name -> Constraint : key la ten constraint, value la Constraint
     
     def __post_init__(self):
-        # Defensive copy CHO CHÍNH internal fields trước
+        # Tạo bản copy immutable để ngăn chặn mutable phá vỡ SOA
         object.__setattr__(self, "_components", dict(self._components))
         object.__setattr__(self, "_nets", dict(self._nets))
         object.__setattr__(self, "_ports", dict(self._ports))
         object.__setattr__(self, "_constraints", dict(self._constraints))
-        
-        # Sau đó tạo public proxy từ internal đã được copy
+        # Bọc Dict bằng MappingProxyType để biến thành read-only
         object.__setattr__(self, "components", MappingProxyType(self._components))
         object.__setattr__(self, "nets", MappingProxyType(self._nets))
         object.__setattr__(self, "ports", MappingProxyType(self._ports))
         object.__setattr__(self, "constraints", MappingProxyType(self._constraints))
-        
+        # Thực hiện xác thực cơ bản
         self.validate_basic()
 
     def validate_basic(self) -> None:
-        """Validation invariants cơ bản - hàng rào bảo vệ đầu tiên"""
-        errors = []
+        errors = []     # Thu thập lỗi
         
-        # 1. Name không trống
         if not self.name:
             errors.append("Tên mạch không được trống")
-        
-        # 2. Sự không khớp khóa (ID) của linh kiện
+
         for comp_id, comp in self.components.items():
             if comp_id != comp.id:
-                errors.append(f"Component key '{comp_id}' ≠ id '{comp.id}'")
+                errors.append(f"Component key '{comp_id}' không khớp với id của Component: '{comp.id}'")
+
+        for net_key, net_obj in self.nets.items():
+            if net_key != net_obj.name:
+                errors.append(f"Net key '{net_key}' không khớp với tên của Net: '{net_obj.name}'")
+
+        for port_key, port_obj in self.ports.items():
+            if port_key != port_obj.name:
+                errors.append(f"Port key '{port_key}' không khớp với tên của Port: '{port_obj.name}'")
         
-        # 3. Sự không khớp khóa của nets/ports/constraints
-        for net_name, net in self.nets.items():
-            if net_name != net.name:
-                errors.append(f"Net key '{net_name}' ≠ name '{net.name}'")
+        for constraint_key, constraint in self.constraints.items():
+            if constraint_key != constraint.name:
+                errors.append(f"Constraint key '{constraint_key}' không khớp với tên của Constraint: '{constraint.name}'")
         
-        for port_name, port in self.ports.items():
-            if port_name != port.name:
-                errors.append(f"Port key '{port_name}' ≠ name '{port.name}'")
-        
-        for cname, c in self.constraints.items():
-            if cname != c.name:
-                errors.append(f"Constraint key '{cname}' ≠ name '{c.name}'")
-        
-        # 4. Net → component/pin tồn tại (đã có)
-        for net_name, net in self.nets.items():
-            for ref in net.connected_pins:
+        for net_key, net_obj in self.nets.items():
+            for ref in net_obj.connected_pins:
                 if ref.component_id not in self.components:
-                    errors.append(f"Net '{net_name}' → linh kiện '{ref.component_id}' không tồn tại")
+                    errors.append(f"Net '{net_key}' tham chiếu đến linh kiện không tồn tại: '{ref.component_id}'")
                 else:
                     comp = self.components[ref.component_id]
                     if ref.pin_name not in comp.pins:
-                        errors.append(f"Net '{net_name}' → pin '{ref.pin_name}' không tồn tại trên {ref.component_id}")
+                        errors.append(f"Net '{net_key}' tham chiếu đến pin không tồn tại: '{ref.pin_name}' trên linh kiện '{ref.component_id}'")
         
-        # 5. Port → net tồn tại (đã có)
-        for port_name, port in self.ports.items():
-            if port.net_name not in self.nets:
-                errors.append(f"Port '{port_name}' → net '{port.net_name}' không tồn tại")
+        for port_key, port_obj in self.ports.items():
+            if port_obj.net_name not in self.nets:
+                errors.append(f"Port '{port_key}' tham chiếu đến net không tồn tại: '{port_obj.net_name}'")
         
-        # 6. Pin không được thuộc nhiều net (MỚI - quan trọng)
-        pin_to_net = {}
-        for net_name, net in self.nets.items():
-            for ref in net.connected_pins:
+        pin_to_net = {}     # kiểm tra trùng lặp
+        for net_key, net_obj in self.nets.items():
+            for ref in net_obj.connected_pins:
                 pin_key = (ref.component_id, ref.pin_name)
                 if pin_key in pin_to_net:
                     errors.append(
-                        f"Pin {ref.component_id}.{ref.pin_name} thuộc nhiều net: "
-                        f"'{pin_to_net[pin_key]}' và '{net_name}'"
+                        f"Pin '{ref.component_id}.{ref.pin_name}' bị tham chiếu bởi nhiều net: "
+                        f"'{pin_to_net[pin_key]}' và '{net_key}'"
                     )
-                pin_to_net[pin_key] = net_name
+                pin_to_net[pin_key] = net_key
         
         if errors:
-            raise ValueError(f"Xác thực mạch thất bại:\n" + "\n".join(f"  - {e}" for e in errors))
+            error_message = "Xác thực mạch thất bại:\n" + "\n".join([f"  - {e}" for e in errors])
+            raise ValueError(error_message)
 
-    
     def get_component(self, component_id: str) -> Optional[Component]:
-        """Helper method - không chứa logic điện"""
         return self.components.get(component_id)
     
     def get_net(self, net_name: str) -> Optional[Net]:
-        """Helper method - không chứa logic điện"""
         return self.nets.get(net_name)
-    
-    """
-        Cung cấp thêm copy helpers
-        Entities ĐƯỢC PHÉP có method tạo bản sao (function style)
-    """
+
     def with_component(self, component: Component) -> "Circuit":
-        """Trả về bản sao của Circuit với component mới được thêm vào"""
-        new_components = dict(self.components) # từ proxy
-        new_components[component.id] = component
+        new_components = dict(self.components)      # Tạo bản copy mutable
+        new_components[component.id] = component    # Thêm/sửa component
         
-        """
-            Không viết kiểu reuse reference cho:
-            * nets=self.nets,                   -> nets=dict(self.nets)
-            * ports=self.ports,                 -> ports=dict(self.ports)
-            * constraints=self.constraints      -> constraints=dict(self.constraints)
-            -> Dict này mà mutable ở ngoài -> Circuit không còn immutable -> phá vỡ SOA
-        """
         return Circuit(
             name=self.name,
             _components=new_components,
-            _nets=dict(self.nets),              # Từ proxy, không phải _nets
-            _ports=dict(self.ports),            # Từ proxy
-            _constraints=dict(self.constraints) # Từ proxy
+            _nets=dict(self.nets),              # Luôn tạo bản copy mới từ MappingProxyType để đảm bảo bất biến, không reuse reference _nets
+            _ports=dict(self.ports),            # Tương tự, copy từ proxy để tránh mutable phá vỡ SOA
+            _constraints=dict(self.constraints) # Copy từ proxy, không dùng reference trực tiếp
         )
     
-    # moi them
     def to_dict(self): 
         return {
             "name": self.name,
