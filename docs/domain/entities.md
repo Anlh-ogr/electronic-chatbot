@@ -63,7 +63,6 @@ File được tổ chức từ đơn giản đến phức tạp:
      - Mỗi class đều có `to_dict()` cho serialization.
 
 ## Kiến trúc sử dụng & Giải thích lựa chọn
-
 ### 1. Vì sao dùng dataclass (frozen=True)?
 - Đảm bảo bất biến (immutability) cho mọi entity: Khi một entity được tạo ra, không thể thay đổi thuộc tính của nó. Điều này bảo vệ source of truth, tránh bug do thay đổi ngoài ý muốn từ các tầng khác.
 - Tự động sinh constructor, repr, eq giúp code ngắn gọn, dễ debug, dễ test.
@@ -101,6 +100,15 @@ File được tổ chức từ đơn giản đến phức tạp:
 ### 9. Vì sao Circuit là aggregate root?
 - Circuit kiểm soát toàn bộ thành phần con (component, net, port, constraint), đảm bảo mọi invariant tổng thể.
 - Các thao tác thêm/sửa đều phải thông qua Circuit, không thể sửa trực tiếp entity con, bảo vệ SOA (Single Source of Authority).
+
+### 10. Việc sử dụng Enum cho ComponentType và PortDirection giúp gì cho hệ thống?
+- Việc sài Enum để hệ thống sẽ tự động định nghĩa các loại linh kiện và port rõ ràng, vì một phần ComponentType và PortDirection là chuỗi ký tự dữ liệu, nên việc sử dụng Enum giúp tránh lỗi nhập liệu (typo), hỗ trợ auto-complete, refactor, kiểm tra type chặt chẽ hơn.
+- So với việc sài str thuần thì domain sẽ bị lỗi nhập liệu nhiều hơn, khó kiểm soát logic nghiệp vụ.
+
+### 11. Sử dụng None trong ParameterValue, Constrain, Circuit có ý nghĩa gì?
+- Việc sử dụng None trong ParameterValue cho phép biểu diễn 1 vài tham số không có giá trị (ví dụ: linh kiện thì có thể không có tham số nào cả).
+- Sử dụng None trong Constrain giúp biểu diễn ràng buộc không có giá trị cụ thể (ví dụ: ràng buộc chỉ mang tính chất định danh).
+- Còn trong Circuit thì nếu hệ thống lỗi, entities sẽ cảnh báo lỗi, còn không thì Circuit sẽ không được tạo ra, nên việc sử dụng None trong Circuit không có ý nghĩa gì đặc biệt.
 
 
 ## Vai trò
