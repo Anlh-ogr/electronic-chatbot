@@ -123,13 +123,27 @@ class PinRef:
 
 
 # ===== ENTITIES =====
-""" Linh kiện vật lý trong mạch
-Đại diện cho một linh kiện với id, loại, danh sách chân và các tham số.
-Đảm bảo id không trống, pins là tuple và có ít nhất hai chân.
-Mọi tham số phải là ParameterValue, kiểm tra chặt chẽ kiểu dữ liệu.
-In/Out:
- * In: str (id), ComponentType (type), tuple[str, ...] (pins), dict[str, ParameterValue] (parameters)
- * Out: dict {"id": str, "type": str, "pins": tuple[str, ...], "parameters": dict[str, dict]}
+""" Linh kiện vật lý trong mạch điện tử.
+Đại diện cho một linh kiện với các trường:
+ * id: định danh duy nhất, không được trống.
+ * type: loại linh kiện (ComponentType).
+ * pins: danh sách chân, dạng tuple bất biến, tối thiểu 2 chân.
+ * parameters: dict các tham số, mỗi giá trị phải là ParameterValue.
+
+Đảm bảo bất biến (immutability) và kiểm tra chặt chẽ:
+ * Tất cả trường đều được xác thực khi khởi tạo.
+ * Mọi tham số phải là ParameterValue, đúng kiểu dữ liệu.
+ * Áp dụng các quy tắc nghiệp vụ: linh kiện phải có tham số bắt buộc (VD: resistor cần resistance).
+
+Input:
+ * id: str
+ * type: ComponentType
+ * pins: tuple[str, ...]
+ * parameters: dict[str, ParameterValue]
+
+Output:
+    dict: { "id": str, "type": str, "pins": tuple[str, ...], "parameters": dict[str, dict] }
+
 Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
 """
 @dataclass(frozen=True)
@@ -141,41 +155,53 @@ class Component:
     parameters: Dict[str, ParameterValue] = field(default_factory=dict)
     
     def __post_init__(self):
+        self._validate_identity()
+        self._validate_pins()
+
+        # kiểm tra param val : {"bjt_model": "2N2222"} sai -> phải {"bjt_model": ParameterValue("2N2222")}
+        params_copy = dict(self.parameters)
+        self._validate_param_types(params_copy)
+
+        # Set lại field với bản copy immutable cho business validation
+        object.__setattr__(self, "parameters", MappingProxyType(params_copy))
+        self._validate_required_param()
+    
+    def _validate_identity(self):
         if not self.id:
-            raise ValueError("Mã linh kiện không được trống")
+            raise ValueError("ID linh kiện không được trống")
+    
+    def _validate_pins(self):
         if not isinstance(self.pins, tuple):
-            raise TypeError(f"Pins của {self.id} phải là Tuple")
-        if not self.pins:
+            raise TypeError(f"Pins của {self.id} có dạng là tuple")
+        if len(self.pins) < 2:
             raise ValueError(f"Linh kiện {self.id} phải có ít nhất hai chân")
         
-        params_copy = dict(self.parameters)
-        for key, val in params_copy.items():
+    def _validate_param_types(self, parameters: dict = None):
+        if parameters is None:
+            parameters = self.parameters
+        for key, val in parameters.items():
             if not isinstance(val, ParameterValue):
                 raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue")
-                # {"bjt_model": "2N2222"} sai -> phải {"bjt_model": ParameterValue("2N2222")}
-
-        # Set lại field với bản copy immutable
-        object.__setattr__(self, "parameters", MappingProxyType(params_copy))
-        
-        # 3. Business validation
-        # TODO [PRIORITY]: Dời logic này sang rules.py (ComponentParameterRule)
-        # Lý do: Hard-code kiến thức điện tử ở entity làm giảm tính mở rộng
-        #  - Không tạo được partial circuit (mạch chưa hoàn thiện)
-        #  - Không tạo được custom topology (Darlington, multi-emitter BJT)
-        #  - Agent/AI phải biết chính xác tham số trước khi tạo component
-        
+    
+    def _validate_required_param(self):
         if self.type == ComponentType.RESISTOR:
             if "resistance" not in self.parameters:
-                raise ValueError(f"Resistor {self.id} phải có tham số 'resistance'")          
-        elif self.type == ComponentType.CAPACITOR:
+                raise ValueError(f"Resistor {self.id} phải có tham số resistance")
+        if self.type == ComponentType.CAPACITOR:
             if "capacitance" not in self.parameters:
-                raise ValueError(f"Capacitor {self.id} phải có tham số 'capacitance'")   
-        elif self.type == ComponentType.BJT:
+                raise ValueError(f"Capacitor {self.id} phải có tham số capacitance")
+        if self.type == ComponentType.INDUCTOR:
+            if "inductance" not in self.parameters:
+                raise ValueError(f"Inductor {self.id} phải có tham số inductance")
+        if self.type == ComponentType.BJT:
             if "model" not in self.parameters:
-                raise ValueError(f"BJT {self.id} phải có tham số 'model'")    
-        elif self.type == ComponentType.VOLTAGE_SOURCE:
+                raise ValueError(f"BJT {self.id} phải có tham số model")
+        if self.type == ComponentType.MOSFET:
+            if "model" not in self.parameters:
+                raise ValueError(f"MOSFET {self.id} phải có tham số model")
+        if self.type == ComponentType.VOLTAGE_SOURCE:
             if "voltage" not in self.parameters:
-                raise ValueError(f"Voltage source {self.id} phải có tham số 'voltage'")
+                raise ValueError(f"Voltage source {self.id} phải có tham số voltage")
             
     def to_dict(self) -> dict:
         return {
@@ -187,12 +213,23 @@ class Component:
 
 
 
-""" Dây nối giữa các chân linh kiện
-Đại diện cho một net (dây nối) với tên và danh sách các chân kết nối.
-Đảm bảo tên net không trống, danh sách chân hợp lệ, "không trùng lặp".
-In/Out:
- * In: str (name), tuple[PinRef, ...] (connected_pins)
- * Out: dict {"name": str, "connected_pins": list[dict]}
+""" Dây nối (Net) giữa các chân linh kiện trong mạch điện tử.
+Đại diện cho một net với các trường:
+ * name: tên net, không được trống.
+ * connected_pins: tuple các PinRef, mỗi phần tử là tham chiếu đến một chân linh kiện.
+
+Đảm bảo bất biến (immutability) và kiểm tra chặt chẽ:
+ * Tên net phải hợp lệ, không rỗng.
+ * Danh sách chân phải là tuple PinRef, tối thiểu 2 chân.
+ * Không có chân nào bị lặp lại (mỗi chân chỉ xuất hiện một lần trong net).
+
+Input:
+ * name: str
+ * connected_pins: tuple[PinRef, ...]
+
+Output:
+    dict: { "name": str, "connected_pins": list[dict]}
+
 Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
 """
 @dataclass(frozen=True)
@@ -201,22 +238,37 @@ class Net:
     connected_pins: Tuple[PinRef, ...]
     
     def __post_init__(self):
+        self._validate_identity()
+        self._validate_pin_count()
+        self._validate_pin_refs()
+        self._validate_no_duplicate_pins()
+    
+    def _validate_identity(self):
         if not self.name:
             raise ValueError("Tên net không được trống")
-        if not self.connected_pins:
-            raise ValueError(f"Net '{self.name}' phải có ít nhất hai pin")
-        
+    
+    def _validate_pin_count(self):
+        allowed_single = {"INPUT", "OUTPUT", "POWER", "GROUND"}
+        if self.name.upper() in allowed_single:
+            if len(self.connected_pins) < 1:
+                raise ValueError(f"Net '{self.name}' phải có ít nhất một chân được kết nối (cần ít nhất một PinRef trong connected_pins)")
+        else:
+            if len(self.connected_pins) < 2:
+                raise ValueError(f"Net '{self.name}' không có chân nào được kết nối (cần ít nhất hai PinRef trong connected_pins)")
+    
+    def _validate_pin_refs(self):
         for ref in self.connected_pins:
             if not isinstance(ref, PinRef):
-                raise TypeError(f"Mỗi phần tử trong connected_pins phải là PinRef, nhận {type(ref)}")
-        
+                raise TypeError(f"Phần tử '{ref}' trong connected_pins của Net '{self.name}' phải là PinRef, nhận {type(ref)}")
+    
+    def _validate_no_duplicate_pins(self):
         seen = set()
         for ref in self.connected_pins:
             key = (ref.component_id, ref.pin_name)
             if key in seen:
-                raise ValueError(f"Net '{self.name}' chứa nhiều lần cùng một chân: {ref.component_id}.{ref.pin_name}")
+                raise ValueError(f"Net '{self.name}' có chân '{ref.component_id}.{ref.pin_name}' bị lặp lại nhiều lần trong connected_pins (mỗi chân chỉ được xuất hiện một lần)")
             seen.add(key)
-            
+          
     def to_dict(self) -> dict:
         return {
             "name": self.name,
@@ -293,24 +345,25 @@ class Constraint:
 Toàn bộ mạch điện tử (Aggregate Root)
 Đại diện cho toàn bộ mạch điện tử, kiểm soát và xác thực tất cả thành phần: linh kiện, dây nối (net), cổng (port), ràng buộc (constraint).
 - Đảm bảo bất biến (immutability):
-    * Sử dụng dataclass(frozen=True) và MappingProxyType để ngăn chặn sửa đổi trực tiếp từ bên ngoài.
-    * Mọi trường dữ liệu đều là immutable, bảo vệ Source of Truth (SOA).
+  * Sử dụng dataclass(frozen=True) và MappingProxyType để ngăn chặn sửa đổi trực tiếp từ bên ngoài.
+  * Mọi trường dữ liệu đều là immutable, bảo vệ Source of Truth (SOA).
 - Kiểm soát toàn vẹn dữ liệu:
-    * Xác thực tên mạch không được rỗng.
-    * Mỗi component/net/port/constraint phải có key khớp với id/name.
-    * Net: mọi chân phải tham chiếu đúng linh kiện và pin.
-    * Port: phải kết nối đến net hợp lệ.
-    * Không có pin nào thuộc nhiều net (duy nhất).
+  * Xác thực tên mạch không được rỗng.
+  * Mỗi component/net/port/constraint phải có key khớp với id/name.
+  * Net: mọi chân phải tham chiếu đúng linh kiện và pin.
+  * Port: phải kết nối đến net hợp lệ.
+  * Không có pin nào thuộc nhiều net (duy nhất).
 - Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
 
-Input:
+In/Out:
+ * In:
     - name: str
     - id: Optional[str]
     - _components: Dict[str, Component] (key là id linh kiện)
     - _nets: Dict[str, Net] (key là tên net)
     - _ports: Dict[str, Port] (key là tên port)
     - _constraints: Dict[str, Constraint] (key là tên constraint)
-Output:
+ * Out:
     - dict: {
         "name": str,
         "components": list[dict],
@@ -345,23 +398,34 @@ class Circuit:
     
     def __post_init__(self):
         # Tạo bản copy immutable để ngăn chặn mutable phá vỡ SOA
-        object.__setattr__(self, "_components", dict(self._components))
-        object.__setattr__(self, "_nets", dict(self._nets))
-        object.__setattr__(self, "_ports", dict(self._ports))
-        object.__setattr__(self, "_constraints", dict(self._constraints))
+        self._freeze_internal_collection()
         # Bọc Dict bằng MappingProxyType để biến thành read-only
+        self._expose_read_only_views()
+        # Thực hiện xác thực cơ bản
+        self.validate_basic()
+        
+    def _freeze_internal_collection(self):
         object.__setattr__(self, "components", MappingProxyType(self._components))
         object.__setattr__(self, "nets", MappingProxyType(self._nets))
         object.__setattr__(self, "ports", MappingProxyType(self._ports))
         object.__setattr__(self, "constraints", MappingProxyType(self._constraints))
-        # Thực hiện xác thực cơ bản
-        self.validate_basic()
-
+    
+    def _expose_read_only_views(self):
+        object.__setattr__(self, "components", MappingProxyType(self._components))
+        object.__setattr__(self, "nets", MappingProxyType(self._nets))
+        object.__setattr__(self, "ports", MappingProxyType(self._ports))
+        object.__setattr__(self, "constraints", MappingProxyType(self._constraints))
+        
     def validate_basic(self) -> None:
         errors = []     # Thu thập lỗi
+        self._validate_identity_and_keys(errors)
+        self._validate_references(errors)
+        self._validate_unique_connection(errors)
+        self._raise_validation_errors(errors)
         
+    def _validate_identity_and_keys(self, errors = list[str]) -> None:
         if not self.name:
-            errors.append("Tên mạch không được trống")
+                errors.append("Tên mạch không được trống")
 
         for comp_id, comp in self.components.items():
             if comp_id != comp.id:
@@ -379,6 +443,7 @@ class Circuit:
             if constraint_key != constraint.name:
                 errors.append(f"Constraint key '{constraint_key}' không khớp với tên của Constraint: '{constraint.name}'")
         
+    def _validate_references(self, errors = list[str]) -> None:
         for net_key, net_obj in self.nets.items():
             for ref in net_obj.connected_pins:
                 if ref.component_id not in self.components:
@@ -392,7 +457,10 @@ class Circuit:
             if port_obj.net_name not in self.nets:
                 errors.append(f"Port '{port_key}' tham chiếu đến net không tồn tại: '{port_obj.net_name}'")
         
-        pin_to_net = {}     # kiểm tra trùng lặp
+    def _validate_unique_connection(self, errors = list[str]) -> None:
+        pin_to_net = {}
+        
+        # Kiểm tra mỗi pin chỉ thuộc về một net duy nhất
         for net_key, net_obj in self.nets.items():
             for ref in net_obj.connected_pins:
                 pin_key = (ref.component_id, ref.pin_name)
@@ -403,6 +471,7 @@ class Circuit:
                     )
                 pin_to_net[pin_key] = net_key
         
+    def _raise_validation_errors(self, errors: list[str]) -> None:
         if errors:
             error_message = "Xác thực mạch thất bại:\n" + "\n".join([f"  - {e}" for e in errors])
             raise ValueError(error_message)
