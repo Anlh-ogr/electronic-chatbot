@@ -166,23 +166,24 @@ class Component:
         object.__setattr__(self, "parameters", MappingProxyType(params_copy))
         self._validate_required_param()
     
+    # hàm kiểm tra id
     def _validate_identity(self):
         if not self.id:
             raise ValueError("ID linh kiện không được trống")
-    
+    # hàm kiểm tra pins và số lượng pins
     def _validate_pins(self):
         if not isinstance(self.pins, tuple):
             raise TypeError(f"Pins của {self.id} có dạng là tuple")
         if len(self.pins) < 2:
             raise ValueError(f"Linh kiện {self.id} phải có ít nhất hai chân")
-        
+    # hàm kiểm tra kiểu tham số
     def _validate_param_types(self, parameters: dict = None):
         if parameters is None:
             parameters = self.parameters
         for key, val in parameters.items():
             if not isinstance(val, ParameterValue):
                 raise TypeError(f"Parameter '{key}' của {self.id} phải là ParameterValue")
-    
+    # hàm kiểm tra tham số bắt buộc theo loại linh kiện
     def _validate_required_param(self):
         if self.type == ComponentType.RESISTOR:
             if "resistance" not in self.parameters:
@@ -202,7 +203,7 @@ class Component:
         if self.type == ComponentType.VOLTAGE_SOURCE:
             if "voltage" not in self.parameters:
                 raise ValueError(f"Voltage source {self.id} phải có tham số voltage")
-            
+    # chuyển obj -> dict
     def to_dict(self) -> dict:
         return {
             "id": self.id,
@@ -243,10 +244,11 @@ class Net:
         self._validate_pin_refs()
         self._validate_no_duplicate_pins()
     
+    # kiểm tra tên
     def _validate_identity(self):
         if not self.name:
             raise ValueError("Tên net không được trống")
-    
+    # kiểm tra số lượng chân (2 cho linh kiện - 1 cho port)
     def _validate_pin_count(self):
         allowed_single = {"INPUT", "OUTPUT", "POWER", "GROUND"}
         if self.name.upper() in allowed_single:
@@ -254,13 +256,13 @@ class Net:
                 raise ValueError(f"Net '{self.name}' phải có ít nhất một chân được kết nối (cần ít nhất một PinRef trong connected_pins)")
         else:
             if len(self.connected_pins) < 2:
-                raise ValueError(f"Net '{self.name}' không có chân nào được kết nối (cần ít nhất hai PinRef trong connected_pins)")
-    
+                raise ValueError(f"Net '{self.name}' không3 có chân nào được kết nối (cần ít nhất hai PinRef trong connected_pins)")
+    # kiểm tra tham chiếu
     def _validate_pin_refs(self):
         for ref in self.connected_pins:
             if not isinstance(ref, PinRef):
                 raise TypeError(f"Phần tử '{ref}' trong connected_pins của Net '{self.name}' phải là PinRef, nhận {type(ref)}")
-    
+    # kiểm tra trùng chân
     def _validate_no_duplicate_pins(self):
         seen = set()
         for ref in self.connected_pins:
@@ -268,7 +270,7 @@ class Net:
             if key in seen:
                 raise ValueError(f"Net '{self.name}' có chân '{ref.component_id}.{ref.pin_name}' bị lặp lại nhiều lần trong connected_pins (mỗi chân chỉ được xuất hiện một lần)")
             seen.add(key)
-          
+    # chuyển obj -> dict
     def to_dict(self) -> dict:
         return {
             "name": self.name,
@@ -403,7 +405,7 @@ class Circuit:
         self._expose_read_only_views()
         # Thực hiện xác thực cơ bản
         self.validate_basic()
-        
+    
     def _freeze_internal_collection(self):
         object.__setattr__(self, "components", MappingProxyType(self._components))
         object.__setattr__(self, "nets", MappingProxyType(self._nets))
@@ -422,7 +424,8 @@ class Circuit:
         self._validate_references(errors)
         self._validate_unique_connection(errors)
         self._raise_validation_errors(errors)
-        
+    
+    # kiểm tra tên-key
     def _validate_identity_and_keys(self, errors = list[str]) -> None:
         if not self.name:
                 errors.append("Tên mạch không được trống")
@@ -442,7 +445,7 @@ class Circuit:
         for constraint_key, constraint in self.constraints.items():
             if constraint_key != constraint.name:
                 errors.append(f"Constraint key '{constraint_key}' không khớp với tên của Constraint: '{constraint.name}'")
-        
+    # kiểm tra tham chiếu  
     def _validate_references(self, errors = list[str]) -> None:
         for net_key, net_obj in self.nets.items():
             for ref in net_obj.connected_pins:
@@ -456,7 +459,7 @@ class Circuit:
         for port_key, port_obj in self.ports.items():
             if port_obj.net_name not in self.nets:
                 errors.append(f"Port '{port_key}' tham chiếu đến net không tồn tại: '{port_obj.net_name}'")
-        
+    # kiểm tra trùng chân
     def _validate_unique_connection(self, errors = list[str]) -> None:
         pin_to_net = {}
         
@@ -470,18 +473,18 @@ class Circuit:
                         f"'{pin_to_net[pin_key]}' và '{net_key}'"
                     )
                 pin_to_net[pin_key] = net_key
-        
+    # báo lỗi 
     def _raise_validation_errors(self, errors: list[str]) -> None:
         if errors:
             error_message = "Xác thực mạch thất bại:\n" + "\n".join([f"  - {e}" for e in errors])
             raise ValueError(error_message)
-
+    # lấy component/net theo id/name
     def get_component(self, component_id: str) -> Optional[Component]:
         return self.components.get(component_id)
-    
+    # lấy net theo tên
     def get_net(self, net_name: str) -> Optional[Net]:
         return self.nets.get(net_name)
-
+    # thêm/sửa component, trả về Circuit mới
     def with_component(self, component: Component) -> "Circuit":
         new_components = dict(self.components)      # Tạo bản copy mutable
         new_components[component.id] = component    # Thêm/sửa component
@@ -493,7 +496,7 @@ class Circuit:
             _ports=dict(self.ports),            # Tương tự, copy từ proxy để tránh mutable phá vỡ SOA
             _constraints=dict(self.constraints) # Copy từ proxy, không dùng reference trực tiếp
         )
-    
+    # chuyển obj -> dict
     def to_dict(self): 
         return {
             "name": self.name,
