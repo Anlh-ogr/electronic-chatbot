@@ -5,6 +5,7 @@ Không phải Entity. Entity là sự thật trong code (truth in code), IR là 
 Dùng để chuyển đổi, lưu trữ, truyền tải dữ liệu mạch điện tử giữa mà không chứa logic nghiệp vụ.
  * Sử dụng frozen = True đảm bảo tính bất biến tránh sửa đổi ngoài ý muốn.
  * Sử dụng thêm MappingProxyType để cung cấp dict bất biến cho các layer khác (read-only view).
+ * Hỗ trợ metadata mở rộng cho Component: KiCad (library_id, symbol_name, footprint, symbol_version, render_style).
 Phụ thuộc vào các đối tượng như Component, Net, Port, Constraint, Circuit, v.v.
 """
 
@@ -114,9 +115,9 @@ class CircuitIRSerializer:
             ]
         }
     
-    # đưa thông tin linh kiện vào dict
+    # đưa thông tin linh kiện vào dict (bao gồm KiCad metadata nếu có)
     def _components_to_dict(comp: Component) -> Dict[str, Any]:
-        return {
+        result = {
             "id": comp.id,
             "type": comp.type.value,
             "pins": list(comp.pins),
@@ -125,6 +126,20 @@ class CircuitIRSerializer:
                 for key, val in comp.parameters.items()              
             }
         }
+        
+        # Thêm KiCad metadata nếu có
+        if comp.library_id:
+            result["library_id"] = comp.library_id
+        if comp.symbol_name:
+            result["symbol_name"] = comp.symbol_name
+        if comp.footprint:
+            result["footprint"] = comp.footprint
+        if comp.symbol_version:
+            result["symbol_version"] = comp.symbol_version
+        if comp.render_style and len(comp.render_style) > 0:
+            result["render_style"] = dict(comp.render_style)
+        
+        return result
     # đưa thông tin net vào dict
     def _nets_to_dict(net: Net) -> Dict[str, Any]:
         return {
@@ -242,6 +257,18 @@ class CircuitIRSerializer:
             # kiểm tra parameters nếu có
             if "parameters" in comp and not isinstance(comp["parameters"], dict):
                 errors.append(f"component[{i}].parameters phải là dict")
+            
+            # Kiểm tra KiCad metadata nếu có (optional)
+            if "library_id" in comp and comp["library_id"] is not None and not isinstance(comp["library_id"], str):
+                errors.append(f"component[{i}].library_id phải là str")
+            if "symbol_name" in comp and comp["symbol_name"] is not None and not isinstance(comp["symbol_name"], str):
+                errors.append(f"component[{i}].symbol_name phải là str")
+            if "footprint" in comp and comp["footprint"] is not None and not isinstance(comp["footprint"], str):
+                errors.append(f"component[{i}].footprint phải là str")
+            if "symbol_version" in comp and comp["symbol_version"] is not None and not isinstance(comp["symbol_version"], str):
+                errors.append(f"component[{i}].symbol_version phải là str")
+            if "render_style" in comp and comp["render_style"] is not None and not isinstance(comp["render_style"], dict):
+                errors.append(f"component[{i}].render_style phải là dict")
     # Kiểm tra trường nets: phải là list, mỗi phần tử là dict có name, connected_pins (list các dict có component_id, pin_name)
     def _validate_nets(nets: Any, errors: list[str]) -> None:
         if not isinstance(nets, list):
@@ -394,7 +421,13 @@ class CircuitIRSerializer:
                 parameters={
                     key: ParameterValue(value=val["value"], unit=val.get("unit"))
                     for key, val in data.get("parameters", {}).items()
-                }
+                },
+                # KiCad metadata (optional)
+                library_id=data.get("library_id"),
+                symbol_name=data.get("symbol_name"),
+                footprint=data.get("footprint"),
+                symbol_version=data.get("symbol_version"),
+                render_style=data.get("render_style", {})
             )
             components[comp.id] = comp
         return components
@@ -498,7 +531,13 @@ class CircuitIRSerializer:
                 parameters={
                     key: ParameterValue(value=val["value"], unit=val.get("unit"))
                     for key, val in comp_data.get("parameters", {}).items()
-                }
+                },
+                # KiCad metadata (optional)
+                library_id=comp_data.get("library_id"),
+                symbol_name=comp_data.get("symbol_name"),
+                footprint=comp_data.get("footprint"),
+                symbol_version=comp_data.get("symbol_version"),
+                render_style=comp_data.get("render_style", {})
             )
             components[comp.id] = comp
         return components
