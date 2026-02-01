@@ -22,7 +22,7 @@ dataclasses dataclass: gọi frozen = True để tạo bất biến (immutabilit
 dataclasses field: tạo trường dữ liệu mạch định là một dict bất biến (immutable dict) để ngăn chặn việc sửa đổi trực tiếp từ bên ngoài.
 enum: tự động định nghĩa các hằng số cho từng loại linh kiện, hướng port, ép do người/AI code phải đúng giá trị định nghĩa sẵn (ComponentType.Resistor, v.v).
 mappingproxytype: frozen=True chỉ bảo vệ các biến đơn giản, có thể bị can thiệp do người. MappingProxy sẽ bọc Dict và biến nó thành read-only, mọi hành động sửa đổi đều bị báo lỗi ngay lập tức.
-typing: cung cấp thông tin về kiểu dữ liệu cho các biến, hàm:
+typing: cung cấp thông tin về kiểu dữ liệu cho các biến, hàm, hỗ trợ syntax ":" cho biến và "->" cho giá trị trả về của hàm.
  * Dict[str, param value]: dùng key là str và value là object. VD: {"resistance": ParameterValue(1000, "Ohm")}.
  * Optional[str]: biến có thể là str hoặc None. VD: {"unit": "Ohm"} hoặc {"unit": None}.
  * Tuple[str, ...]: dùng tuple thay list vì tuple có tính bất biến (không thêm bớt các phần tử sau khi tạo) phù hợp với danh sách Pin linh kiện.
@@ -129,20 +129,44 @@ class PinRef:
  * type: loại linh kiện (ComponentType).
  * pins: danh sách chân, dạng tuple bất biến, tối thiểu 2 chân.
  * parameters: dict các tham số, mỗi giá trị phải là ParameterValue.
+ 
+KiCad Metadata (hỗ trợ pipeline mới với symbol chuẩn KiCad):
+ * library_id: định danh thư viện KiCad (VD: "Device", "Amplifier_Operational").
+ * symbol_name: tên symbol trong KiCad (VD: "R", "C", "Q_NPN_BCE").
+ * footprint: tham chiếu footprint PCB (VD: "Resistor_SMD:R_0805_2012Metric").
+ * symbol_version: phiên bản/biến thể của thư viện symbol.
+ * render_style: thuộc tính render tùy chỉnh (vị trí, góc xoay, style,...).
 
 Đảm bảo bất biến (immutability) và kiểm tra chặt chẽ:
  * Tất cả trường đều được xác thực khi khởi tạo.
  * Mọi tham số phải là ParameterValue, đúng kiểu dữ liệu.
  * Áp dụng các quy tắc nghiệp vụ: linh kiện phải có tham số bắt buộc (VD: resistor cần resistance).
+ * KiCad metadata được validate: library_id yêu cầu symbol_name, các trường phải đúng kiểu.
+ * render_style được freeze thành immutable dict.
 
 Input:
  * id: str
  * type: ComponentType
  * pins: tuple[str, ...]
  * parameters: dict[str, ParameterValue]
+ * library_id: Optional[str]
+ * symbol_name: Optional[str]
+ * footprint: Optional[str]
+ * symbol_version: Optional[str]
+ * render_style: Optional[dict[str, Any]]
 
 Output:
-    dict: { "id": str, "type": str, "pins": tuple[str, ...], "parameters": dict[str, dict] }
+    dict: { 
+        "id": str, 
+        "type": str, 
+        "pins": tuple[str, ...], 
+        "parameters": dict[str, dict],
+        "library_id": str (nếu có),
+        "symbol_name": str (nếu có),
+        "footprint": str (nếu có),
+        "symbol_version": str (nếu có),
+        "render_style": dict (nếu có)
+    }
 
 Chuyển đổi object thành dict đơn giản để truyền qua API, lưu trữ hoặc hiển thị UI.
 """
@@ -153,6 +177,13 @@ class Component:
     pins: Tuple[str, ...]
     # Ngăn chặn việc immutable bị phá (circuit.component.clear()/circuit.component["R1"]=some_fake_component -> phá vỡ SOA)
     parameters: Dict[str, ParameterValue] = field(default_factory=dict)
+    
+    # Các trường dữ liệu đặc tả (metadata) trong KiCad phục vụ việc tích hợp và hiển thị linh kiện
+    library_id: Optional[str] = None                                      # định dạng thư viện Kicad (thư viện trong folder ..\apps\api\resources\kicad\symbols\version)
+    symbol_name: Optional[str] = None                                     # tên ký hiệu linh kiện
+    footprint: Optional[str] = None                                       # tham chiếu PCB footprint
+    symbol_version: Optional[str] = None                                  # phiên bản thư viện
+    render_style: Optional[Dict[str, Any]] = field(default_factory=dict)  # thuộc tính render tùy chỉnh (vị trí, góc xoay, style,...)
     
     def __post_init__(self):
         self._validate_identity()
@@ -165,6 +196,16 @@ class Component:
         # Set lại field với bản copy immutable cho business validation
         object.__setattr__(self, "parameters", MappingProxyType(params_copy))
         self._validate_required_param()
+        
+        # Xác thực và đóng băng dữ liệu
+        self._validate_kicad_metadata()
+        
+        # Đóng băng render_style để đảm bảo tính bất biến
+        if self.render_style:
+            render_style_copy = dict(self.render_style)
+            object.__setattr__(self, "render_style", MappingProxyType(render_style_copy))
+        else:
+            object.__setattr__(self, "render_style", MappingProxyType({}))
     
     # hàm kiểm tra id
     def _validate_identity(self):
@@ -203,14 +244,47 @@ class Component:
         if self.type == ComponentType.VOLTAGE_SOURCE:
             if "voltage" not in self.parameters:
                 raise ValueError(f"Voltage source {self.id} phải có tham số voltage")
-    # chuyển obj -> dict
+    # hàm kiểm tra dữ liệu linh kiện (kicad metadata)
+    def _validate_kicad_metadata(self):
+        # Nếu symbol_name được cung cấp, library_id phải được cung cấp
+        if self.library_id and not self.symbol_name:
+            raise ValueError(f"Component {self.id}: library_id được cung cấp nhưng thiếu symbol_name")
+        
+        # kiểm tra xác thực kiểu dữ liệu metadata (str)
+        if self.library_id is not None and not isinstance(self.library_id, str):
+            raise TypeError(f"Component {self.id}: library_id phải là str, nhận {type(self.library_id)}")
+        if self.symbol_name is not None and not isinstance(self.symbol_name, str):
+            raise TypeError(f"Component {self.id}: symbol_name phải là str, nhận {type(self.symbol_name)}")
+        if self.footprint is not None and not isinstance(self.footprint, str):
+            raise TypeError(f"Component {self.id}: footprint phải là str, nhận {type(self.footprint)}")
+        if self.symbol_version is not None and not isinstance(self.symbol_version, str):
+            raise TypeError(f"Component {self.id}: symbol_version phải là str, nhận {type(self.symbol_version)}")
+        
+        # kiểm tra xác thực kiểu dữ liệu render_style (dict)
+        if self.render_style is not None and not isinstance(self.render_style, dict):
+            raise TypeError(f"Component {self.id}: render_style phải là dict, nhận {type(self.render_style)}")
+    # chuyển obj -> dict (API)
     def to_dict(self) -> dict:
-        return {
+        result = {
             "id": self.id,
             "type": self.type.value,
             "pins": self.pins,
             "parameters": {key: val.to_dict() for key, val in self.parameters.items()}
         }
+        
+        # Thêm metadata KiCad nếu có
+        if self.library_id:
+            result["library_id"] = self.library_id
+        if self.symbol_name:
+            result["symbol_name"] = self.symbol_name
+        if self.footprint:
+            result["footprint"] = self.footprint
+        if self.symbol_version:
+            result["symbol_version"] = self.symbol_version
+        if self.render_style and len(self.render_style) > 0:
+            result["render_style"] = dict(self.render_style)
+        
+        return result
 
 
 
