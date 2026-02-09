@@ -2,11 +2,30 @@
 apps/api/.venv/
 **/__pycache__/
 *.pyc
-
+*.pyo
 
 # .env local files
 apps/api/.env.local
+apps/web/.env.local
 
+# Generated artifacts (auto-created by API)
+apps/api/artifacts/exports/sessions/
+apps/api/artifacts/exports/*.kicad_sch
+apps/api/artifacts/exports/svg/
 
-# Backup template_builders
-apps/api/app/domains/circuits/templates.py
+# Static generated schematics
+apps/api/static/schematics/*.zip
+apps/api/static/schematics_export/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Coverage
+.coverage
+htmlcov/
+*.cover
