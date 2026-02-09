@@ -94,7 +94,7 @@ class CircuitIRSerializer:
     @staticmethod
     def to_dict(ir: CircuitIR) -> Dict[str, Any]:
         circuit = ir.circuit
-        return {
+        result = {
             "meta": dict(ir.meta),
             "intent_snapshot": dict(ir.intent_snapshot),
             "components": [
@@ -114,6 +114,22 @@ class CircuitIRSerializer:
                 for constraint in circuit.constraints.values()
             ]
         }
+        # Thêm template metadata nếu có
+        if circuit.topology_type is not None:
+            result["topology_type"] = circuit.topology_type
+        if circuit.category is not None:
+            result["category"] = circuit.category
+        if circuit.template_id is not None:
+            result["template_id"] = circuit.template_id
+        if circuit.tags:
+            result["tags"] = list(circuit.tags)
+        if circuit.description is not None:
+            result["description"] = circuit.description
+        if circuit.parametric is not None:
+            result["parametric"] = dict(circuit.parametric)
+        if circuit.pcb_hints is not None:
+            result["pcb_hints"] = dict(circuit.pcb_hints)
+        return result
     
     # đưa thông tin linh kiện vào dict (bao gồm KiCad metadata nếu có)
     def _components_to_dict(comp: Component) -> Dict[str, Any]:
@@ -126,7 +142,6 @@ class CircuitIRSerializer:
                 for key, val in comp.parameters.items()              
             }
         }
-        
         # Thêm KiCad metadata nếu có
         if comp.library_id:
             result["library_id"] = comp.library_id
@@ -158,12 +173,21 @@ class CircuitIRSerializer:
         }
     # đưa thông tin ràng buộc vào dict    
     def _constraints_to_dict(constraint: Constraint) -> Dict[str, Any]:
-        return {
+        result = {
             "name": constraint.name,
             "value": constraint.value,
             "unit": constraint.unit
         }
-
+        # Thêm các trường tùy chọn nếu có
+        if constraint.constraint_type is not None:
+            result["constraint_type"] = constraint.constraint_type
+        if constraint.target is not None:
+            result["target"] = constraint.target
+        if constraint.min_value is not None:
+            result["min_value"] = constraint.min_value
+        if constraint.max_value is not None:
+            result["max_value"] = constraint.max_value
+        return result
 
 
     """ Chuyển đổi một dict (dữ liệu IR đã được serialize) thành đối tượng CircuitIR.
@@ -189,7 +213,6 @@ class CircuitIRSerializer:
         )
     
     
-    
     """ Kiểm tra schema của dict IR (dạng JSON/dict) và trả về danh sách lỗi nếu có.
         Hàm này sẽ gọi các hàm kiểm tra thành phần con để xác thực từng phần của IR:
         * meta
@@ -201,7 +224,7 @@ class CircuitIRSerializer:
     """
     @staticmethod
     def validate_schema(ir_data: Dict[str, Any]) -> List[str]:
-        errors: list[str]  # lưu trữ lỗi
+        errors: list[str] = []  # lưu trữ lỗi
         
         CircuitIRSerializer.__validate_required_sections(ir_data, errors)
         CircuitIRSerializer._validate_meta(ir_data.get("meta"), errors)
@@ -355,12 +378,24 @@ class CircuitIRSerializer:
         ports = CircuitIRSerializer._build_ports(ir_data["ports"])
         constraints = CircuitIRSerializer._build_constraints(ir_data["constraints"])
 
+        # Khôi phục template metadata từ ir_data nếu có
+        tags_raw = ir_data.get("tags", [])
+        tags = tuple(tags_raw) if isinstance(tags_raw, list) else ()
+
         return Circuit(
             name=ir_data["meta"].get("circuit_name", "unnamed"),
+            id=ir_data["meta"].get("circuit_id"),
             _components=components,
             _nets=nets,
             _ports=ports,
-            _constraints=constraints
+            _constraints=constraints,
+            topology_type=ir_data.get("topology_type"),
+            category=ir_data.get("category"),
+            template_id=ir_data.get("template_id"),
+            tags=tags,
+            description=ir_data.get("description"),
+            parametric=ir_data.get("parametric"),
+            pcb_hints=ir_data.get("pcb_hints"),
         )
         
     
@@ -389,7 +424,7 @@ class CircuitIRSerializer:
         
         # Tạo circuit_id nếu không có (s-ms sinh 1000 lần/s)
         if circuit_id is None:
-            circuit_id = f"circuit-{int(datetime.utcnow().timestamp()*1000)}"
+            circuit_id = circuit.id or f"circuit-{int(datetime.utcnow().timestamp()*1000)}"
         
         return CircuitIR(
             circuit=circuit,
@@ -409,7 +444,7 @@ class CircuitIRSerializer:
         required = {"meta", "components", "nets", "ports", "constraints"}
         missing = required - ir_data.keys()
         if missing:
-            return ValueError(f"IR thiếu phần bắt buộc: {', '.join(missing)}")
+            raise ValueError(f"IR thiếu phần bắt buộc: {', '.join(missing)}")
     # xây dựng các linh kiện từ dict      
     def _build_components(comp_data: list[dict]) -> dict[str, Component]:
         components = {} # lưu trữ linh kiện
@@ -451,7 +486,7 @@ class CircuitIRSerializer:
     def _build_ports(port_data: list[dict]) -> dict[str, Port]:
         ports = {}
         for data in port_data:
-            direction = port_data.get("direction")
+            direction = data.get("direction")
             port = Port(
                 name=data["name"],
                 net_name=data["net_name"],
@@ -466,7 +501,11 @@ class CircuitIRSerializer:
             constraint = Constraint(
                 name=data["name"],
                 value=data["value"],
-                unit=data.get("unit")
+                unit=data.get("unit"),
+                constraint_type=data.get("constraint_type"),
+                target=data.get("target"),
+                min_value=data.get("min_value"),
+                max_value=data.get("max_value"),
             )
             constraints[constraint.name] = constraint
         return constraints
@@ -488,7 +527,6 @@ class CircuitIRSerializer:
     def serialize(circuit: Circuit) -> Dict[str, Any]:
         ir = CircuitIRSerializer.build_ir(circuit)
         return CircuitIRSerializer.to_dict(ir)
-    
     
     
     """ Chuyển đổi dict IR (dạng JSON/dict) thành entity Circuit.
@@ -517,7 +555,8 @@ class CircuitIRSerializer:
             components=components,
             nets=nets,
             ports=ports,
-            constraints=constraints
+            constraints=constraints,
+            ir_data=ir_data,
         )
         
     # giải mã component từ dict
@@ -576,7 +615,11 @@ class CircuitIRSerializer:
             constraint = Constraint(
                 name=const_data["name"],
                 value=const_data["value"],
-                unit=const_data.get("unit")
+                unit=const_data.get("unit"),
+                constraint_type=const_data.get("constraint_type"),
+                target=const_data.get("target"),
+                min_value=const_data.get("min_value"),
+                max_value=const_data.get("max_value"),
             )
             constraints[constraint.name] = constraint
         return constraints
@@ -586,15 +629,31 @@ class CircuitIRSerializer:
         components: dict,
         nets: dict,
         ports: dict,
-        constraints: dict
+        constraints: dict,
+        ir_data: Optional[dict] = None,
     ) -> Circuit:
+        # Khôi phục template metadata từ ir_data nếu có
+        extra = {}
+        if ir_data:
+            tags_raw = ir_data.get("tags", [])
+            extra = {
+                "topology_type": ir_data.get("topology_type"),
+                "category": ir_data.get("category"),
+                "template_id": ir_data.get("template_id"),
+                "tags": tuple(tags_raw) if isinstance(tags_raw, list) else (),
+                "description": ir_data.get("description"),
+                "parametric": ir_data.get("parametric"),
+                "pcb_hints": ir_data.get("pcb_hints"),
+            }
     
         return Circuit(
             name=meta.get("circuit_name", "unnamed"),
+            id=meta.get("circuit_id"),
             _components=components,
             _nets=nets,
             _ports=ports,
-            _constraints=constraints
+            _constraints=constraints,
+            **extra,
         )
     
     
