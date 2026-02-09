@@ -1,0 +1,119 @@
+{
+  "category": "mosfet_amplifier",
+  "description": "MOSFET/FET Amplifier Templates - Common Source (CS), Common Drain (CD), Common Gate (CG)",
+  "templates": [
+    {
+      "template_id": "FET-CS-01",
+      "topology_type": "mosfet_cs_vdiv_bypass_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Voltage Divider Bias with Source Bypass",
+      "file": "mosfet_cs_vdiv_bypass_amplifier.json"
+    },
+    {
+      "template_id": "FET-CS-02",
+      "topology_type": "mosfet_cs_vdiv_unbypassed_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Voltage Divider Bias Unbypassed Source",
+      "file": "mosfet_cs_vdiv_unbypassed_amplifier.json"
+    },
+    {
+      "template_id": "FET-CS-03",
+      "topology_type": "mosfet_cs_fixedgate_bypass_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Fixed Gate Bias with Bypass",
+      "file": "mosfet_cs_fixedgate_bypass_amplifier.json"
+    },
+    {
+      "template_id": "FET-CS-04",
+      "topology_type": "mosfet_cs_fixedgate_unbypassed_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Fixed Gate Bias Unbypassed",
+      "file": "mosfet_cs_fixedgate_unbypassed_amplifier.json"
+    },
+    {
+      "template_id": "FET-CS-05",
+      "topology_type": "mosfet_cs_externally_biased_bypass_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Externally Biased with Bypass",
+      "file": "mosfet_cs_externally_biased_bypass_amplifier.json"
+    },
+    {
+      "template_id": "FET-CS-06",
+      "topology_type": "mosfet_cs_externally_biased_ac_coupled_amplifier",
+      "sub_category": "common_source",
+      "description": "MOSFET Common Source - Externally Biased AC Coupled",
+      "file": "mosfet_cs_externally_biased_ac_coupled_amplifier.json"
+    },
+    {
+      "template_id": "FET-CD-01",
+      "topology_type": "mosfet_cd_vdiv_buffer",
+      "sub_category": "common_drain",
+      "description": "MOSFET Common Drain (Source Follower) - Voltage Divider Bias",
+      "file": "mosfet_cd_vdiv_buffer.json"
+    },
+    {
+      "template_id": "FET-CD-02",
+      "topology_type": "mosfet_cd_vdiv_nocout_buffer",
+      "sub_category": "common_drain",
+      "description": "MOSFET Common Drain - Voltage Divider Bias without Output Capacitor",
+      "file": "mosfet_cd_vdiv_nocout_buffer.json"
+    },
+    {
+      "template_id": "FET-CD-03",
+      "topology_type": "mosfet_cd_fixedgate_buffer",
+      "sub_category": "common_drain",
+      "description": "MOSFET Common Drain - Fixed Gate Bias Buffer",
+      "file": "mosfet_cd_fixedgate_buffer.json"
+    },
+    {
+      "template_id": "FET-CD-04",
+      "topology_type": "mosfet_cd_externally_biased_buffer",
+      "sub_category": "common_drain",
+      "description": "MOSFET Common Drain - Externally Biased Buffer",
+      "file": "mosfet_cd_externally_biased_buffer.json"
+    },
+    {
+      "template_id": "FET-CG-01",
+      "topology_type": "mosfet_cg_vdiv_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Voltage Divider Bias",
+      "file": "mosfet_cg_vdiv_amplifier.json"
+    },
+    {
+      "template_id": "FET-CG-02",
+      "topology_type": "mosfet_cg_vdiv_gatebyp_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Voltage Divider with Gate Bypass",
+      "file": "mosfet_cg_vdiv_gatebyp_amplifier.json"
+    },
+    {
+      "template_id": "FET-CG-03",
+      "topology_type": "mosfet_cg_fixedgate_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Fixed Gate Bias",
+      "file": "mosfet_cg_fixedgate_amplifier.json"
+    },
+    {
+      "template_id": "FET-CG-04",
+      "topology_type": "mosfet_cg_fixedgate_gatebyp_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Fixed Gate with Bypass",
+      "file": "mosfet_cg_fixedgate_gatebyp_amplifier.json"
+    },
+    {
+      "template_id": "FET-CG-05",
+      "topology_type": "mosfet_cg_externally_biased_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Externally Biased",
+      "file": "mosfet_cg_externally_biased_amplifier.json"
+    },
+    {
+      "template_id": "FET-CG-06",
+      "topology_type": "mosfet_cg_externally_biased_gatebyp_amplifier",
+      "sub_category": "common_gate",
+      "description": "MOSFET Common Gate - Externally Biased with Gate Bypass",
+      "file": "mosfet_cg_externally_biased_gatebyp_amplifier.json"
+    }
+  ],
+  "total": 16
+}

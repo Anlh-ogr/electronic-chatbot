@@ -1,0 +1,140 @@
+{
+  "category": "power_amplifier_operation",
+  "description": "Power Amplifier Operation Classes - Class A, B, AB, C, D",
+  "templates": [
+    {
+      "template_id": "CLASS-A-01",
+      "topology_type": "class_a_power_amp_voltage_divider_bias_full",
+      "sub_category": "class_a",
+      "description": "Class A Power Amplifier - Voltage Divider Bias (Full Configuration)",
+      "file": "class_a_power_amp_voltage_divider_bias_full.json"
+    },
+    {
+      "template_id": "CLASS-A-02",
+      "topology_type": "class_a_power_amp_voltage_divider_bias_unbypassed_emitter",
+      "sub_category": "class_a",
+      "description": "Class A Power Amplifier - Voltage Divider Bias, Unbypassed Emitter",
+      "file": "class_a_power_amp_voltage_divider_bias_unbypassed_emitter.json"
+    },
+    {
+      "template_id": "CLASS-A-03",
+      "topology_type": "class_a_power_amp_fixed_bias_emitter_bypass",
+      "sub_category": "class_a",
+      "description": "Class A Power Amplifier - Fixed Bias with Emitter Bypass",
+      "file": "class_a_power_amp_fixed_bias_emitter_bypass.json"
+    },
+    {
+      "template_id": "CLASS-A-04",
+      "topology_type": "class_a_power_stage_externally_biased_base",
+      "sub_category": "class_a",
+      "description": "Class A Power Stage - Externally Biased Base",
+      "file": "class_a_power_stage_externally_biased_base.json"
+    },
+    {
+      "template_id": "CLASS-AB-01",
+      "topology_type": "class_ab_push_pull_amp_diode_bias_full",
+      "sub_category": "class_ab",
+      "description": "Class AB Push-Pull Amplifier - Diode Bias (Full Configuration)",
+      "file": "class_ab_push_pull_amp_diode_bias_full.json"
+    },
+    {
+      "template_id": "CLASS-AB-02",
+      "topology_type": "class_ab_push_pull_amp_diode_bias_dc_coupled",
+      "sub_category": "class_ab",
+      "description": "Class AB Push-Pull Amplifier - Diode Bias, DC-Coupled Output",
+      "file": "class_ab_push_pull_amp_diode_bias_dc_coupled.json"
+    },
+    {
+      "template_id": "CLASS-AB-03",
+      "topology_type": "class_ab_push_pull_amp_fixed_bias_no_diodes",
+      "sub_category": "class_ab",
+      "description": "Class AB Push-Pull Amplifier - Fixed Bias (No Diodes)",
+      "file": "class_ab_push_pull_amp_fixed_bias_no_diodes.json"
+    },
+    {
+      "template_id": "CLASS-AB-04",
+      "topology_type": "class_ab_push_pull_stage_externally_biased_bases",
+      "sub_category": "class_ab",
+      "description": "Class AB Push-Pull Stage - Externally Biased Bases",
+      "file": "class_ab_push_pull_stage_externally_biased_bases.json"
+    },
+    {
+      "template_id": "CLASS-B-01",
+      "topology_type": "class_b_push_pull_amp_no_bias_full_ac_coupled",
+      "sub_category": "class_b",
+      "description": "Class B Push-Pull Amplifier - No Bias (Full AC-coupled)",
+      "file": "class_b_push_pull_amp_no_bias_full_ac_coupled.json"
+    },
+    {
+      "template_id": "CLASS-B-02",
+      "topology_type": "class_b_push_pull_no_bias_dc_coupled",
+      "sub_category": "class_b",
+      "description": "Class B Push-Pull Amplifier - No Bias, DC-coupled Output",
+      "file": "class_b_push_pull_no_bias_dc_coupled.json"
+    },
+    {
+      "template_id": "CLASS-B-03",
+      "topology_type": "class_b_push_pull_externally_biased_bases",
+      "sub_category": "class_b",
+      "description": "Class B Push-Pull Amplifier - Externally Biased Bases",
+      "file": "class_b_push_pull_externally_biased_bases.json"
+    },
+    {
+      "template_id": "CLASS-C-01",
+      "topology_type": "class_c_tuned_amp_voltage_divider_bias_full",
+      "sub_category": "class_c",
+      "description": "Class C Tuned Amplifier - Voltage Divider Bias (Full Configuration)",
+      "file": "class_c_tuned_amp_voltage_divider_bias_full.json"
+    },
+    {
+      "template_id": "CLASS-C-02",
+      "topology_type": "class_c_tuned_amp_voltage_divider_bias_no_cin",
+      "sub_category": "class_c",
+      "description": "Class C Tuned Amplifier - Voltage Divider Bias, No Input Capacitor",
+      "file": "class_c_tuned_amp_voltage_divider_bias_no_cin.json"
+    },
+    {
+      "template_id": "CLASS-C-03",
+      "topology_type": "class_c_tuned_amp_fixed_bias",
+      "sub_category": "class_c",
+      "description": "Class C Tuned Amplifier - Fixed Bias",
+      "file": "class_c_tuned_amp_fixed_bias.json"
+    },
+    {
+      "template_id": "CLASS-C-04",
+      "topology_type": "class_c_tuned_stage_externally_biased_base",
+      "sub_category": "class_c",
+      "description": "Class C Tuned Stage - Externally Biased Base",
+      "file": "class_c_tuned_stage_externally_biased_base.json"
+    },
+    {
+      "template_id": "CLASS-D-01",
+      "topology_type": "class_d_mosfet_pwm_comparator_lc_filter_full",
+      "sub_category": "class_d",
+      "description": "Class D MOSFET Amplifier - PWM with Comparator and LC Filter (Full)",
+      "file": "class_d_mosfet_pwm_comparator_lc_filter_full.json"
+    },
+    {
+      "template_id": "CLASS-D-02",
+      "topology_type": "class_d_mosfet_pwm_output_stage_no_lc_filter",
+      "sub_category": "class_d",
+      "description": "Class D MOSFET - PWM Output Stage without LC Filter",
+      "file": "class_d_mosfet_pwm_output_stage_no_lc_filter.json"
+    },
+    {
+      "template_id": "CLASS-D-03",
+      "topology_type": "class_d_mosfet_hbridge_external_pwm_input",
+      "sub_category": "class_d",
+      "description": "Class D MOSFET - H-Bridge with External PWM Input",
+      "file": "class_d_mosfet_hbridge_external_pwm_input.json"
+    },
+    {
+      "template_id": "CLASS-D-04",
+      "topology_type": "class_d_mosfet_halfbridge_simple_lc_filter_minimal",
+      "sub_category": "class_d",
+      "description": "Class D MOSFET - Half-Bridge with Simple LC Filter (Minimal)",
+      "file": "class_d_mosfet_halfbridge_simple_lc_filter_minimal.json"
+    }
+  ],
+  "total": 19
+}

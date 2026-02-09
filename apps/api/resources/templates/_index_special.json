@@ -1,0 +1,63 @@
+{
+  "category": "special_amplifier",
+  "description": "Special Amplifier Templates - Darlington Pair, Multi-Stage Configurations",
+  "templates": [
+    {
+      "template_id": "SPECIAL-DAR-01",
+      "topology_type": "darlington_pair_voltage_divider_bias_full",
+      "sub_category": "darlington",
+      "description": "Darlington Pair - Voltage Divider Bias (Full Configuration)",
+      "file": "special_darlington_pair_voltage_divider_bias_full.json"
+    },
+    {
+      "template_id": "SPECIAL-DAR-02",
+      "topology_type": "darlington_pair_voltage_divider_unbypassed_emitter",
+      "sub_category": "darlington",
+      "description": "Darlington Pair - Voltage Divider Bias, Unbypassed Emitter",
+      "file": "special_darlington_pair_voltage_divider_unbypassed_emitter.json"
+    },
+    {
+      "template_id": "SPECIAL-DAR-03",
+      "topology_type": "darlington_pair_fixed_bias_emitter_bypass",
+      "sub_category": "darlington",
+      "description": "Darlington Pair - Fixed Bias with Emitter Bypass",
+      "file": "special_darlington_pair_fixed_bias_emitter_bypass.json"
+    },
+    {
+      "template_id": "SPECIAL-DAR-04",
+      "topology_type": "darlington_pair_externally_biased_base",
+      "sub_category": "darlington",
+      "description": "Darlington Pair - Externally Biased Base",
+      "file": "special_darlington_pair_externally_biased_base.json"
+    },
+    {
+      "template_id": "SPECIAL-MS-01",
+      "topology_type": "two_stage_ce_cc_full_coupling",
+      "sub_category": "multi_stage",
+      "description": "Two-Stage Amplifier - CE-CC with Full Coupling",
+      "file": "multi_stage_two_stage_ce_cc_full_coupling.json"
+    },
+    {
+      "template_id": "SPECIAL-MS-02",
+      "topology_type": "two_stage_cecc_emitter_degeneration",
+      "sub_category": "multi_stage",
+      "description": "Two-Stage CE-CC - with Emitter Degeneration",
+      "file": "multi_stage_two_stage_cecc_emitter_degeneration.json"
+    },
+    {
+      "template_id": "SPECIAL-MS-03",
+      "topology_type": "two_stage_cecc_fixed_bias_stage2",
+      "sub_category": "multi_stage",
+      "description": "Two-Stage CE-CC - Fixed Bias on Stage 2",
+      "file": "multi_stage_two_stage_cecc_fixed_bias_stage2.json"
+    },
+    {
+      "template_id": "SPECIAL-MS-04",
+      "topology_type": "two_stage_cecc_externally_biased_stage2",
+      "sub_category": "multi_stage",
+      "description": "Two-Stage CE-CC - Externally Biased Stage 2",
+      "file": "multi_stage_two_stage_cecc_externally_biased_stage2.json"
+    }
+  ],
+  "total": 8
+}

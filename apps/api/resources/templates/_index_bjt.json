@@ -1,0 +1,105 @@
+{
+  "category": "bjt_amplifier",
+  "description": "BJT Amplifier Templates - Common Emitter (CE), Common Base (CB), Common Collector (CC)",
+  "templates": [
+    {
+      "template_id": "BJT-CE-01",
+      "topology_type": "bjt_ce_voltage_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Basic Voltage Amplifier with voltage divider bias",
+      "file": "bjt_ce_voltage_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CE-02",
+      "topology_type": "bjt_ce_fixed_bias_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Fixed Bias Amplifier",
+      "file": "bjt_ce_fixed_bias_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CE-03",
+      "topology_type": "bjt_ce_fixed_bias_degen_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Fixed Bias with Emitter Degeneration",
+      "file": "bjt_ce_fixed_bias_degen_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CE-04",
+      "topology_type": "bjt_ce_degen_unbypass_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Degeneration Unbypassed Emitter",
+      "file": "bjt_ce_degen_unbypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CE-05",
+      "topology_type": "bjt_ce_externally_biased_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Externally Biased Base",
+      "file": "bjt_ce_externally_biased_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CE-06",
+      "topology_type": "bjt_ce_externally_biased_bypass_amplifier",
+      "sub_category": "common_emitter",
+      "description": "BJT Common Emitter - Externally Biased with Bypass Capacitor",
+      "file": "bjt_ce_externally_biased_bypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CB-01",
+      "topology_type": "bjt_cb_vdiv_bypass_amplifier",
+      "sub_category": "common_base",
+      "description": "BJT Common Base - Voltage Divider Bias with Bypass",
+      "file": "bjt_cb_vdiv_bypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CB-02",
+      "topology_type": "bjt_cb_vdiv_nobypass_amplifier",
+      "sub_category": "common_base",
+      "description": "BJT Common Base - Voltage Divider Bias without Bypass",
+      "file": "bjt_cb_vdiv_nobypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CB-03",
+      "topology_type": "bjt_cb_fixed_bias_bypass_amplifier",
+      "sub_category": "common_base",
+      "description": "BJT Common Base - Fixed Bias with Bypass",
+      "file": "bjt_cb_fixed_bias_bypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CB-04",
+      "topology_type": "bjt_cb_externally_biased_bypass_amplifier",
+      "sub_category": "common_base",
+      "description": "BJT Common Base - Externally Biased with Bypass",
+      "file": "bjt_cb_externally_biased_bypass_amplifier.json"
+    },
+    {
+      "template_id": "BJT-CC-01",
+      "topology_type": "bjt_cc_voltage_divider_bias_buffer",
+      "sub_category": "common_collector",
+      "description": "BJT Common Collector (Emitter Follower) - Voltage Divider Bias",
+      "file": "bjt_cc_voltage_divider_bias_buffer.json"
+    },
+    {
+      "template_id": "BJT-CC-02",
+      "topology_type": "bjt_cc_voltage_divider_bias_nocout_buffer",
+      "sub_category": "common_collector",
+      "description": "BJT Common Collector - Voltage Divider Bias without Output Capacitor",
+      "file": "bjt_cc_voltage_divider_bias_nocout_buffer.json"
+    },
+    {
+      "template_id": "BJT-CC-03",
+      "topology_type": "bjt_cc_fixed_bias_buffer",
+      "sub_category": "common_collector",
+      "description": "BJT Common Collector - Fixed Bias Buffer",
+      "file": "bjt_cc_fixed_bias_buffer.json"
+    },
+    {
+      "template_id": "BJT-CC-04",
+      "topology_type": "bjt_cc_externally_biased_buffer",
+      "sub_category": "common_collector",
+      "description": "BJT Common Collector - Externally Biased Buffer",
+      "file": "bjt_cc_externally_biased_buffer.json"
+    }
+  ],
+  "total": 14
+}

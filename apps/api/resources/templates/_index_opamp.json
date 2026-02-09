@@ -1,0 +1,124 @@
+{
+  "category": "opamp_circuit",
+  "description": "Operational Amplifier Templates - Inverting, Non-Inverting, Differential, Instrumentation",
+  "templates": [
+    {
+      "template_id": "OP-01",
+      "topology_type": "opamp_inverting_dual_supply_core",
+      "sub_category": "inverting",
+      "description": "OpAmp Inverting - Dual Supply Core Configuration",
+      "file": "opamp_inverting_dual_supply_core.json",
+      "component_count": 8,
+      "net_count": 6
+    },
+    {
+      "template_id": "OP-02",
+      "topology_type": "opamp_inverting_single_supply_vref",
+      "sub_category": "inverting",
+      "description": "OpAmp Inverting - Single Supply with Virtual Reference",
+      "file": "opamp_inverting_single_supply_vref.json",
+      "component_count": 10,
+      "net_count": 6
+    },
+    {
+      "template_id": "OP-03",
+      "topology_type": "opamp_inverting_single_supply_vref_ac_coupled",
+      "sub_category": "inverting",
+      "description": "OpAmp Inverting - Single Supply with Vref, AC Coupled Input",
+      "file": "opamp_inverting_single_supply_vref_ac_coupled.json",
+      "component_count": 11,
+      "net_count": 7
+    },
+    {
+      "template_id": "OP-04",
+      "topology_type": "opamp_inverting_single_supply_vref_ac_coupled_io",
+      "sub_category": "inverting",
+      "description": "OpAmp Inverting - Single Supply with Vref, AC Coupled Input/Output",
+      "file": "opamp_inverting_single_supply_vref_ac_coupled_io.json",
+      "component_count": 12,
+      "net_count": 8
+    },
+    {
+      "template_id": "OP-05",
+      "topology_type": "opamp_non_inverting_dual_supply_core",
+      "sub_category": "non_inverting",
+      "description": "OpAmp Non-Inverting - Dual Supply Core Configuration",
+      "file": "opamp_non_inverting_dual_supply_core.json",
+      "component_count": 8,
+      "net_count": 6
+    },
+    {
+      "template_id": "OP-06",
+      "topology_type": "opamp_non_inverting_single_supply_vref",
+      "sub_category": "non_inverting",
+      "description": "OpAmp Non-Inverting - Single Supply with Virtual Reference",
+      "file": "opamp_non_inverting_single_supply_vref.json",
+      "component_count": 10,
+      "net_count": 6
+    },
+    {
+      "template_id": "OP-07",
+      "topology_type": "opamp_non_inverting_single_supply_vref_ac_coupled",
+      "sub_category": "non_inverting",
+      "description": "OpAmp Non-Inverting - Single Supply with Vref, AC Coupled",
+      "file": "opamp_non_inverting_single_supply_vref_ac_coupled.json",
+      "component_count": 11,
+      "net_count": 7
+    },
+    {
+      "template_id": "OP-08",
+      "topology_type": "opamp_non_inverting_single_supply_vref_ac_coupled_io",
+      "sub_category": "non_inverting",
+      "description": "OpAmp Non-Inverting - Single Supply with Vref, AC Coupled I/O",
+      "file": "opamp_non_inverting_single_supply_vref_ac_coupled_io.json",
+      "component_count": 12,
+      "net_count": 8
+    },
+    {
+      "template_id": "OP-09",
+      "topology_type": "opamp_differential_dual_supply_4r",
+      "sub_category": "differential",
+      "description": "OpAmp Differential - Dual Supply with 4 Resistors",
+      "file": "opamp_differential_dual_supply_4r.json",
+      "component_count": 11,
+      "net_count": 8
+    },
+    {
+      "template_id": "OP-10",
+      "topology_type": "opamp_differential_single_supply_vref_ac_coupled",
+      "sub_category": "differential",
+      "description": "OpAmp Differential - Single Supply with Vref, AC Coupled",
+      "file": "opamp_differential_single_supply_vref_ac_coupled.json",
+      "component_count": 13,
+      "net_count": 10
+    },
+    {
+      "template_id": "OP-11",
+      "topology_type": "opamp_instrumentation_3opamp_basic",
+      "sub_category": "instrumentation",
+      "description": "OpAmp Instrumentation - 3-OpAmp Basic Configuration",
+      "file": "opamp_instrumentation_3opamp_basic.json",
+      "component_count": 16,
+      "net_count": 12
+    },
+    {
+      "template_id": "OP-12",
+      "topology_type": "opamp_instrumentation_3opamp_single_supply_vref",
+      "sub_category": "instrumentation",
+      "description": "OpAmp Instrumentation - 3-OpAmp Single Supply with Vref",
+      "file": "opamp_instrumentation_3opamp_single_supply_vref.json",
+      "component_count": 18,
+      "net_count": 12
+    },
+    {
+      "template_id": "OP-13",
+      "topology_type": "opamp_instrumentation_3opamp_single_supply_vref_ac_coupled",
+      "sub_category": "instrumentation",
+      "description": "OpAmp Instrumentation - 3-OpAmp Single Supply with Vref, AC Coupled",
+      "file": "opamp_instrumentation_3opamp_single_supply_vref_ac_coupled.json",
+      "component_count": 20,
+      "net_count": 14
+    }
+  ],
+  "total": 13
+}
