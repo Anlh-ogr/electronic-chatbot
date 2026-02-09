@@ -1,0 +1,807 @@
+{
+  "topology_type": "two_stage_ce_cc_full_coupling",
+  "description": "Two-Stage CE-CC Amplifier – Full Coupling (Voltage Divider Bias cả 2 tầng). Mạch khuếch đại 2 tầng: tầng 1 CE (Q1, gain cao), tầng 2 CC (Q2, buffer, Rout thấp). Nối tầng qua Cmid. Voltage divider bias (R1a-R2a cho Q1, R1b-R2b cho Q2). Tầng CE có RE1+CE1 bypass. Gain tổng ~ gain CE * 1. BOM: 2 BJT (Q1=2N3904 CE, Q2=2N2222 CC), 7R (R1a=47kΩ 0.25W, R2a=10kΩ 0.25W, RC1=4.7kΩ 0.5W, RE1=1kΩ 0.5W, R1b=47kΩ 0.25W, R2b=10kΩ 0.25W, RE2=1kΩ 0.5W), 4C (CIN=10µF 25V, Cmid=10µF 25V, COUT=10µF 25V, CE1=100µF 16V). VCC=12V.",
+  "category": "multi_stage_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N3904",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_CBE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -10,
+        "y": 0,
+        "group": "stage1_ce"
+      }
+    },
+    {
+      "id": "Q2",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N2222",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_CBE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": 0,
+        "group": "stage2_cc"
+      }
+    },
+    {
+      "id": "R1a",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": 30,
+        "group": "bias_stage1"
+      }
+    },
+    {
+      "id": "R2a",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": -30,
+        "group": "bias_stage1"
+      }
+    },
+    {
+      "id": "RC1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 4700,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -10,
+        "y": 40,
+        "group": "collector_stage1"
+      }
+    },
+    {
+      "id": "RE1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -10,
+        "y": -30,
+        "group": "emitter_stage1"
+      }
+    },
+    {
+      "id": "R1b",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 30,
+        "group": "bias_stage2"
+      }
+    },
+    {
+      "id": "R2b",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": -30,
+        "group": "bias_stage2"
+      }
+    },
+    {
+      "id": "RE2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": -30,
+        "group": "emitter_stage2"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -50,
+        "y": 0,
+        "group": "coupling"
+      }
+    },
+    {
+      "id": "Cmid",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "interstage_coupling"
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": -30,
+        "group": "coupling"
+      }
+    },
+    {
+      "id": "CE1",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.0001,
+        "voltage_rating": 16
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -25,
+        "y": -30,
+        "group": "bypass"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 70,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -70
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -70,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 50,
+        "y": -30,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "R1a",
+          "1"
+        ],
+        [
+          "RC1",
+          "1"
+        ],
+        [
+          "R1b",
+          "1"
+        ],
+        [
+          "Q2",
+          "C"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "R2a",
+          "2"
+        ],
+        [
+          "RE1",
+          "2"
+        ],
+        [
+          "CE1",
+          "2"
+        ],
+        [
+          "R2b",
+          "2"
+        ],
+        [
+          "RE2",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_vin",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_base_node1",
+      "connections": [
+        [
+          "R1a",
+          "2"
+        ],
+        [
+          "R2a",
+          "1"
+        ],
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_col1_node",
+      "connections": [
+        [
+          "Q1",
+          "C"
+        ],
+        [
+          "RC1",
+          "2"
+        ],
+        [
+          "Cmid",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit1_node",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "RE1",
+          "1"
+        ],
+        [
+          "CE1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_base_node2",
+      "connections": [
+        [
+          "Cmid",
+          "2"
+        ],
+        [
+          "R1b",
+          "2"
+        ],
+        [
+          "R2b",
+          "1"
+        ],
+        [
+          "Q2",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit2_node",
+      "connections": [
+        [
+          "Q2",
+          "E"
+        ],
+        [
+          "RE2",
+          "1"
+        ],
+        [
+          "COUT",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_vout",
+      "connections": [
+        [
+          "COUT",
+          "2"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_vin"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_vout"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "vcc",
+      "value": 12.0,
+      "unit": "V"
+    },
+    {
+      "type": "ic_q1",
+      "typical_ma": 2,
+      "note": "Q1 collector current (CE stage), typically 1-3 mA"
+    },
+    {
+      "type": "ic_q2",
+      "typical_ma": 5,
+      "note": "Q2 collector current (CC stage), typically 3-5 mA"
+    },
+    {
+      "type": "gain_stage1",
+      "typical": 100,
+      "note": "Voltage gain of CE stage (Q1), Av1 ≈ RC1/RE1, typically 50-200"
+    },
+    {
+      "type": "gain_stage2",
+      "typical": 0.99,
+      "note": "Voltage gain of CC stage (Q2), Av2 ≈ 0.95-0.99"
+    },
+    {
+      "type": "gain_total",
+      "typical": 100,
+      "note": "Total voltage gain ≈ Av1 * Av2 ≈ Av1 (since Av2 ≈ 1)"
+    },
+    {
+      "type": "rin",
+      "typical_kohm": "5-10",
+      "note": "Input impedance of CE stage"
+    },
+    {
+      "type": "rout",
+      "typical_ohm": "10-50",
+      "note": "Output impedance of CC stage, very low"
+    },
+    {
+      "type": "bandwidth",
+      "typical_khz": "10-50",
+      "note": "Bandwidth narrowed due to multi-stage cascade"
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R1a",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R2a",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC1",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE1",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R1b",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R2b",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE2",
+      "min_watts": 0.5
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Cmid",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CE1",
+      "min": 16.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q1",
+      "min": 15.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q2",
+      "min": 30.0
+    }
+  ],
+  "parametric": {
+    "R1a": {
+      "resistance": "optional",
+      "note": "Upper bias resistor for Q1, sets base bias current"
+    },
+    "R2a": {
+      "resistance": "optional",
+      "note": "Lower bias resistor for Q1, forms voltage divider with R1a"
+    },
+    "RC1": {
+      "resistance": "optional",
+      "note": "Collector resistor for Q1, sets gain of CE stage"
+    },
+    "RE1": {
+      "resistance": "optional",
+      "note": "Emitter resistor for Q1, provides DC stability"
+    },
+    "R1b": {
+      "resistance": "optional",
+      "note": "Upper bias resistor for Q2, sets base bias current"
+    },
+    "R2b": {
+      "resistance": "optional",
+      "note": "Lower bias resistor for Q2, forms voltage divider with R1b"
+    },
+    "RE2": {
+      "resistance": "optional",
+      "note": "Emitter resistor for Q2, sets output impedance"
+    },
+    "CIN": {
+      "capacitance": "optional",
+      "note": "Input coupling cap, sets low-freq cutoff"
+    },
+    "Cmid": {
+      "capacitance": "optional",
+      "note": "Inter-stage coupling cap, sets low-freq cutoff between stages"
+    },
+    "COUT": {
+      "capacitance": "optional",
+      "note": "Output coupling cap, sets low-freq cutoff"
+    },
+    "CE1": {
+      "capacitance": "optional",
+      "note": "Emitter bypass cap for Q1, increases AC gain of CE stage"
+    },
+    "Q1": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "CE stage, provides voltage gain"
+    },
+    "Q2": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "CC stage, provides current gain and low output impedance"
+    }
+  },
+  "pcb_hints": {
+    "critical_nets": [
+      "net_base_node1",
+      "net_col1_node",
+      "net_base_node2",
+      "net_emit2_node"
+    ],
+    "high_impedance_nodes": [
+      "net_base_node1",
+      "net_base_node2"
+    ],
+    "layout_guidelines": [
+      {
+        "note": "Place Q1 (CE stage) on left and Q2 (CC stage) on right with Cmid coupling between them"
+      },
+      {
+        "note": "Keep Cmid trace between Q1 collector and Q2 base short to minimize noise pickup"
+      },
+      {
+        "note": "Route base bias networks (R1a-R2a, R1b-R2b) away from high-current paths"
+      },
+      {
+        "note": "Star ground CE1, RE1, RE2 for best AC performance"
+      },
+      {
+        "note": "Keep output trace from Q2 emitter short for low output impedance"
+      }
+    ],
+    "thermal_considerations": [
+      {
+        "note": "Q1 (CE stage) may dissipate more power - ensure adequate spacing"
+      },
+      {
+        "note": "Q2 (CC stage) handles output current - ensure adequate heatsinking if load current > 100mA"
+      }
+    ],
+    "notes": [
+      "Two-stage amplifier: CE (high gain) → CC (buffer)",
+      "Total gain ≈ gain of CE stage (since CC gain ≈ 1)",
+      "CC stage provides low output impedance (<50Ω typical)",
+      "Bandwidth narrowed due to cascaded poles",
+      "Cmid provides DC isolation between stages",
+      "CE1 bypasses RE1 for AC, increasing gain of first stage",
+      "Q1 (2N3904) for low-power CE stage, Q2 (2N2222) for higher-current CC buffer",
+      "Typical applications: audio pre-amplifiers, sensor signal conditioning"
+    ]
+  }
+}

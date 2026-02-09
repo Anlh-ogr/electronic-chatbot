@@ -1,0 +1,530 @@
+{
+  "topology_type": "class_a_power_amp_fixed_bias_emitter_bypass",
+  "description": "BJT Class A Power Amplifier – Fixed Bias with Emitter Bypass. Mạch khuếch đại công suất Class A dùng BJT đơn, phân cực cố định bằng RB, có tụ CE (bypass RE). BOM: 1 BJT (BD139), 3R (RB=68kΩ 0.5W, RC=470Ω 5W, RE=10Ω 5W), 3C (CIN=10µF, COUT=470µF, CE=100µF). VCC=24V, RL=8Ω 10W.",
+  "category": "power_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "BD139",
+        "beta": 100,
+        "type": "npn"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-126-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "amp"
+      }
+    },
+    {
+      "id": "RB",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 68000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -20,
+        "y": 20,
+        "group": "bias"
+      }
+    },
+    {
+      "id": "RC",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 470,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 30,
+        "group": "collector"
+      }
+    },
+    {
+      "id": "RE",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -30,
+        "group": "emitter"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -40,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.00047,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D10.0mm_P5.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 0,
+        "group": "output"
+      }
+    },
+    {
+      "id": "CE",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.0001,
+        "voltage_rating": 16
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 20,
+        "y": -30,
+        "group": "emitter"
+      }
+    },
+    {
+      "id": "RL",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 8,
+        "power_rating": 10.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L50.0mm_W9.0mm_P55.88mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 50,
+        "y": -20,
+        "group": "load"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 24.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 50,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -60
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -60,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 70,
+        "y": 0,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "RB",
+          "1"
+        ],
+        [
+          "RC",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "RE",
+          "2"
+        ],
+        [
+          "CE",
+          "2"
+        ],
+        [
+          "RL",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_base",
+      "connections": [
+        [
+          "RB",
+          "2"
+        ],
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_col",
+      "connections": [
+        [
+          "RC",
+          "2"
+        ],
+        [
+          "Q1",
+          "C"
+        ],
+        [
+          "COUT",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "RE",
+          "1"
+        ],
+        [
+          "CE",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_out",
+      "connections": [
+        [
+          "COUT",
+          "2"
+        ],
+        [
+          "RL",
+          "1"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_out"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 12.0,
+      "max": 30.0
+    },
+    {
+      "type": "current_limit",
+      "target": "Q1",
+      "max": 1.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q1",
+      "min_watts": 8.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RL",
+      "min_watts": 10.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CE",
+      "min": 16.0
+    }
+  ],
+  "parametric": {
+    "RB": {
+      "resistance": "optional"
+    },
+    "RC": {
+      "resistance": "optional"
+    },
+    "RE": {
+      "resistance": "optional"
+    },
+    "RL": {
+      "resistance": "optional"
+    },
+    "CIN": {
+      "capacitance": "optional"
+    },
+    "COUT": {
+      "capacitance": "optional"
+    },
+    "CE": {
+      "capacitance": "optional"
+    },
+    "Q1": {
+      "beta": "optional",
+      "model": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 0,
+        "radius": 10,
+        "reason": "Q1 BJT power dissipation - heatsink required"
+      }
+    ],
+    "critical_nets": [
+      "net_in",
+      "net_base",
+      "net_col",
+      "net_emit",
+      "net_out"
+    ],
+    "thermal_management": [
+      {
+        "component": "Q1",
+        "note": "Requires heatsink, typical thermal resistance 50°C/W"
+      }
+    ],
+    "high_current_traces": [
+      "net_col",
+      "net_emit",
+      "net_vcc",
+      "net_gnd"
+    ]
+  },
+  "template_id": "A-03",
+  "variable_name": "CLASS_A_POWER_AMP_FIXED_BIAS_EMITTER_BYPASS_SCH_TEMPLATE"
+}

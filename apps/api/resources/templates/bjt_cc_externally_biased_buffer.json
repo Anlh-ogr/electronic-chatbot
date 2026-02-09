@@ -1,0 +1,207 @@
+{
+  "$schema": "circuit_topology_template.schema.json",
+  "topology_type": "bjt_common_collector_externally_biased_buffer",
+  "description": "Mạch đệm emitter follower với base phân cực ngoài (không có R1/R2), chỉ RE, CIN, COUT. BOM: 1 BJT, 1R (RE), 2C (CIN, COUT), nguồn VCC, ports: VIN, VOUT, GND. Base phải có DC bias từ nguồn ngoài/tầng trước.",
+  "category": "bjt",
+  "tags": ["common-collector", "emitter-follower", "externally-biased", "buffer", "1R2C"],
+
+  "components": [
+    {
+      "id": "Q1",
+      "type": "BJT",
+      "pins": ["C", "B", "E"],
+      "parameters": {
+        "model": "2N2222",
+        "beta": 100.0,
+        "vbe": 0.7
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Transistor_BJT",
+        "symbol_name": "Q_NPN_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 0, "y": 0, "group": "buffer" }
+    },
+    {
+      "id": "RE",
+      "type": "RESISTOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 10, "y": -10, "group": "emitter" }
+    },
+    {
+      "id": "CIN",
+      "type": "CAPACITOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "capacitance": 1e-5,
+        "capacitance_display": "10uF",
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": -20, "y": 0 }
+    },
+    {
+      "id": "COUT",
+      "type": "CAPACITOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "capacitance": 1e-5,
+        "capacitance_display": "10uF",
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 20, "y": 0 }
+    },
+    {
+      "id": "VCC",
+      "type": "VOLTAGE_SOURCE",
+      "pins": ["+", "-"],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 0, "y": 20, "group": "power" }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": ["IN"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": -30, "y": 0, "group": "input" }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": ["OUT"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 30, "y": 0, "group": "output" }
+    },
+    {
+      "id": "GND",
+      "type": "GROUND",
+      "pins": ["GND"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": { "x": 0, "y": -20 }
+    }
+  ],
+
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        ["VCC", "+"],
+        ["Q1", "C"]
+      ]
+    },
+    {
+      "id": "net_base",
+      "connections": [
+        ["Q1", "B"],
+        ["CIN", "1"]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        ["GND", "GND"],
+        ["RE", "2"],
+        ["VCC", "-"]
+      ]
+    },
+    {
+      "id": "net_emit",
+      "connections": [
+        ["Q1", "E"],
+        ["RE", "1"],
+        ["COUT", "1"]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        ["VIN", "IN"],
+        ["CIN", "2"]
+      ]
+    },
+    {
+      "id": "net_out",
+      "connections": [
+        ["VOUT", "OUT"],
+        ["COUT", "2"]
+      ]
+    }
+  ],
+
+  "ports": [
+    { "id": "VIN",  "direction": "input",  "net": "net_in" },
+    { "id": "VOUT", "direction": "output", "net": "net_out" },
+    { "id": "VCC",  "direction": "power",  "net": "net_vcc" },
+    { "id": "GND",  "direction": "ground", "net": "net_gnd" }
+  ],
+
+  "constraints": [
+    { "type": "voltage_range",     "target": "VCC",  "min": 5.0, "max": 24.0 },
+    { "type": "current_limit",     "target": "Q1",   "max": 0.5 },
+    { "type": "power_rating_min",  "target": "RE",   "min_watts": 0.25 },
+    { "type": "voltage_rating_min","target": "CIN",  "min": 25.0 },
+    { "type": "voltage_rating_min","target": "COUT", "min": 25.0 }
+  ],
+
+  "parametric": {
+    "RE":   { "resistance": "optional" },
+    "CIN":  { "capacitance": "optional" },
+    "COUT": { "capacitance": "optional" }
+  },
+
+  "pcb_hints": {
+    "keepout_zones": [
+      { "x": 0, "y": 0, "radius": 5, "reason": "Q1 nhiệt cao" }
+    ],
+    "critical_nets": ["net_in", "net_out"]
+  }
+}

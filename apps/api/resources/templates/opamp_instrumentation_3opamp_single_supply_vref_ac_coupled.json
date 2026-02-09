@@ -1,0 +1,874 @@
+{
+  "template_id": "OP-13",
+  "topology_type": "opamp_instrumentation_3opamp_single_supply_vref_ac_coupled",
+  "variable_name": "OPAMP_INSTRUMENTATION_3OPAMP_SINGLE_SUPPLY_VREF_AC_COUPLED_SCH_TEMPLATE",
+  "description": "AC-Coupled Instrumentation Amplifier (Bridge/Sensor Front-End). 3-op-amp INA, single-supply + Vref, input AC-coupled. Tầng 1-2: U1,U2 non-inverting với RG chung (gain = 1+2R1/RG). Tầng 3: U3 diff amp (R3,R4 input, R5 feedback, R6 ref→VREF). VREF tạo bởi RVREF1,RVREF2. BOM: 7R (R1,R2,RG,R3,R4,R5,R6) + 2R (RVREF1,RVREF2) + 2C (CINP,CINN) = 9R + 2C.",
+  "category": "opamp",
+  "components": [
+    {
+      "id": "U1",
+      "type": "OPAMP",
+      "pins": [
+        "OUT",
+        "+",
+        "-",
+        "VCC",
+        "GND"
+      ],
+      "parameters": {
+        "model": "LM358"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Amplifier_Operational",
+        "symbol_name": "LM358",
+        "footprint": "Package_DIP:DIP-8_W7.62mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 20,
+        "group": "amp1"
+      }
+    },
+    {
+      "id": "U2",
+      "type": "OPAMP",
+      "pins": [
+        "OUT",
+        "+",
+        "-",
+        "VCC",
+        "GND"
+      ],
+      "parameters": {
+        "model": "LM358"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Amplifier_Operational",
+        "symbol_name": "LM358",
+        "footprint": "Package_DIP:DIP-8_W7.62mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -20,
+        "group": "amp2"
+      }
+    },
+    {
+      "id": "U3",
+      "type": "OPAMP",
+      "pins": [
+        "OUT",
+        "+",
+        "-",
+        "VCC",
+        "GND"
+      ],
+      "parameters": {
+        "model": "LM358"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Amplifier_Operational",
+        "symbol_name": "LM358",
+        "footprint": "Package_DIP:DIP-8_W7.62mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 80,
+        "y": 0,
+        "group": "amp3"
+      }
+    },
+    {
+      "id": "R1",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "feedback1"
+      }
+    },
+    {
+      "id": "R2",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -40,
+        "group": "feedback2"
+      }
+    },
+    {
+      "id": "RG",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "gain"
+      }
+    },
+    {
+      "id": "R3",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 40,
+        "y": -10,
+        "group": "diff_stage"
+      }
+    },
+    {
+      "id": "R4",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 40,
+        "y": 10,
+        "group": "diff_stage"
+      }
+    },
+    {
+      "id": "R5",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 80,
+        "y": 20,
+        "group": "diff_stage"
+      }
+    },
+    {
+      "id": "R6",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 60,
+        "y": -20,
+        "group": "diff_stage"
+      }
+    },
+    {
+      "id": "RVREF1",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 100,
+        "y": 10,
+        "group": "vref"
+      }
+    },
+    {
+      "id": "RVREF2",
+      "type": "RESISTOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 100,
+        "y": -10,
+        "group": "vref"
+      }
+    },
+    {
+      "id": "CINP",
+      "type": "CAPACITOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -40,
+        "y": 10,
+        "group": "input"
+      }
+    },
+    {
+      "id": "CINN",
+      "type": "CAPACITOR",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -40,
+        "y": -10,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "VOLTAGE_SOURCE",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "GROUND",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -50
+      }
+    },
+    {
+      "id": "VINP",
+      "type": "port",
+      "pins": [
+        "INP"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -60,
+        "y": 10,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VINN",
+      "type": "port",
+      "pins": [
+        "INN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -60,
+        "y": -10,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 120,
+        "y": 0,
+        "group": "output"
+      }
+    },
+    {
+      "id": "VREF",
+      "type": "port",
+      "pins": [
+        "VREF"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 110,
+        "y": 0,
+        "group": "vref"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "U1",
+          "VCC"
+        ],
+        [
+          "U2",
+          "VCC"
+        ],
+        [
+          "U3",
+          "VCC"
+        ],
+        [
+          "RVREF1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "U1",
+          "GND"
+        ],
+        [
+          "U2",
+          "GND"
+        ],
+        [
+          "U3",
+          "GND"
+        ],
+        [
+          "RVREF2",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_vref",
+      "connections": [
+        [
+          "RVREF1",
+          "2"
+        ],
+        [
+          "RVREF2",
+          "1"
+        ],
+        [
+          "R6",
+          "2"
+        ],
+        [
+          "VREF",
+          "VREF"
+        ]
+      ]
+    },
+    {
+      "id": "net_inp_ac",
+      "connections": [
+        [
+          "VINP",
+          "INP"
+        ],
+        [
+          "CINP",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_inn_ac",
+      "connections": [
+        [
+          "VINN",
+          "INN"
+        ],
+        [
+          "CINN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_inp",
+      "connections": [
+        [
+          "CINP",
+          "2"
+        ],
+        [
+          "U1",
+          "+"
+        ]
+      ]
+    },
+    {
+      "id": "net_inn",
+      "connections": [
+        [
+          "CINN",
+          "2"
+        ],
+        [
+          "U2",
+          "+"
+        ]
+      ]
+    },
+    {
+      "id": "net_u1_inv",
+      "connections": [
+        [
+          "U1",
+          "-"
+        ],
+        [
+          "R1",
+          "2"
+        ],
+        [
+          "RG",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_u2_inv",
+      "connections": [
+        [
+          "U2",
+          "-"
+        ],
+        [
+          "R2",
+          "2"
+        ],
+        [
+          "RG",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_u1_out",
+      "connections": [
+        [
+          "U1",
+          "OUT"
+        ],
+        [
+          "R1",
+          "1"
+        ],
+        [
+          "R3",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_u2_out",
+      "connections": [
+        [
+          "U2",
+          "OUT"
+        ],
+        [
+          "R2",
+          "1"
+        ],
+        [
+          "R4",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_u3_inv",
+      "connections": [
+        [
+          "R3",
+          "2"
+        ],
+        [
+          "U3",
+          "-"
+        ],
+        [
+          "R5",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_u3_noninv",
+      "connections": [
+        [
+          "R4",
+          "2"
+        ],
+        [
+          "U3",
+          "+"
+        ],
+        [
+          "R6",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_out",
+      "connections": [
+        [
+          "U3",
+          "OUT"
+        ],
+        [
+          "R5",
+          "2"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VINP",
+      "direction": "input",
+      "net": "net_inp_ac"
+    },
+    {
+      "id": "VINN",
+      "direction": "input",
+      "net": "net_inn_ac"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_out"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    },
+    {
+      "id": "VREF",
+      "direction": "virtual",
+      "net": "net_vref"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 3.0,
+      "max": 16.0
+    },
+    {
+      "type": "current_limit",
+      "target": "U1",
+      "max": 0.05
+    },
+    {
+      "type": "current_limit",
+      "target": "U2",
+      "max": 0.05
+    },
+    {
+      "type": "current_limit",
+      "target": "U3",
+      "max": 0.05
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R1",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R2",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RG",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R3",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R4",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R5",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R6",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RVREF1",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RVREF2",
+      "min_watts": 0.25
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CINP",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CINN",
+      "min": 25.0
+    }
+  ],
+  "parametric": {
+    "R1": {
+      "resistance": "optional"
+    },
+    "R2": {
+      "resistance": "optional"
+    },
+    "RG": {
+      "resistance": "optional"
+    },
+    "R3": {
+      "resistance": "optional"
+    },
+    "R4": {
+      "resistance": "optional"
+    },
+    "R5": {
+      "resistance": "optional"
+    },
+    "R6": {
+      "resistance": "optional"
+    },
+    "RVREF1": {
+      "resistance": "optional"
+    },
+    "RVREF2": {
+      "resistance": "optional"
+    },
+    "CINP": {
+      "capacitance": "optional"
+    },
+    "CINN": {
+      "capacitance": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 20,
+        "radius": 5,
+        "reason": "U1 op-amp sensitive"
+      },
+      {
+        "x": 0,
+        "y": -20,
+        "radius": 5,
+        "reason": "U2 op-amp sensitive"
+      },
+      {
+        "x": 80,
+        "y": 0,
+        "radius": 5,
+        "reason": "U3 op-amp sensitive"
+      }
+    ],
+    "critical_nets": [
+      "net_inp_ac",
+      "net_inn_ac",
+      "net_inp",
+      "net_inn",
+      "net_u1_inv",
+      "net_u2_inv",
+      "net_u1_out",
+      "net_u2_out",
+      "net_u3_inv",
+      "net_u3_noninv",
+      "net_out",
+      "net_vref"
+    ]
+  }
+}

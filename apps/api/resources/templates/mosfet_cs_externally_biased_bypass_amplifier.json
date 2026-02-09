@@ -1,0 +1,339 @@
+{
+  "topology_type": "mosfet_common_source_externally_biased_bypass_amplifier",
+  "description": "MOSFET Common Source Stage – Externally Biased Gate with Source Bypass. BOM: 1 MOSFET (NMOS), 2R (RD,RS), 3C (CIN,COUT,CS). Gate nhận DC bias từ ngoài qua CIN, không có R1/R2/RG. Source có bypass CS song song RS. Input vào gate qua CIN, output lấy ở drain qua COUT.",
+  "category": "mosfet",
+  "tags": ["common_source", "amplifier", "externally_biased", "source_bypass", "2R3C"],
+  "components": [
+    {
+      "id": "M1",
+      "type": "MOSFET",
+      "pins": ["D", "G", "S"],
+      "parameters": {
+        "model": "2N7002",
+        "vth": 2.0,
+        "kp": 0.01
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NMOS_DGS",
+        "footprint": "Package_TO_SOT_SMD:SOT-23",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "amp"
+      }
+    },
+    {
+      "id": "RD",
+      "type": "RESISTOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "resistance": 4700,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": 20,
+        "group": "drain"
+      }
+    },
+    {
+      "id": "RS",
+      "type": "RESISTOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": -20,
+        "group": "source"
+      }
+    },
+    {
+      "id": "CS",
+      "type": "CAPACITOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "capacitance": 1e-5,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 20,
+        "y": -20
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "CAPACITOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "capacitance": 1e-5,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": 0
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "CAPACITOR",
+      "pins": ["1", "2"],
+      "parameters": {
+        "capacitance": 1e-5,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 20
+      }
+    },
+    {
+      "id": "VDD",
+      "type": "VOLTAGE_SOURCE",
+      "pins": ["+", "-"],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VDD",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "power"
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": ["IN"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -40,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": ["OUT"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 40,
+        "y": 20,
+        "group": "output"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "GROUND",
+      "pins": ["GND"],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -40
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vdd",
+      "connections": [
+        ["VDD", "+"],
+        ["RD", "1"]
+      ]
+    },
+    {
+      "id": "net_drain",
+      "connections": [
+        ["M1", "D"],
+        ["RD", "2"],
+        ["COUT", "1"]
+      ]
+    },
+    {
+      "id": "net_gate",
+      "connections": [
+        ["M1", "G"],
+        ["CIN", "2"]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        ["GND", "GND"],
+        ["RS", "2"],
+        ["CS", "2"],
+        ["VDD", "-"]
+      ]
+    },
+    {
+      "id": "net_source",
+      "connections": [
+        ["M1", "S"],
+        ["RS", "1"],
+        ["CS", "1"]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        ["VIN", "IN"],
+        ["CIN", "1"]
+      ]
+    },
+    {
+      "id": "net_out",
+      "connections": [
+        ["COUT", "2"],
+        ["VOUT", "OUT"]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_out"
+    },
+    {
+      "id": "VDD",
+      "direction": "power",
+      "net": "net_vdd"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VDD",
+      "min": 5.0,
+      "max": 24.0
+    },
+    {
+      "type": "current_limit",
+      "target": "M1",
+      "max": 0.3
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RD",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RS",
+      "min_watts": 0.25
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CS",
+      "min": 25.0
+    }
+  ],
+  "parametric": {
+    "RD": {
+      "resistance": "optional"
+    },
+    "RS": {
+      "resistance": "optional"
+    },
+    "CS": {
+      "capacitance": "optional"
+    },
+    "CIN": {
+      "capacitance": "optional"
+    },
+    "COUT": {
+      "capacitance": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 0,
+        "radius": 5,
+        "reason": "M1 nhiệt cao"
+      }
+    ],
+    "critical_nets": ["net_in", "net_out"]
+  }
+}

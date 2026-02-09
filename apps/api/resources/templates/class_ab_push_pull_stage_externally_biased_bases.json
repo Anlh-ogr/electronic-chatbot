@@ -1,0 +1,551 @@
+{
+  "topology_type": "class_ab_push_pull_stage_externally_biased_bases",
+  "description": "BJT Class AB Push-Pull Stage – Externally Biased Bases. Mạch khuếch đại công suất Class AB push-pull dùng cặp BJT bổ sung (NPN+PNP), bases nhận bias từ ngoài (qua CIN: VIN → bases chung). BOM: 2 BJT (Q1=BD139 NPN, Q2=BD140 PNP), 2R (Re1=0.22Ω 5W, Re2=0.22Ω 5W), 2C (CIN=10µF 25V, COUT=470µF 35V). VCC=24V, RL=8Ω 20W. Crossover distortion mạnh.",
+  "category": "power_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "BD139",
+        "beta": 100,
+        "type": "npn"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-126-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 20,
+        "group": "amp_npn"
+      }
+    },
+    {
+      "id": "Q2",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "BD140",
+        "beta": 100,
+        "type": "pnp"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_PNP_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-126-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -20,
+        "group": "amp_pnp"
+      }
+    },
+    {
+      "id": "Re1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 0.22,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 15,
+        "y": 10,
+        "group": "emitter_npn"
+      }
+    },
+    {
+      "id": "Re2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 0.22,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 15,
+        "y": -10,
+        "group": "emitter_pnp"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -75,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.00047,
+        "voltage_rating": 35
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D10.0mm_P5.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 40,
+        "y": 0,
+        "group": "output"
+      }
+    },
+    {
+      "id": "RL",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 8,
+        "power_rating": 20.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L50.0mm_W9.0mm_P55.88mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 60,
+        "y": -10,
+        "group": "load"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 24.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 60,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -60
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -90,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 80,
+        "y": 0,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "Q1",
+          "C"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "Q2",
+          "C"
+        ],
+        [
+          "RL",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_cin_bases",
+      "connections": [
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ],
+        [
+          "Q2",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_q1",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "Re1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_q2",
+      "connections": [
+        [
+          "Q2",
+          "E"
+        ],
+        [
+          "Re2",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_common",
+      "connections": [
+        [
+          "Re1",
+          "2"
+        ],
+        [
+          "Re2",
+          "2"
+        ],
+        [
+          "COUT",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_out",
+      "connections": [
+        [
+          "COUT",
+          "2"
+        ],
+        [
+          "RL",
+          "1"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_out"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 12.0,
+      "max": 30.0
+    },
+    {
+      "type": "current_limit",
+      "target": "Q1",
+      "max": 1.5
+    },
+    {
+      "type": "current_limit",
+      "target": "Q2",
+      "max": 1.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q1",
+      "min_watts": 8.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q2",
+      "min_watts": 8.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Re1",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Re2",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RL",
+      "min_watts": 20.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 35.0
+    },
+    {
+      "type": "note",
+      "note": "Bases receive bias externally via CIN, strong crossover distortion"
+    },
+    {
+      "type": "quiescent_current",
+      "target": "Q1,Q2",
+      "typical_iq_mA": "90-227",
+      "note": "With Re1=Re2=0.22Ω, Iq=90-227mA produces 20-50mV drop across each Re for Class AB bias. For Iq=50-100mA, use Re=0.4-0.5Ω instead."
+    },
+    {
+      "type": "voltage_drop",
+      "target": "Re1,Re2",
+      "typical_mV": "20-50",
+      "note": "Voltage drop across emitter resistors monitors quiescent bias point"
+    }
+  ],
+  "parametric": {
+    "Re1": {
+      "resistance": "optional",
+      "note": "Emitter degeneration for Q1 stability"
+    },
+    "Re2": {
+      "resistance": "optional",
+      "note": "Emitter degeneration for Q2 stability"
+    },
+    "RL": {
+      "resistance": "optional"
+    },
+    "CIN": {
+      "capacitance": "optional"
+    },
+    "COUT": {
+      "capacitance": "optional"
+    },
+    "Q1": {
+      "beta": "optional",
+      "model": "optional"
+    },
+    "Q2": {
+      "beta": "optional",
+      "model": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 20,
+        "radius": 12,
+        "reason": "Q1 NPN power dissipation - heatsink required"
+      },
+      {
+        "x": 0,
+        "y": -20,
+        "radius": 12,
+        "reason": "Q2 PNP power dissipation - heatsink required"
+      }
+    ],
+    "critical_nets": [
+      "net_in",
+      "net_cin_bases",
+      "net_emit_common",
+      "net_out"
+    ],
+    "thermal_management": [
+      {
+        "component": "Q1",
+        "note": "Requires heatsink, typical thermal resistance 50°C/W, mount with thermal compound"
+      },
+      {
+        "component": "Q2",
+        "note": "Requires heatsink, typical thermal resistance 50°C/W, mount with thermal compound"
+      },
+      {
+        "note": "Q1 and Q2 can share common heatsink with isolation"
+      }
+    ],
+    "high_current_traces": [
+      "net_emit_common",
+      "net_vcc",
+      "net_gnd"
+    ],
+    "matched_components": [
+      {
+        "components": [
+          "Re1",
+          "Re2"
+        ],
+        "note": "Match emitter resistors for balance"
+      }
+    ],
+    "notes": [
+      "Class AB operation: Both transistors conduct >50% but <100% of cycle",
+      "Bases receive bias externally via CIN, strong crossover distortion",
+      "Re1 and Re2 provide DC stability and current limit protection"
+    ]
+  },
+  "template_id": "AB-04",
+  "variable_name": "CLASS_AB_PUSH_PULL_STAGE_EXTERNALLY_BIASED_BASES_SCH_TEMPLATE"
+}

@@ -1,0 +1,648 @@
+{
+  "topology_type": "two_stage_cecc_fixed_bias_stage2",
+  "description": "MS3: Two-Stage CE-CC Amplifier. Stage 1: CE full (with voltage divider bias and CE1 bypass). Stage 2: CC with fixed bias (RB2 from VCC to Q2 base, Cmid coupling to Q2 base, no voltage divider). BOM: 2 BJT (Q1=2N3904 CE, Q2=2N2222 CC), 6R (R1a=47kΩ, R2a=10kΩ, RC1=4.7kΩ, RE1=1kΩ, RB2=47kΩ, RE2=1kΩ), 4C (CIN=10µF, Cmid=10µF, COUT=10µF, CE1=100µF). VCC=12V. Suitable for moderate gain, low output impedance buffer, simplified bias on stage 2.",
+  "category": "special_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N3904",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "position": {
+        "x": -10,
+        "y": 0,
+        "group": "ce_stage"
+      }
+    },
+    {
+      "id": "Q2",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N2222",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "position": {
+        "x": 10,
+        "y": 0,
+        "group": "cc_stage"
+      }
+    },
+    {
+      "id": "R1a",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "position": {
+        "x": -30,
+        "y": 30,
+        "group": "bias_ce"
+      }
+    },
+    {
+      "id": "R2a",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10000,
+        "power_rating": 0.25
+      },
+      "position": {
+        "x": -30,
+        "y": -30,
+        "group": "bias_ce"
+      }
+    },
+    {
+      "id": "RC1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 4700,
+        "power_rating": 0.5
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "collector_ce"
+      }
+    },
+    {
+      "id": "RE1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "position": {
+        "x": 10,
+        "y": -30,
+        "group": "emitter_ce"
+      }
+    },
+    {
+      "id": "RB2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "position": {
+        "x": 30,
+        "y": 0,
+        "group": "fixed_bias_cc"
+      }
+    },
+    {
+      "id": "RE2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "position": {
+        "x": 20,
+        "y": -30,
+        "group": "emitter_cc"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "position": {
+        "x": -50,
+        "y": 0,
+        "group": "input_coupling"
+      }
+    },
+    {
+      "id": "Cmid",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "interstage_coupling"
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "position": {
+        "x": 30,
+        "y": 40,
+        "group": "output_coupling"
+      }
+    },
+    {
+      "id": "CE1",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.0001,
+        "voltage_rating": 16
+      },
+      "position": {
+        "x": 25,
+        "y": -30,
+        "group": "bypass_ce"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "position": {
+        "x": 0,
+        "y": 70,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "position": {
+        "x": 0,
+        "y": -70
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "position": {
+        "x": -70,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "position": {
+        "x": 50,
+        "y": 40,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "R1a",
+          "1"
+        ],
+        [
+          "RC1",
+          "1"
+        ],
+        [
+          "RB2",
+          "1"
+        ],
+        [
+          "Q2",
+          "C"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "R2a",
+          "2"
+        ],
+        [
+          "RE1",
+          "2"
+        ],
+        [
+          "RE2",
+          "2"
+        ],
+        [
+          "CE1",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_base_ce",
+      "connections": [
+        [
+          "R1a",
+          "2"
+        ],
+        [
+          "R2a",
+          "1"
+        ],
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_vin",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_col_ce",
+      "connections": [
+        [
+          "Q1",
+          "C"
+        ],
+        [
+          "RC1",
+          "2"
+        ],
+        [
+          "Cmid",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_ce",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "RE1",
+          "1"
+        ],
+        [
+          "CE1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_base_cc",
+      "connections": [
+        [
+          "RB2",
+          "2"
+        ],
+        [
+          "Cmid",
+          "2"
+        ],
+        [
+          "Q2",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_cc",
+      "connections": [
+        [
+          "Q2",
+          "E"
+        ],
+        [
+          "RE2",
+          "1"
+        ],
+        [
+          "COUT",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_vout",
+      "connections": [
+        [
+          "COUT",
+          "2"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_vin"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_vout"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "vcc",
+      "value": 12.0,
+      "unit": "V"
+    },
+    {
+      "type": "ic_q1",
+      "typical_ma": 0.5,
+      "note": "Q1 collector current, typically 0.5-1 mA"
+    },
+    {
+      "type": "ic_q2",
+      "typical_ma": 10,
+      "note": "Q2 collector current, typically 5-10 mA"
+    },
+    {
+      "type": "gain_ce",
+      "typical": 100,
+      "note": "Voltage gain Av ≈ RC1/(RE1||re), full gain with CE1 bypass"
+    },
+    {
+      "type": "rin",
+      "typical_kohm": ">100",
+      "note": "High input impedance from voltage divider bias and CE1 bypass"
+    },
+    {
+      "type": "rout",
+      "typical_ohm": "<100",
+      "note": "Low output impedance from CC stage"
+    },
+    {
+      "type": "bandwidth",
+      "typical_khz": "10-100",
+      "note": "Limited by cascaded BJT bandwidth"
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R1a",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "R2a",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC1",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE1",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB2",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE2",
+      "min_watts": 0.5
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Cmid",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CE1",
+      "min": 16.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q1",
+      "min": 15.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q2",
+      "min": 30.0
+    }
+  ],
+  "parametric": {
+    "R1a": {
+      "resistance": "optional",
+      "note": "Upper bias resistor for CE stage"
+    },
+    "R2a": {
+      "resistance": "optional",
+      "note": "Lower bias resistor for CE stage"
+    },
+    "RC1": {
+      "resistance": "optional",
+      "note": "Collector resistor for CE stage"
+    },
+    "RE1": {
+      "resistance": "optional",
+      "note": "Emitter resistor for CE stage"
+    },
+    "RB2": {
+      "resistance": "optional",
+      "note": "Fixed bias resistor for CC stage (VCC to Q2 base)"
+    },
+    "RE2": {
+      "resistance": "optional",
+      "note": "Emitter resistor for CC stage"
+    },
+    "CIN": {
+      "capacitance": "optional",
+      "note": "Input coupling cap"
+    },
+    "Cmid": {
+      "capacitance": "optional",
+      "note": "Interstage coupling cap"
+    },
+    "COUT": {
+      "capacitance": "optional",
+      "note": "Output coupling cap"
+    },
+    "CE1": {
+      "capacitance": "optional",
+      "note": "Emitter bypass cap for CE stage"
+    },
+    "Q1": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "CE stage transistor"
+    },
+    "Q2": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "CC stage transistor"
+    }
+  },
+  "pcb_hints": {
+    "critical_nets": [
+      "net_base_ce",
+      "net_col_ce",
+      "net_base_cc",
+      "net_emit_cc"
+    ],
+    "high_impedance_nodes": [
+      "net_base_ce",
+      "net_base_cc"
+    ],
+    "layout_guidelines": [
+      {
+        "note": "Place Q1 and Q2 close together for minimal interstage coupling loss"
+      },
+      {
+        "note": "Route bias networks (R1a-R2a, RB2) away from output to avoid feedback"
+      },
+      {
+        "note": "Star ground CE1, RE1, RE2 at emitter nodes for best AC performance"
+      }
+    ],
+    "thermal_considerations": [
+      {
+        "note": "Q2 carries most of the current - ensure adequate spacing or heatsink if IC > 100mA"
+      }
+    ],
+    "notes": [
+      "Stage 1: CE full (voltage divider bias, CE1 bypass)",
+      "Stage 2: CC with fixed bias (RB2 from VCC to Q2 base, Cmid coupling)",
+      "No voltage divider bias on stage 2, simplified bias network",
+      "High input impedance, full gain, low output impedance buffer"
+    ]
+  }
+}

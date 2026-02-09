@@ -1,0 +1,588 @@
+{
+  "topology_type": "darlington_pair_fixed_bias_emitter_bypass",
+  "description": "Darlington Pair – Fixed Bias with Emitter Bypass. Mạch khuếch đại cặp Darlington dùng 2 BJT nối serial (Emitter Q1 → Base Q2), β tổng ~ β₁*β₂ ≈ 10,000. Fixed bias: RB từ VCC đến Base Q1, không chia áp. RE + CE tạo ổn định DC và tăng gain AC. BOM: 2 BJT (Q1=2N3904, Q2=2N2222), 3R (RB=68kΩ 0.25W, RC=4.7kΩ 0.5W, RE=1kΩ 0.5W), 3C (CIN=10µF 25V, COUT=10µF 25V, CE=100µF 16V). VCC=12V.",
+  "category": "special_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N3904",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_CBE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -10,
+        "y": 0,
+        "group": "darlington_input"
+      }
+    },
+    {
+      "id": "Q2",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N2222",
+        "type": "npn",
+        "beta": 100,
+        "vbe": 0.7
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_CBE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": 0,
+        "group": "darlington_output"
+      }
+    },
+    {
+      "id": "RB",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 68000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": 20,
+        "group": "bias"
+      }
+    },
+    {
+      "id": "RC",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 4700,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 40,
+        "group": "collector"
+      }
+    },
+    {
+      "id": "RE",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 10,
+        "y": -30,
+        "group": "emitter"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -50,
+        "y": 0,
+        "group": "coupling"
+      }
+    },
+    {
+      "id": "COUT",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 40,
+        "group": "coupling"
+      }
+    },
+    {
+      "id": "CE",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.0001,
+        "voltage_rating": 16
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 25,
+        "y": -30,
+        "group": "bypass"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 70,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -70
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -70,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 50,
+        "y": 40,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "RB",
+          "1"
+        ],
+        [
+          "RC",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "RE",
+          "2"
+        ],
+        [
+          "CE",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_base_q1",
+      "connections": [
+        [
+          "RB",
+          "2"
+        ],
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_vin",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_darlington_mid",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "Q2",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_col_node",
+      "connections": [
+        [
+          "Q1",
+          "C"
+        ],
+        [
+          "Q2",
+          "C"
+        ],
+        [
+          "RC",
+          "2"
+        ],
+        [
+          "COUT",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit_node",
+      "connections": [
+        [
+          "Q2",
+          "E"
+        ],
+        [
+          "RE",
+          "1"
+        ],
+        [
+          "CE",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_vout",
+      "connections": [
+        [
+          "COUT",
+          "2"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_vin"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_vout"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "vcc",
+      "value": 12.0,
+      "unit": "V"
+    },
+    {
+      "type": "ic_q1",
+      "typical_ma": 0.5,
+      "note": "Q1 collector current, typically 0.5-1 mA"
+    },
+    {
+      "type": "ic_q2",
+      "typical_ma": 10,
+      "note": "Q2 collector current, typically 5-10 mA"
+    },
+    {
+      "type": "beta_total",
+      "typical": 10000,
+      "note": "Total current gain β_total ≈ β₁*β₂ ≈ 10,000"
+    },
+    {
+      "type": "rin",
+      "typical_kohm": ">100",
+      "note": "Very high input impedance due to Darlington configuration"
+    },
+    {
+      "type": "gain",
+      "typical": 100,
+      "note": "Voltage gain Av ≈ RC/(RE||re_total), typically 50-200"
+    },
+    {
+      "type": "bandwidth",
+      "typical_khz": "10-100",
+      "note": "Limited by cascaded BJT bandwidth"
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE",
+      "min_watts": 0.5
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "COUT",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CE",
+      "min": 16.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q1",
+      "min": 15.0
+    },
+    {
+      "type": "vce_min",
+      "target": "Q2",
+      "min": 30.0
+    }
+  ],
+  "parametric": {
+    "RB": {
+      "resistance": "optional",
+      "note": "Base bias resistor, sets base current"
+    },
+    "RC": {
+      "resistance": "optional",
+      "note": "Collector resistor, sets gain and output swing"
+    },
+    "RE": {
+      "resistance": "optional",
+      "note": "Emitter resistor, provides DC stability"
+    },
+    "CIN": {
+      "capacitance": "optional",
+      "note": "Input coupling cap, sets low-freq cutoff"
+    },
+    "COUT": {
+      "capacitance": "optional",
+      "note": "Output coupling cap, sets low-freq cutoff"
+    },
+    "CE": {
+      "capacitance": "optional",
+      "note": "Emitter bypass cap, increases AC gain"
+    },
+    "Q1": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "First stage, determines input impedance"
+    },
+    "Q2": {
+      "model": "optional",
+      "beta": "optional",
+      "note": "Second stage, provides current gain"
+    }
+  },
+  "pcb_hints": {
+    "critical_nets": [
+      "net_base_q1",
+      "net_darlington_mid",
+      "net_col_node",
+      "net_emit_node"
+    ],
+    "high_impedance_nodes": [
+      "net_base_q1",
+      "net_darlington_mid"
+    ],
+    "layout_guidelines": [
+      {
+        "note": "Place Q1 and Q2 close together (within 5-10mm) to minimize parasitic inductance in Darlington connection"
+      },
+      {
+        "note": "Keep E(Q1)→B(Q2) trace short to avoid noise pickup"
+      },
+      {
+        "note": "Route base bias network (RB-CIN) away from output to avoid feedback"
+      },
+      {
+        "note": "Star ground CE, RE at emitter node for best AC performance"
+      }
+    ],
+    "thermal_considerations": [
+      {
+        "note": "Q2 carries most of the current - ensure adequate spacing or heatsink if IC > 100mA"
+      },
+      {
+        "note": "Darlington has higher VBE (≈1.4V) than single BJT due to stacked VBE drops"
+      }
+    ],
+    "notes": [
+      "Darlington configuration: β_total = β₁ × β₂ ≈ 10,000",
+      "Very high input impedance (>100kΩ typical)",
+      "Used as buffer or high-current driver",
+      "Total VBE ≈ 1.4V (two VBE drops in series)",
+      "Lower bandwidth than single-stage due to cascaded poles",
+      "Q1 is typically low-power (2N3904), Q2 can be higher-power (2N2222)",
+      "RE provides DC stability, CE bypasses for AC gain"
+    ]
+  }
+}

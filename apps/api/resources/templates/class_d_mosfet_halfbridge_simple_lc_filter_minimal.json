@@ -1,0 +1,525 @@
+{
+  "topology_type": "class_d_mosfet_halfbridge_simple_lc_filter_minimal",
+  "description": "MOSFET Class D Half-Bridge – Simple LC Filter (Minimal). Mạch khuếch đại công suất Class D tối giản dùng 1 MOSFET (IRLZ44N) điều khiển bởi PWM_IN qua Rg. Drain nối LC filter (L=22µH, Cout=1µF), qua RL=10Ω về GND. BOM: 1 MOSFET (IRLZ44N), 2R (Rg=33Ω 0.5W, RL=10Ω 2W), 1L (22µH 2A), 2C (Cout=1µF 35V, Cdec=100nF 50V). VCC=24V.",
+  "category": "power_amplifier",
+  "components": [
+    {
+      "id": "M1",
+      "type": "mosfet",
+      "pins": [
+        "D",
+        "G",
+        "S"
+      ],
+      "parameters": {
+        "model": "IRLZ44N",
+        "type": "n-channel",
+        "vds_max": 55,
+        "id_max": 47,
+        "rds_on": 0.022
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NMOS_DGS",
+        "footprint": "Package_TO_SOT_THT:TO-220-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "main"
+      }
+    },
+    {
+      "id": "Rg",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 33,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -20,
+        "y": 0,
+        "group": "gate_driver"
+      }
+    },
+    {
+      "id": "RL",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 10,
+        "power_rating": 2.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W6.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 70,
+        "y": 0,
+        "group": "load"
+      }
+    },
+    {
+      "id": "L1",
+      "type": "inductor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "inductance": 2.2e-05,
+        "current_rating": 2.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "L",
+        "footprint": "Inductor_THT:L_Radial_D12.0mm_P5.00mm_Fastron_11P",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 0,
+        "group": "lc_filter"
+      }
+    },
+    {
+      "id": "Cout",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-06,
+        "voltage_rating": 35
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 50,
+        "y": 0,
+        "group": "lc_filter"
+      }
+    },
+    {
+      "id": "Cdec",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-07,
+        "voltage_rating": 50
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C",
+        "footprint": "Capacitor_THT:C_Disc_D3.0mm_W1.6mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 5,
+        "y": 20,
+        "group": "decoupling"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 24.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 70,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -70
+      }
+    },
+    {
+      "id": "PWM_IN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -40,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 90,
+        "y": 0,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "M1",
+          "D"
+        ],
+        [
+          "Cdec",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "RL",
+          "2"
+        ],
+        [
+          "Cdec",
+          "2"
+        ],
+        [
+          "Cout",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_pwm_in",
+      "connections": [
+        [
+          "PWM_IN",
+          "IN"
+        ],
+        [
+          "Rg",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gate_m1",
+      "connections": [
+        [
+          "Rg",
+          "2"
+        ],
+        [
+          "M1",
+          "G"
+        ]
+      ]
+    },
+    {
+      "id": "net_switch_node",
+      "connections": [
+        [
+          "M1",
+          "S"
+        ],
+        [
+          "L1",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_lc_node",
+      "connections": [
+        [
+          "L1",
+          "2"
+        ],
+        [
+          "Cout",
+          "1"
+        ],
+        [
+          "RL",
+          "1"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "PWM_IN",
+      "direction": "input",
+      "net": "net_pwm_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_lc_node"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 12.0,
+      "max": 30.0
+    },
+    {
+      "type": "current_limit",
+      "target": "M1",
+      "max": 47.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "M1",
+      "min": 55.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "M1",
+      "min_watts": 50.0
+    },
+    {
+      "type": "rds_on_max",
+      "target": "M1",
+      "max": 0.022
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Rg",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RL",
+      "min_watts": 2.0
+    },
+    {
+      "type": "current_rating_min",
+      "target": "L1",
+      "min": 2.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Cout",
+      "min": 35.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Cdec",
+      "min": 50.0
+    },
+    {
+      "type": "pwm_frequency",
+      "typical_khz": "100-500",
+      "note": "PWM switching frequency for Class D operation"
+    },
+    {
+      "type": "audio_bandwidth",
+      "typical": "20Hz-20kHz",
+      "note": "Audio output bandwidth after LC filtering"
+    },
+    {
+      "type": "efficiency",
+      "typical_percent": ">90",
+      "note": "Class D switching amplifier efficiency"
+    },
+    {
+      "type": "lc_filter_cutoff",
+      "note": "LC filter (L=22µH, C=1µF) provides low-pass filtering at ~33kHz to remove PWM carrier"
+    },
+    {
+      "type": "output_type",
+      "note": "Audio output after LC filter, PWM_IN direct to gate"
+    }
+  ],
+  "parametric": {
+    "Rg": {
+      "resistance": "optional",
+      "note": "Gate resistor for MOSFET switching speed control"
+    },
+    "L1": {
+      "inductance": "optional",
+      "note": "LC filter inductor, typical 10-47µH"
+    },
+    "Cout": {
+      "capacitance": "optional",
+      "note": "LC filter capacitor, typical 0.47-2.2µF"
+    },
+    "RL": {
+      "resistance": "optional"
+    },
+    "Cdec": {
+      "capacitance": "optional"
+    },
+    "M1": {
+      "model": "optional",
+      "rds_on": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 0,
+        "radius": 15,
+        "reason": "M1 MOSFET switching - heatsink required"
+      }
+    ],
+    "critical_nets": [
+      "net_switch_node",
+      "net_gate_m1",
+      "net_lc_node"
+    ],
+    "thermal_management": [
+      {
+        "component": "M1",
+        "note": "Requires heatsink, typical thermal resistance 1.9°C/W junction-to-case"
+      },
+      {
+        "note": "Ensure adequate cooling for continuous operation"
+      }
+    ],
+    "high_current_traces": [
+      "net_vcc",
+      "net_gnd",
+      "net_switch_node",
+      "net_lc_node"
+    ],
+    "high_frequency_traces": [
+      "net_switch_node",
+      "net_gate_m1",
+      "net_lc_node"
+    ],
+    "emc_considerations": [
+      {
+        "note": "Keep gate drive trace (Rg→M1) short to minimize ringing"
+      },
+      {
+        "note": "Place Cdec close to MOSFET driver for high-frequency decoupling"
+      },
+      {
+        "note": "Drain-LC node is high dV/dt - minimize trace length and add shielding if needed"
+      },
+      {
+        "note": "LC filter reduces EMI by filtering PWM harmonics"
+      }
+    ],
+    "layout_guidelines": [
+      {
+        "note": "Half-bridge layout: VCC→M1→Drain-LC node→LC filter→RL→GND as compact as possible"
+      },
+      {
+        "note": "Star ground for power (VCC/GND)"
+      },
+      {
+        "note": "Place L1 and Cout close together for effective LC filtering"
+      },
+      {
+        "note": "Gate resistor Rg should be close to MOSFET gate"
+      }
+    ],
+    "notes": [
+      "Class D operation: MOSFET switches at PWM frequency ~100-500kHz",
+      "Efficiency >90% due to switching operation (MOSFET in saturation/cutoff only)",
+      "LC filter (L=22µH, C=1µF) removes PWM carrier, passes audio 20Hz-20kHz",
+      "PWM_IN directly controls MOSFET gate",
+      "Dead time control needed to prevent shoot-through",
+      "PWM duty cycle ∝ audio input signal amplitude"
+    ]
+  }
+}

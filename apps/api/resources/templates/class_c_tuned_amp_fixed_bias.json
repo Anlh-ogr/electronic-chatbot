@@ -1,0 +1,594 @@
+{
+  "topology_type": "class_c_tuned_amp_fixed_bias",
+  "description": "BJT Class C Tuned Amplifier – Fixed Bias. Mạch khuếch đại công suất Class C dùng BJT, dẫn <50% chu kỳ, dùng cho RF với tank LC cộng hưởng. Fixed bias: RB nối từ VCC đến base Q1. BOM: 1 BJT (2N2222/2N3904), 3R (RB=120kΩ 0.25W, Rbias=1kΩ, RE=100Ω), 3C (CIN=10µF 25V, Ctank=2.2µF 25V, Cdec=100nF 50V), 1L (Ltank=10mH 100mA). VCC=12V, RL=1kΩ. Tank tuned ~1kHz (fr=1/(2π√(LC)), hiệu suất ~80%.",
+  "category": "power_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "2N2222",
+        "beta": 100,
+        "type": "npn"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-92_Inline",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 0,
+        "group": "amp"
+      }
+    },
+    {
+      "id": "RB",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 120000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": 20,
+        "group": "bias"
+      }
+    },
+    {
+      "id": "Rbias",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 20,
+        "y": 30,
+        "group": "collector"
+      }
+    },
+    {
+      "id": "RE",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 100,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -30,
+        "group": "emitter"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -50,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "Ctank",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 2.2e-06,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": -10,
+        "group": "tank"
+      }
+    },
+    {
+      "id": "Cdec",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-07,
+        "voltage_rating": 50
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C",
+        "footprint": "Capacitor_THT:C_Disc_D3.0mm_W1.6mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 50,
+        "y": 30,
+        "group": "decoupling"
+      }
+    },
+    {
+      "id": "Ltank",
+      "type": "inductor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "inductance": 0.01,
+        "current_rating": 0.1
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "L",
+        "footprint": "Inductor_THT:L_Axial_L5.0mm_D3.6mm_P10.00mm_Horizontal_Murata_BL01RN1A2A2",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 30,
+        "y": 10,
+        "group": "tank"
+      }
+    },
+    {
+      "id": "RL",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 1000,
+        "power_rating": 0.5
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 60,
+        "y": 0,
+        "group": "load"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 12.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 60,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -60
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -70,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 80,
+        "y": 0,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "RB",
+          "1"
+        ],
+        [
+          "Rbias",
+          "1"
+        ],
+        [
+          "Cdec",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "RE",
+          "2"
+        ],
+        [
+          "Ctank",
+          "2"
+        ],
+        [
+          "Ltank",
+          "2"
+        ],
+        [
+          "Cdec",
+          "2"
+        ],
+        [
+          "RL",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_base",
+      "connections": [
+        [
+          "RB",
+          "2"
+        ],
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_col",
+      "connections": [
+        [
+          "Q1",
+          "C"
+        ],
+        [
+          "Rbias",
+          "2"
+        ],
+        [
+          "Ltank",
+          "1"
+        ],
+        [
+          "Ctank",
+          "1"
+        ],
+        [
+          "RL",
+          "1"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "RE",
+          "1"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_col"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 9.0,
+      "max": 15.0
+    },
+    {
+      "type": "current_limit",
+      "target": "Q1",
+      "max": 0.6
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q1",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Rbias",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RE",
+      "min_watts": 0.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RL",
+      "min_watts": 0.5
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Ctank",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "Cdec",
+      "min": 50.0
+    },
+    {
+      "type": "current_rating_min",
+      "target": "Ltank",
+      "min": 0.1
+    },
+    {
+      "type": "resonant_frequency",
+      "target": "tank",
+      "frequency": 1000.0,
+      "note": "fr = 1/(2π√(LC)) ≈ 1 kHz with L=10mH, C=2.2µF"
+    }
+  ],
+  "parametric": {
+    "RB": {
+      "resistance": "optional"
+    },
+    "Rbias": {
+      "resistance": "optional"
+    },
+    "RE": {
+      "resistance": "optional"
+    },
+    "RL": {
+      "resistance": "optional"
+    },
+    "CIN": {
+      "capacitance": "optional"
+    },
+    "Ctank": {
+      "capacitance": "optional",
+      "note": "Tune resonant frequency with Ltank"
+    },
+    "Cdec": {
+      "capacitance": "optional"
+    },
+    "Ltank": {
+      "inductance": "optional",
+      "note": "Tune resonant frequency with Ctank"
+    },
+    "Q1": {
+      "beta": "optional",
+      "model": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 30,
+        "y": 0,
+        "radius": 15,
+        "reason": "LC tank circuit - minimize parasitic capacitance"
+      }
+    ],
+    "critical_nets": [
+      "net_in",
+      "net_base",
+      "net_col",
+      "net_emit"
+    ],
+    "thermal_management": [
+      {
+        "component": "Q1",
+        "note": "May require small heatsink for continuous RF operation"
+      }
+    ],
+    "high_current_traces": [
+      "net_col",
+      "net_vcc",
+      "net_gnd"
+    ],
+    "rf_considerations": [
+      {
+        "component": "Ltank",
+        "note": "Use air-core or ferrite inductor suitable for RF frequency"
+      },
+      {
+        "component": "Ctank",
+        "note": "Low-ESR capacitor for high Q factor"
+      },
+      {
+        "note": "Keep tank circuit traces short to minimize parasitic inductance/capacitance"
+      },
+      {
+        "note": "Ground plane recommended for RF return path"
+      }
+    ],
+    "notes": [
+      "Class C operation: Q1 conducts <50% of cycle, fixed bias from VCC to base",
+      "Tank LC resonant circuit 'fills in' the sine wave output",
+      "Efficiency ~80% (much higher than Class A ~25%)",
+      "Demo frequency ~1 kHz; for RF (MHz), scale L and C values accordingly",
+      "RB sets base bias for Class C operation",
+      "Suitable for RF transmitters, FM modulators, and other narrow-band applications"
+    ]
+  },
+  "template_id": "C-03",
+  "variable_name": "CLASS_C_TUNED_AMP_FIXED_BIAS_SCH_TEMPLATE"
+}

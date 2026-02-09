@@ -1,0 +1,592 @@
+{
+  "topology_type": "class_b_push_pull_no_bias_dc_coupled",
+  "description": "BJT Class B Push-Pull Amplifier – No Bias, DC-coupled Output. Mạch khuếch đại công suất Class B push-pull dùng 2 BJT (NPN+PNP), không phân cực (no bias), đầu ra nối trực tiếp (DC-coupled, không có tụ COUT). BOM: 2 BJT (BD139 NPN, BD140 PNP), 4R (RB1=47kΩ, RB2=47kΩ, RC1=470Ω 5W, RC2=470Ω 5W), 2C (CIN=10µF, Cdec=100µF). VCC=24V, RL=8Ω 10W. VOUT lấy tại node emitter chung.",
+  "category": "power_amplifier",
+  "components": [
+    {
+      "id": "Q1",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "BD139",
+        "beta": 100,
+        "type": "npn"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_NPN_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-126-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 20,
+        "group": "upper"
+      }
+    },
+    {
+      "id": "Q2",
+      "type": "bjt",
+      "pins": [
+        "C",
+        "B",
+        "E"
+      ],
+      "parameters": {
+        "model": "BD140",
+        "beta": 100,
+        "type": "pnp"
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "Q_PNP_BCE",
+        "footprint": "Package_TO_SOT_THT:TO-126-3_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -20,
+        "group": "lower"
+      }
+    },
+    {
+      "id": "RB1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": 30,
+        "group": "bias"
+      }
+    },
+    {
+      "id": "RB2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 47000,
+        "power_rating": 0.25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -30,
+        "y": -30,
+        "group": "bias"
+      }
+    },
+    {
+      "id": "RC1",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 470,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 20,
+        "y": 40,
+        "group": "collector"
+      }
+    },
+    {
+      "id": "RC2",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 470,
+        "power_rating": 5.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L25.0mm_W9.0mm_P27.94mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 20,
+        "y": -40,
+        "group": "collector"
+      }
+    },
+    {
+      "id": "CIN",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 1e-05,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -50,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "CDEC",
+      "type": "capacitor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "capacitance": 0.0001,
+        "voltage_rating": 25
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "C_Polarized",
+        "footprint": "Capacitor_THT:CP_Radial_D8.0mm_P3.50mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 40,
+        "y": 0,
+        "group": "decoupling"
+      }
+    },
+    {
+      "id": "RL",
+      "type": "resistor",
+      "pins": [
+        "1",
+        "2"
+      ],
+      "parameters": {
+        "resistance": 8,
+        "power_rating": 10.0
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Device",
+        "symbol_name": "R",
+        "footprint": "Resistor_THT:R_Axial_Power_L50.0mm_W9.0mm_P55.88mm",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 60,
+        "y": 0,
+        "group": "load"
+      }
+    },
+    {
+      "id": "VCC",
+      "type": "voltage_source",
+      "pins": [
+        "+",
+        "-"
+      ],
+      "parameters": {
+        "voltage": 24.0,
+        "dc": true
+      },
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "VCC",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": 60,
+        "group": "power"
+      }
+    },
+    {
+      "id": "GND",
+      "type": "ground",
+      "pins": [
+        "GND"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/power",
+        "symbol_name": "GND",
+        "footprint": "",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 0,
+        "y": -60
+      }
+    },
+    {
+      "id": "VIN",
+      "type": "port",
+      "pins": [
+        "IN"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": -70,
+        "y": 0,
+        "group": "input"
+      }
+    },
+    {
+      "id": "VOUT",
+      "type": "port",
+      "pins": [
+        "OUT"
+      ],
+      "parameters": {},
+      "kicad": {
+        "library_id": "resources/kicad/symbols/version/Connector",
+        "symbol_name": "Conn_01x01",
+        "footprint": "Connector_PinHeader_2.54mm:PinHeader_1x01_P2.54mm_Vertical",
+        "symbol_version": "1.0"
+      },
+      "position": {
+        "x": 80,
+        "y": 0,
+        "group": "output"
+      }
+    }
+  ],
+  "nets": [
+    {
+      "id": "net_vcc",
+      "connections": [
+        [
+          "VCC",
+          "+"
+        ],
+        [
+          "RC1",
+          "1"
+        ],
+        [
+          "RB1",
+          "1"
+        ],
+        [
+          "CDEC",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_gnd",
+      "connections": [
+        [
+          "GND",
+          "GND"
+        ],
+        [
+          "VCC",
+          "-"
+        ],
+        [
+          "RC2",
+          "2"
+        ],
+        [
+          "RB2",
+          "1"
+        ],
+        [
+          "CDEC",
+          "2"
+        ],
+        [
+          "RL",
+          "2"
+        ]
+      ]
+    },
+    {
+      "id": "net_in",
+      "connections": [
+        [
+          "VIN",
+          "IN"
+        ],
+        [
+          "CIN",
+          "1"
+        ]
+      ]
+    },
+    {
+      "id": "net_base",
+      "connections": [
+        [
+          "CIN",
+          "2"
+        ],
+        [
+          "RB1",
+          "2"
+        ],
+        [
+          "RB2",
+          "2"
+        ],
+        [
+          "Q1",
+          "B"
+        ],
+        [
+          "Q2",
+          "B"
+        ]
+      ]
+    },
+    {
+      "id": "net_col_q1",
+      "connections": [
+        [
+          "RC1",
+          "2"
+        ],
+        [
+          "Q1",
+          "C"
+        ]
+      ]
+    },
+    {
+      "id": "net_col_q2",
+      "connections": [
+        [
+          "RC2",
+          "1"
+        ],
+        [
+          "Q2",
+          "C"
+        ]
+      ]
+    },
+    {
+      "id": "net_emit",
+      "connections": [
+        [
+          "Q1",
+          "E"
+        ],
+        [
+          "Q2",
+          "E"
+        ],
+        [
+          "RL",
+          "1"
+        ],
+        [
+          "VOUT",
+          "OUT"
+        ]
+      ]
+    }
+  ],
+  "ports": [
+    {
+      "id": "VIN",
+      "direction": "input",
+      "net": "net_in"
+    },
+    {
+      "id": "VOUT",
+      "direction": "output",
+      "net": "net_emit"
+    },
+    {
+      "id": "VCC",
+      "direction": "power",
+      "net": "net_vcc"
+    },
+    {
+      "id": "GND",
+      "direction": "ground",
+      "net": "net_gnd"
+    }
+  ],
+  "constraints": [
+    {
+      "type": "voltage_range",
+      "target": "VCC",
+      "min": 12.0,
+      "max": 30.0
+    },
+    {
+      "type": "current_limit",
+      "target": "Q1",
+      "max": 1.5
+    },
+    {
+      "type": "current_limit",
+      "target": "Q2",
+      "max": 1.5
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q1",
+      "min_watts": 8.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "Q2",
+      "min_watts": 8.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB1",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RB2",
+      "min_watts": 0.25
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC1",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RC2",
+      "min_watts": 5.0
+    },
+    {
+      "type": "power_rating_min",
+      "target": "RL",
+      "min_watts": 10.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CIN",
+      "min": 25.0
+    },
+    {
+      "type": "voltage_rating_min",
+      "target": "CDEC",
+      "min": 25.0
+    }
+  ],
+  "parametric": {
+    "RB1": {
+      "resistance": "optional"
+    },
+    "RB2": {
+      "resistance": "optional"
+    },
+    "RC1": {
+      "resistance": "optional"
+    },
+    "RC2": {
+      "resistance": "optional"
+    },
+    "RL": {
+      "resistance": "optional"
+    },
+    "CIN": {
+      "capacitance": "optional"
+    },
+    "CDEC": {
+      "capacitance": "optional"
+    },
+    "Q1": {
+      "beta": "optional",
+      "model": "optional"
+    },
+    "Q2": {
+      "beta": "optional",
+      "model": "optional"
+    }
+  },
+  "pcb_hints": {
+    "keepout_zones": [
+      {
+        "x": 0,
+        "y": 20,
+        "radius": 10,
+        "reason": "Q1 BJT power dissipation - heatsink required"
+      },
+      {
+        "x": 0,
+        "y": -20,
+        "radius": 10,
+        "reason": "Q2 BJT power dissipation - heatsink required"
+      }
+    ],
+    "critical_nets": [
+      "net_in",
+      "net_base",
+      "net_col_q1",
+      "net_col_q2",
+      "net_emit"
+    ],
+    "thermal_management": [
+      {
+        "component": "Q1",
+        "note": "Requires heatsink, typical thermal resistance 50°C/W"
+      },
+      {
+        "component": "Q2",
+        "note": "Requires heatsink, typical thermal resistance 50°C/W"
+      }
+    ],
+    "high_current_traces": [
+      "net_col_q1",
+      "net_col_q2",
+      "net_emit",
+      "net_vcc",
+      "net_gnd"
+    ]
+  },
+  "template_id": "B-02",
+  "variable_name": "CLASS_B_PUSH_PULL_NO_BIAS_DC_COUPLED_SCH_TEMPLATE"
+}
