@@ -214,13 +214,13 @@ class CircuitIRSerializer:
     
     
     """ Kiểm tra schema của dict IR (dạng JSON/dict) và trả về danh sách lỗi nếu có.
-        Hàm này sẽ gọi các hàm kiểm tra thành phần con để xác thực từng phần của IR:
-        * meta
-        * components
-        * nets
-        * ports
-        * constraints
-        Trả về: Danh sách lỗi (nếu không có lỗi, trả về list rỗng)
+    Hàm này sẽ gọi các hàm kiểm tra thành phần con để xác thực từng phần của IR:
+     * meta
+     * components
+     * nets
+     * ports
+     * constraints
+    Trả về: Danh sách lỗi (nếu không có lỗi, trả về list rỗng)
     """
     @staticmethod
     def validate_schema(ir_data: Dict[str, Any]) -> List[str]:
