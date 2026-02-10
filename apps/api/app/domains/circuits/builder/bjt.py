@@ -13,6 +13,10 @@ Tạo pipeline pattern để xây dựng mạch:
 7. _assemble_circuit() - Tạo đối tượng Circuit hoàn chỉnh
 """
 
+# todo 1: xử lý lỗi giá trị biên (ve <= 0) - > raise lỗi, yêu cầu user tăng VB hoặc giảm IC.
+# todo 2: kiểm soát unit, giá trị trả về nên rõ ràng hơn (float có thể gây nhầm lẫn khi hiển thị BoM).
+# todo 3: mở rộng AI/LLM (soon)
+
 
 import math
 from dataclasses import dataclass, field
