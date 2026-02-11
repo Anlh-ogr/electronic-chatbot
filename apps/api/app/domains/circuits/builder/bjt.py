@@ -13,10 +13,6 @@ Tạo pipeline pattern để xây dựng mạch:
 7. _assemble_circuit() - Tạo đối tượng Circuit hoàn chỉnh
 """
 
-# todo 1: xử lý lỗi giá trị biên (ve <= 0) - > raise lỗi, yêu cầu user tăng VB hoặc giảm IC.
-# todo 2: kiểm soát unit, giá trị trả về nên rõ ràng hơn (float có thể gây nhầm lẫn khi hiển thị BoM).
-# todo 3: mở rộng AI/LLM (soon)
-
 
 import math
 from dataclasses import dataclass, field
@@ -31,12 +27,12 @@ from .common import (
 )
 
 """ Lý do sử dụng thư viện:
-math: cần cho hằng số pi trong tính toán tụ điện.
+math: cần cho hằng số π trong tính toán tụ điện.
 _dataclass: dùng để định nghĩa cấu hình BJTConfig.
 _field: dùng để khởi tạo dict mặc định cho overrides linh kiện.
-_typing: dùng để khai báo kiểu dữ liệu cho cấu hình và builder.
-from ..entities: nhập các lớp domain như Circuit, Component, Net, Port, Constraint, PinRef, ComponentType, PortDirection, ParameterValue để xây dựng mạch.
-from .common: nhập các tiện ích chung như PreferredSeries, BuildOptions, ComponentCalculator, KiCadMetadata để hỗ trợ tính toán và metadata linh kiện.
+typing: dùng để khai báo kiểu dữ liệu cho cấu hình và builder.
+..entities: nhập các lớp domain như Circuit, Component, Net, Port, Constraint, PinRef, ComponentType, PortDirection, ParameterValue để xây dựng mạch.
+.common: nhập các tiện ích chung như PreferredSeries, BuildOptions, ComponentCalculator, KiCadMetadata để hỗ trợ tính toán và metadata linh kiện.
 """
 
 
@@ -45,11 +41,6 @@ from .common: nhập các tiện ích chung như PreferredSeries, BuildOptions, 
 Cho phép tùy chỉnh các thông số nguồn, dòng, hệ số khuếch đại, loại bias, cũng như override linh kiện và build options cho từng mạch BJT cụ thể.
 Args:
  * topology (Literal["CE", "CC", "CB"]): Kiểu topology mạch BJT (Common Emitter, Collector, Base).
- * vcc (float): Điện áp nguồn nuôi (V).
- * ic_target (float): Dòng collector mục tiêu (A).
- * gain_target (float): Hệ số khuếch đại mục tiêu.
- * beta (float): Hệ số khuếch đại dòng (hFE) của transistor.
- * vbe (float): Điện áp base-emitter (V).
  * bias_type (Literal["voltage_divider", "fixed", "self"]): chia áp, cố định, tự định thiên.
  * transistor_model (str): Model transistor sử dụng (VD: "2N3904").
  * resistors (Dict[str, float]): Override giá trị điện trở (theo key: "R1", "R2", ...).
@@ -59,11 +50,11 @@ Args:
 @dataclass
 class BJTConfig:
     topology: Literal["CE", "CC", "CB"]
-    vcc: float = 12.0           # V
-    ic_target: float = 1.5e-3   # A (1.5mA)
-    gain_target: float = 10.0   # hệ số khuếch đại
-    beta: float = 100.0         # hFE
-    vbe: float = 0.7            # V
+    vcc: float = 12.0           # nguồn cấp (default)
+    ic_target: float = 1.5e-3   # dòng collector mục tiêu (A)
+    gain_target: float = 10.0   # hệ số khuếch đại mục tiêu
+    beta: float = 100.0         # hệ số khuếch đại dòng (hFE)
+    vbe: float = 0.7            # điện áp base-emitter (V)
     bias_type: Literal["voltage_divider", "fixed", "self"] = "voltage_divider"
     # cập nhật linh kiện
     transistor_model: str = "2N3904"
@@ -119,72 +110,73 @@ Methods:
 """
 class BJTCalculator:
     @staticmethod
-    def calc_voltage_divider_bias(vcc: float, vbe: float, ic: float, beta: float, series: PreferredSeries) -> Dict[str, float]:
+    def calc_voltage_divider_bias(vcc: float, vbe: float, ic: float, beta: float, series: PreferredSeries) -> Dict[str, ParameterValue]:
         vb = vbe + 0.1 * vcc    # VB ~ VBE + 10% VCC
         ib = ic / beta
         i_divider = 10 * ib     # Dòng qua divider = 10*IB
-        
+
         r2 = vb / i_divider
         r1 = (vcc - vb) / i_divider
-        
+
         return {
-            "R1": ComponentCalculator.standardize(r1, series),
-            "R2": ComponentCalculator.standardize(r2, series),
-            "VB": vb
+            "R1": ParameterValue(ComponentCalculator.standardize(r1, series), "Ω"),
+            "R2": ParameterValue(ComponentCalculator.standardize(r2, series), "Ω"),
+            "VB": ParameterValue(vb, "V")
         }
     
     @staticmethod
-    def calc_emitter_resistor(vb: float, vbe: float, ic: float, series: PreferredSeries) -> float:
-        ve = vb - vbe
+    def calc_emitter_resistor(vb: ParameterValue, vbe: float, ic: float, series: PreferredSeries) -> ParameterValue:
+        # vb: ParameterValue
+        ve = vb.value - vbe
         if ve <= 0:
-            raise ValueError(f"VE = {ve}V <= 0, không hợp lệ")
+            raise ValueError(f"VE = {ve}V <= 0, không hợp lệ. Hãy tăng VB hoặc giảm IC để VE > 0.")
         re = ve / ic
-        return ComponentCalculator.standardize(re, series)
+        return ParameterValue(ComponentCalculator.standardize(re, series), "Ω")
     
     @staticmethod
-    def calc_collector_resistor(vcc: float, ic: float, gain: float, re: float, series: PreferredSeries) -> float:
-        rc_from_gain = abs(gain) * re
+    def calc_collector_resistor(vcc: float, ic: float, gain: float, re: ParameterValue, series: PreferredSeries) -> ParameterValue:
+        rc_from_gain = abs(gain) * re.value
         vc = vcc - ic * rc_from_gain
-        
+
         # Đảm bảo headroom đủ (>30% VCC) -> tín hiệu ổn định
         if vc < 0.3 * vcc:
             rc_from_headroom = 0.5 * vcc / ic
             rc = min(rc_from_gain, rc_from_headroom)
         else:
             rc = rc_from_gain
-            
-        return ComponentCalculator.standardize(rc, series)
+
+        return ParameterValue(ComponentCalculator.standardize(rc, series), "Ω")
     
     @staticmethod
-    def calc_bypass_capacitor(re: float, freq_low: float = 100.0) -> float:
+    def calc_bypass_capacitor(re: ParameterValue, freq_low: float = 100.0) -> ParameterValue:
         # tụ bypass cho emitter (fL = 100Hz default) - XC = 1/(2*pi*f*C) = RE/10 tại tần số thấp
-        c = 10 / (2 * math.pi * freq_low * re)
-        return c
+        c = 10 / (2 * math.pi * freq_low * re.value)
+        return ParameterValue(c, "F")
 
     @staticmethod
-    def calc_base_ac_ground_capacitor(r1: float, r2: float, freq_low: float = 100.0) -> float:
+    def calc_base_ac_ground_capacitor(r1: ParameterValue, r2: ParameterValue, freq_low: float = 100.0) -> ParameterValue:
         """Tính tụ AC ground cho base trong CB topology.
         CB_CAP nối base → GND để AC ground base, giữ DC bias không đổi.
         Rth_base = R1 || R2 (trở kháng Thevenin nhìn từ base).
         XC << Rth tại freq_low → C = 10 / (2*pi*f*Rth)."""
-        r_th = (r1 * r2) / (r1 + r2)
+        r_th = (r1.value * r2.value) / (r1.value + r2.value)
         c = 10 / (2 * math.pi * freq_low * r_th)
-        return c
+        return ParameterValue(c, "F")
 
     @staticmethod
-    def calc_coupling_capacitor(r_load: float, freq_low: float = 100.0) -> float:
+    def calc_coupling_capacitor(r_load: ParameterValue, freq_low: float = 100.0) -> ParameterValue:
         """Tụ ghép input/output — XC << R_load tại freq_low.
         C = 10 / (2*pi*f*R)."""
-        c = 10 / (2 * math.pi * freq_low * r_load)
-        return c
+        c = 10 / (2 * math.pi * freq_low * r_load.value)
+        return ParameterValue(c, "F")
 
     @staticmethod
-    def calc_collector_resistor_cb(vcc: float, ic: float, gain: float, series: PreferredSeries) -> float:
+    def calc_collector_resistor_cb(vcc: float, ic: float, gain: float, series: PreferredSeries) -> ParameterValue:
         """Tính RC cho CB topology: Av ≈ RC/re.
         Sử dụng headroom approach tương tự CE."""
         # Dùng approach: RC sao cho VC ≈ 50% VCC (headroom tốt)
         rc_max = 0.5 * vcc / ic
-        return ComponentCalculator.standardize(rc_max, series)
+        return ParameterValue(ComponentCalculator.standardize(rc_max, series), "Ω")
 
 
 """ Builder cho BJT amplifier topologies (CE, CC, CB).
@@ -294,7 +286,9 @@ class BJTAmplifierBuilder:
         
         if self.config.build.include_input_coupling:
             # Rin ≈ R1 || R2 (trở kháng bias nhìn từ ngõ vào)
-            r_in = (bias["R1"] * bias["R2"]) / (bias["R1"] + bias["R2"])
+            r_in = ParameterValue(
+                (bias["R1"].value * bias["R2"].value) / (bias["R1"].value + bias["R2"].value), "Ω"
+            )
             cin = BJTCalculator.calc_coupling_capacitor(r_in)
         
         if self.config.build.include_output_coupling:
@@ -314,9 +308,8 @@ class BJTAmplifierBuilder:
             "COUT": cout,
         }
 
-
-        # Cho phép user override bất kỳ giá trị nào qua config.resistors / config.capacitors.
-        # CE/CC/CB không cần biết override xảy ra thế nào, chỉ nhận final values.
+    # Cho phép user override bất kỳ giá trị nào qua config.resistors / config.capacitors.
+    # CE/CC/CB không cần biết override xảy ra thế nào, chỉ nhận final values.
     def _apply_overrides(self) -> None:
         self.values["R1"] = self.config.resistors.get("R1", self.values["R1"])
         self.values["R2"] = self.config.resistors.get("R2", self.values["R2"])
@@ -351,30 +344,31 @@ class BJTAmplifierBuilder:
             footprint=q_meta.footprint
         )
 
+
         # Bias resistors (R1, R2) — luôn có
-        self.components["R1"] = self._create_resistor("R1", v["R1"])
-        self.components["R2"] = self._create_resistor("R2", v["R2"])
+        self.components["R1"] = self._create_resistor("R1", v["R1"].value)
+        self.components["R2"] = self._create_resistor("R2", v["R2"].value)
 
         # RC — chỉ tạo nếu topology cần (CE, CB)
         if v["RC"] is not None:
-            self.components["RC"] = self._create_resistor("RC", v["RC"])
+            self.components["RC"] = self._create_resistor("RC", v["RC"].value)
 
         # RE — luôn có
-        self.components["RE"] = self._create_resistor("RE", v["RE"])
+        self.components["RE"] = self._create_resistor("RE", v["RE"].value)
 
         # Coupling capacitors (CIN, COUT) — tùy build option
         if v["CIN"]:
-            self.components["CIN"] = self._create_capacitor("CIN", v["CIN"])
+            self.components["CIN"] = self._create_capacitor("CIN", v["CIN"].value)
         if v["COUT"]:
-            self.components["COUT"] = self._create_capacitor("COUT", v["COUT"])
+            self.components["COUT"] = self._create_capacitor("COUT", v["COUT"].value)
 
         # Bypass capacitor (CE) — tùy build option (polarized)
         if v["CE"]:
-            self.components["CE"] = self._create_capacitor("CE", v["CE"], polarized=True)
+            self.components["CE"] = self._create_capacitor("CE", v["CE"].value, polarized=True)
 
         # AC ground capacitor (CB_CAP) — chỉ cho CB topology
         if v.get("CB_CAP"):
-            self.components["CB_CAP"] = self._create_capacitor("CB_CAP", v["CB_CAP"])
+            self.components["CB_CAP"] = self._create_capacitor("CB_CAP", v["CB_CAP"].value)
 
         # Ground — luôn có
         self.components["GND"] = Component(
