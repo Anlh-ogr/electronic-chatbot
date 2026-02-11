@@ -12,9 +12,6 @@ Tạo pipeline pattern để xây dựng mạch:
 7. _assemble_circuit() - Tạo đối tượng Circuit hoàn chỉnh
 """
 
-# todo 1: xử lý trường hợp VG quá cao/thấp - raise lỗi với thông báo rõ ràng
-# todo 2: hỗ trợ p-channel MOSFET (hiện tại chỉ n-channel)
-# todo 3: mở rộng AI/LLM (soon)
 
 import math
 from dataclasses import dataclass, field
@@ -70,7 +67,7 @@ class MOSFETConfig:
     vth: float = 1.0            # điện áp ngưỡng (V)
     lambda_: float = 0.02       # tham số điều chế chiều dài kênh (1/V)
     freq: float = 1000.0        # tần số hoạt động (Hz) - mặc định 1kHz
-    # cập nhật linh kiện
+    channel_type: Literal["n", "p"] = "n"  # n-channel (default) hoặc p-channel
     mosfet_model: str = "2N7000"
     resistors: Dict[str, float] = field(default_factory=dict)
     capacitors: Dict[str, float] = field(default_factory=dict)
@@ -112,81 +109,67 @@ Methods:
  * calc_gate_ac_ground_capacitor(rg, freq, factor, series) -> float:
    Tính tụ nối gate xuống ground cho AC (dùng trong CG).
 """
+
 class MOSFETCalculator:
-    
     @staticmethod
-    def calc_transconductance(id_val: float, vgs: float, vth: float, kn: float) -> float:
-        """Calculate MOSFET transconductance: gm = 2√(kn·ID)"""
-        return 2.0 * math.sqrt(kn * id_val)
-    
+    def calc_transconductance(id_val: float, vgs: float, vth: float, kn: float) -> ParameterValue:
+        gm = 2.0 * math.sqrt(kn * abs(id_val))
+        return ParameterValue(gm, "S")
+
     @staticmethod
-    def calc_output_resistance(id_val: float, lambda_: float) -> float:
-        """Calculate MOSFET output resistance: ro = 1/(λ·ID)"""
-        if lambda_ <= 0 or id_val <= 0:
-            return float('inf')
-        return 1.0 / (lambda_ * id_val)
-    
+    def calc_output_resistance(id_val: float, lambda_: float) -> ParameterValue:
+        if lambda_ <= 0 or id_val == 0:
+            return ParameterValue(float('inf'), "Ω")
+        return ParameterValue(1.0 / (lambda_ * abs(id_val)), "Ω")
+
     @staticmethod
-    def calc_source_resistor(
-        id_target: float, vgs: float, series: PreferredSeries = PreferredSeries.E12
-    ) -> float:
-        """Calculate source resistor: RS = VGS / ID"""
-        rs_ideal = vgs / id_target
-        return ComponentCalculator.standardize(rs_ideal, series)
-    
+    def calc_source_resistor(id_target: float, vgs: float, series: PreferredSeries, channel_type: str) -> ParameterValue:
+        # For p-channel, polarity is reversed
+        if channel_type == "n":
+            rs_ideal = vgs / id_target
+        else:
+            rs_ideal = -vgs / id_target
+        return ParameterValue(ComponentCalculator.standardize(abs(rs_ideal), series), "Ω")
+
     @staticmethod
-    def calc_drain_resistor(
-        vdd: float, id_target: float, vds_min: float, vs: float,
-        series: PreferredSeries = PreferredSeries.E12
-    ) -> float:
-        """Calculate drain resistor: RD = (VDD - VDS_min - VS) / ID"""
-        rd_ideal = (vdd - vds_min - vs) / id_target
-        return ComponentCalculator.standardize(rd_ideal, series)
-    
+    def calc_drain_resistor(vdd: float, id_target: float, vds_min: float, vs: float, series: PreferredSeries, channel_type: str) -> ParameterValue:
+        # For p-channel, vdd is negative, id is negative
+        if channel_type == "n":
+            rd_ideal = (vdd - vds_min - vs) / id_target
+        else:
+            rd_ideal = (vdd - (-vds_min) - vs) / id_target
+        return ParameterValue(ComponentCalculator.standardize(abs(rd_ideal), series), "Ω")
+
     @staticmethod
-    def calc_gate_resistor_divider(
-        vdd: float, vg_target: float, r_total: float = 1e6,
-        series: PreferredSeries = PreferredSeries.E12
-    ) -> Dict[str, float]:
-        """Calculate gate voltage divider: VG = VDD · R2/(R1+R2)"""
-        ratio = vg_target / vdd
-        r2_ideal = ratio * r_total
-        r1_ideal = r_total - r2_ideal
-        
-        r2 = ComponentCalculator.standardize(r2_ideal, series)
-        r1 = ComponentCalculator.standardize(r1_ideal, series)
-        
+    def calc_gate_resistor_divider(vdd: float, vg_target: float, r_total: float, series: PreferredSeries, channel_type: str) -> Dict[str, ParameterValue]:
+        # For p-channel, vdd is negative, vg_target is negative
+        if channel_type == "n":
+            ratio = vg_target / vdd
+        else:
+            ratio = vg_target / vdd if vdd != 0 else 0
+        r2_ideal = ratio * abs(r_total)
+        r1_ideal = abs(r_total) - r2_ideal
+        r2 = ParameterValue(ComponentCalculator.standardize(abs(r2_ideal), series), "Ω")
+        r1 = ParameterValue(ComponentCalculator.standardize(abs(r1_ideal), series), "Ω")
         return {"R1": r1, "R2": r2}
-    
+
     @staticmethod
-    def calc_bypass_capacitor(
-        rs: float, freq: float, factor: float = 10.0,
-        series: PreferredSeries = PreferredSeries.E12
-    ) -> float:
-        """Calculate bypass capacitor: CS >> 1/(2πf·RS)"""
-        xc_target = rs / factor
+    def calc_bypass_capacitor(rs: ParameterValue, freq: float, factor: float = 10.0, series: PreferredSeries = PreferredSeries.E12) -> ParameterValue:
+        xc_target = rs.value / factor
         cs_ideal = 1.0 / (2.0 * math.pi * freq * xc_target)
-        return ComponentCalculator.standardize(cs_ideal, series)
-    
+        return ParameterValue(ComponentCalculator.standardize(cs_ideal, series), "F")
+
     @staticmethod
-    def calc_coupling_capacitor(
-        r: float, freq: float, factor: float = 10.0,
-        series: PreferredSeries = PreferredSeries.E12
-    ) -> float:
-        """Calculate coupling capacitor: Xc << R at low frequency"""
-        xc_target = r / factor
+    def calc_coupling_capacitor(r: ParameterValue, freq: float, factor: float = 10.0, series: PreferredSeries = PreferredSeries.E12) -> ParameterValue:
+        xc_target = r.value / factor
         c_ideal = 1.0 / (2.0 * math.pi * freq * xc_target)
-        return ComponentCalculator.standardize(c_ideal, series)
-    
+        return ParameterValue(ComponentCalculator.standardize(c_ideal, series), "F")
+
     @staticmethod
-    def calc_gate_ac_ground_capacitor(
-        rg: float, freq: float, factor: float = 10.0,
-        series: PreferredSeries = PreferredSeries.E12
-    ) -> float:
-        """Calculate gate-to-ground AC coupling capacitor"""
-        xc_target = rg / factor
+    def calc_gate_ac_ground_capacitor(rg: ParameterValue, freq: float, factor: float = 10.0, series: PreferredSeries = PreferredSeries.E12) -> ParameterValue:
+        xc_target = rg.value / factor
         c_ideal = 1.0 / (2.0 * math.pi * freq * xc_target)
-        return ComponentCalculator.standardize(c_ideal, series)
+        return ParameterValue(ComponentCalculator.standardize(c_ideal, series), "F")
 
 
 """ Builder cho MOSFET amplifier topologies (CS, CD, CG).
@@ -293,6 +276,11 @@ class MOSFETAmplifierBuilder:
         
         # VDS = VD - VS (kiểm tra vùng bão hòa)
         vds = vd - vs
+        if vds < self.config.vds_min:
+            raise ValueError(
+                f"[MOSFET] VDS thực tế ({vds:.2f}V) nhỏ hơn VDS_min yêu cầu ({self.config.vds_min}V). "
+                f"Hãy điều chỉnh lại thông số bias, RD, RS, hoặc VDD để đảm bảo VDS đủ headroom cho vùng bão hòa."
+            )
         
         # Gate voltage divider: VG = VDD · RG2/(RG1+RG2)
         gate_div = MOSFETCalculator.calc_gate_resistor_divider(
@@ -478,34 +466,68 @@ class MOSFETAmplifierBuilder:
         )
     
     # Tạo nets tùy thuộc vào topology CS/CD/CG thông qua dispatch
-    def _create_nets(self) -> None:
+    def _compute_values(self) -> None:
+        series = self.config.build.resistor_series
         topology = self.config.topology
-        if topology == "CS":
-            self._create_nets_cs()
-        elif topology == "CD":
-            self._create_nets_cd()
-        elif topology == "CG":
-            self._create_nets_cg()
+        channel_type = self.config.channel_type
+        id_val = self.config.id_target
+        vgs = self.config.vgs_target
+        vth = self.config.vth
+        kn = self.config.kn
+        vdd = self.config.vdd
+        freq = self.config.freq
+        lambda_ = self.config.lambda_
+        # Transconductance: gm = 2√(kn·ID)
+        gm = MOSFETCalculator.calc_transconductance(id_val, vgs, vth, kn)
+        # Output resistance: ro = 1/(λ·ID)
+        ro = MOSFETCalculator.calc_output_resistance(id_val, lambda_)
+        # Source resistor: RS = VGS / ID (with channel type)
+        rs = MOSFETCalculator.calc_source_resistor(id_val, vgs, series, channel_type)
+        # VS = ID · RS (điện áp tại source)
+        vs = id_val * rs.value
+        # VG = VS + VGS (n-channel: VG = VS + VGS, p-channel: VG = VS + VGS, but sign)
+        if channel_type == "n":
+            vg = vs + vgs
         else:
-            raise ValueError(f"Unknown MOSFET topology: {topology}")
-    
-    """ Tạo nets cho Common Source: VDD → RG1.1, RD.1
-                                     VGATE → RG1.2, RG2.1, [CIN.2 hoặc M1.G]
-                                     VDRAIN → RD.2, M1.D, [COUT.1]
-                                     VSOURCE → M1.S, RS.1, [CS.1]
-                                     GND → GND.1, RG2.2, RS.2, [CS.2]
-        Input qua Gate (hoặc CIN → Gate), output từ Drain (hoặc → COUT). """
-    def _create_nets_cs(self) -> None:
+            vg = vs - abs(vgs)
+        # Bias gate error check (todo 1)
+        # For n-channel: VG must be between 0 and VDD; for p-channel: VG negative, between VDD and 0
+        if channel_type == "n":
+            if vg < 0 or vg > vdd:
+                raise ValueError(f"[MOSFET] Invalid gate bias: VG={vg:.2f}V out of range [0, VDD={vdd}V]. Check VGS, VS, VDD.")
+        else:
+            if vg > 0 or vg < vdd:
+                raise ValueError(f"[MOSFET] Invalid p-channel gate bias: VG={vg:.2f}V out of range [VDD={vdd}V, 0]. Check VGS, VS, VDD.")
+        # Gate resistor divider
+        gate_div = MOSFETCalculator.calc_gate_resistor_divider(vdd, vg, 1e6, series, channel_type)
+        # Drain resistor (only for CS/CG)
+        rd = None
+        if topology in ("CS", "CG"):
+            rd = MOSFETCalculator.calc_drain_resistor(vdd, id_val, self.config.vds_min, vs, series, channel_type)
+        # Bypass/source/gate capacitors
+        cs = MOSFETCalculator.calc_bypass_capacitor(rs, freq)
+        # Coupling capacitors (input/output)
+        cin = MOSFETCalculator.calc_coupling_capacitor(rs, freq)
+        cout = MOSFETCalculator.calc_coupling_capacitor(rd if rd else rs, freq)
+        # Store all values as ParameterValue
+        self.values = {
+            "GM": gm,
+            "RO": ro,
+            "RS": rs,
+            "VS": ParameterValue(vs, "V"),
+            "VG": ParameterValue(vg, "V"),
+            "RD": rd,
+            "RG1": gate_div["R1"],
+            "RG2": gate_div["R2"],
+            "CS": cs,
+            "CIN": cin,
+            "COUT": cout,
+        }
+        # ...existing code...
+        # VGATE net: RG1 dưới + RG2 trên + input coupling
         has_cin = self._has("CIN")
         has_cout = self._has("COUT")
         has_cs = self._has("CS")
-        # VDD net: RG1 trên + RD trên
-        self.nets["VDD"] = Net("VDD", (
-            PinRef("RG1", "1"),
-            PinRef("RD", "1")
-        ))
-
-        # VGATE net: RG1 dưới + RG2 trên + input coupling
         vgate_pins = [PinRef("RG1", "2"), PinRef("RG2", "1")]
         if has_cin:
             vgate_pins.append(PinRef("CIN", "2"))
