@@ -145,6 +145,7 @@ Args:
  * load_impedance: Trở kháng tải (Ω, thường là loa 8Ω).
  * vcc: Điện áp nguồn (V).
  * efficiency_target: Hiệu suất mục tiêu.
+ * frequency: Tần số hoạt động (Hz). Class C: tần số cộng hưởng RF (None → 1MHz). Class D: tần số cắt LC filter (None → 30kHz).
  * output_devices: Danh sách model transistor/mosfet output.
  * driver_devices: Danh sách model transistor/mosfet driver.
  * resistors: Override giá trị điện trở.
@@ -158,6 +159,7 @@ class PowerAmpConfig:
     load_impedance: float = 8.0     # Ω (speaker load)
     vcc: float = 24.0               # V
     efficiency_target: float = 0.5  # 50% efficiency
+    frequency: Optional[float] = None  # Hz — Class C: f0 cộng hưởng RF, Class D: f_cutoff LC filter
     # ghi đè component
     output_devices: List[str] = field(default_factory=lambda: ["TIP31C", "TIP32C"])
     driver_devices: List[str] = field(default_factory=lambda: ["2N3904", "2N3906"])
