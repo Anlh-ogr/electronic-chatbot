@@ -29,3 +29,7 @@ Thumbs.db
 .coverage
 htmlcov/
 *.cover
+
+# Hide snapshot
+apps/api/app/application/snapshots
+apps/api/app/domains/snapshots
