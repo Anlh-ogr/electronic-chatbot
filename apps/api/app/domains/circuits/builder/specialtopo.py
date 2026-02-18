@@ -18,30 +18,54 @@ Tạo pipeline pattern để xây dựng mạch:
 
 
 import math
-from typing import Dict, Any
+from dataclasses import dataclass, field
+from typing import Dict, Any, Literal, List
 
 from ..entities import (
     Circuit, Component, Net, Port, Constraint, PinRef,
     ComponentType, PortDirection, ParameterValue
 )
 from .common import (
-    PreferredSeries, BuildOptions, SpecialAmpConfig,
+    PreferredSeries, BuildOptions,
     ComponentCalculator, KiCadMetadata
 )
 
+
+""" Cấu hình cho Special Amplifiers (Darlington, Multi-stage).
+Args:
+ * topology: Darlington hoặc Multi-stage cascade.
+ * num_stages: Số tầng khuếch đại (mặc định 2).
+ * total_gain: Tổng hệ số khuếch đại mục tiêu (mặc định 100.0).
+ * vcc: Điện áp nguồn nuôi (V, mặc định 12.0).
+ * transistors: Danh sách model transistor sử dụng cho từng tầng.
+ * resistors: Override giá trị điện trở.
+ * capacitors: Override giá trị tụ điện.
+ * build: Tùy chọn build chi tiết.
+"""
+@dataclass
+class SpecialAmpConfig:
+    topology: Literal["darlington", "multi_stage"]
+    num_stages: int = 2         # số tầng
+    total_gain: float = 100.0   # tổng hệ số khuếch đại
+    vcc: float = 12.0           # V
+    # ghi đè component
+    transistors: List[str] = field(default_factory=lambda: ["2N3904"])
+    resistors: Dict[str, float] = field(default_factory=dict)
+    capacitors: Dict[str, float] = field(default_factory=dict)
+    # tùy chọn build
+    build: BuildOptions = field(default_factory=BuildOptions)
+
+
 """ Lý do sử dụng thư viện:
 math: cần cho hằng số π trong tính toán tụ điện.
+dataclasses: định nghĩa SpecialAmpConfig.
 typing: dùng để khai báo kiểu dữ liệu cho cấu hình và builder.
 ..entities: nhập các lớp domain như Circuit, Component, Net, Port, Constraint, PinRef, ComponentType, PortDirection, ParameterValue để xây dựng mạch.
-.common: nhập các tiện ích chung như PreferredSeries, BuildOptions, SpecialAmpConfig, ComponentCalculator, KiCadMetadata để hỗ trợ tính toán và metadata linh kiện.
+.common: nhập các tiện ích chung như PreferredSeries, BuildOptions, ComponentCalculator, KiCadMetadata để hỗ trợ tính toán và metadata linh kiện.
 """
 
 
-
-# ============================================================================
 # DARLINGTON PAIR BUILDER
-# ============================================================================
-
 """ Bộ tính toán chuyên dụng cho Darlington Pair.
 Cung cấp các hàm tính toán bias, điện trở emitter/collector, tụ coupling,
 phục vụ cho việc thiết kế và tối ưu hóa mạch Darlington.
