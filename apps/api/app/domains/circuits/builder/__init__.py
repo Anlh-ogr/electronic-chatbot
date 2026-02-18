@@ -1,35 +1,20 @@
-"""
-Builder Module - Circuit Template Builders
-
-This module provides circuit builders for various amplifier topologies:
+""" Module Build - Build Templates for Amplifier Circuits
+Module này cung cấp các builder để tạo ra các mạch khuếch đại dựa trên các thông số đầu vào. 
+Các builder này hỗ trợ nhiều loại topology khác nhau, bao gồm:
 - BJT amplifiers (Common Emitter, Common Collector, Common Base)
 - MOSFET amplifiers (Common Source, Common Drain, Common Gate)
 - Op-Amp amplifiers (Inverting, Non-inverting, Differential, Instrumentation)
-- Generic Parametric Engine for JSON-based templates
-- AmplifierFactory for simplified circuit creation API
-
-Usage:
-    from app.domains.circuits.builder import BJTConfig, BJTAmplifierBuilder
-    
-    config = BJTConfig(topology="CE", gain_target=10.0, vcc=12.0)
-    circuit = BJTAmplifierBuilder(config).build()
-
-    # Or use the factory for quick creation:
-    from app.domains.circuits.builder import AmplifierFactory
-    circuit = AmplifierFactory.create_bjt(topology="CE", gain=10.0)
-
-Extracted from monolithic template_builder.py for better maintainability.
+- Power Amplifiers (Class A, Class B, Class AB, Class D)
+- Các cấu hình đặc biệt như Darlington Pair và Multi-Stage Cascade.
 """
 
-# Common utilities
+# Common utilities and base classes
 from .common import (
     PreferredSeries,
     AmplifierTopology,
     ComponentMetadata,
     PCBHints,
     BuildOptions,
-    PowerAmpConfig,
-    SpecialAmpConfig,
     ComponentCalculator,
     KiCadMetadata,
     PCBHintProvider,
@@ -60,18 +45,17 @@ from .opamp import (
 from .poweramp import (
     PowerAmpConfig,
     PowerAmpCalculator,
-    PowerAmpAmplifierBuilder,
+    PowerAmpBuilder,
 )
 
 # Special topology builders
 from .specialtopo import (
+    SpecialAmpConfig,
     DarlingtonCalculator,
     DarlingtonAmplifierBuilder,
     MultiStageCalculator,
     MultiStageAmplifierBuilder,
 )
-
-#
 
 # Parametric engine
 from .parametric import (
@@ -91,8 +75,6 @@ __all__ = [
     "ComponentMetadata",
     "PCBHints",
     "BuildOptions",
-    "PowerAmpConfig",
-    "SpecialAmpConfig",
     "ComponentCalculator",
     "KiCadMetadata",
     "PCBHintProvider",
@@ -115,9 +97,10 @@ __all__ = [
     # Power Amp
     "PowerAmpConfig",
     "PowerAmpCalculator",
-    "PowerAmpAmplifierBuilder",
+    "PowerAmpBuilder",
     
     # Special topology
+    "SpecialAmpConfig",
     "DarlingtonCalculator",
     "DarlingtonAmplifierBuilder",
     "MultiStageCalculator",
