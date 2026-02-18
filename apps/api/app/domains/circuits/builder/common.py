@@ -138,62 +138,6 @@ class BuildOptions:
     add_power_protection: bool = True
 
 
-""" Cấu hình cho Power Amplifiers (Class A, AB, B, C, D).
-Args:
- * amp_class: Loại class (A, AB, B, C, D).
- * power_output: Công suất đầu ra mục tiêu (W).
- * load_impedance: Trở kháng tải (Ω, thường là loa 8Ω).
- * vcc: Điện áp nguồn (V).
- * efficiency_target: Hiệu suất mục tiêu.
- * frequency: Tần số hoạt động (Hz). Class C: tần số cộng hưởng RF (None → 1MHz). Class D: tần số cắt LC filter (None → 30kHz).
- * output_devices: Danh sách model transistor/mosfet output.
- * driver_devices: Danh sách model transistor/mosfet driver.
- * resistors: Override giá trị điện trở.
- * capacitors: Override giá trị tụ điện.
- * build: Tùy chọn build chi tiết.
-"""
-@dataclass
-class PowerAmpConfig:
-    amp_class: Literal["A", "AB", "B", "C", "D"]
-    power_output: float = 1.0       # W
-    load_impedance: float = 8.0     # Ω (speaker load)
-    vcc: float = 24.0               # V
-    efficiency_target: float = 0.5  # 50% efficiency
-    frequency: Optional[float] = None  # Hz — Class C: f0 cộng hưởng RF, Class D: f_cutoff LC filter
-    # ghi đè component
-    output_devices: List[str] = field(default_factory=lambda: ["TIP31C", "TIP32C"])
-    driver_devices: List[str] = field(default_factory=lambda: ["2N3904", "2N3906"])
-    resistors: Dict[str, float] = field(default_factory=dict)
-    capacitors: Dict[str, float] = field(default_factory=dict)
-    # tùy chọn build
-    build: BuildOptions = field(default_factory=BuildOptions)
-
-
-""" Cấu hình cho Special Amplifiers (Darlington, Multi-stage).
-Args:
- * topology: Darlington hoặc Multi-stage cascade.
- * num_stages: Số tầng khuếch đại (mặc định 2).
- * total_gain: Tổng hệ số khuếch đại mục tiêu (mặc định 100.0).
- * vcc: Điện áp nguồn nuôi (V, mặc định 12.0).
- * transistors: Danh sách model transistor sử dụng cho từng tầng.
- * resistors: Override giá trị điện trở.
- * capacitors: Override giá trị tụ điện.
- * build: Tùy chọn build chi tiết.
-"""
-@dataclass
-class SpecialAmpConfig:
-    topology: Literal["darlington", "multi_stage"]
-    num_stages: int = 2         # số tầng
-    total_gain: float = 100.0   # tổng hệ số khuếch đại
-    vcc: float = 12.0           # V
-    # ghi đè component
-    transistors: List[str] = field(default_factory=lambda: ["2N3904"])
-    resistors: Dict[str, float] = field(default_factory=dict)
-    capacitors: Dict[str, float] = field(default_factory=dict)
-    # tùy chọn build
-    build: BuildOptions = field(default_factory=BuildOptions)
-
-
 """ Bộ tính toán giá trị linh kiện chung cho các mạch khuếch đại.
 Cung cấp các hàm tiện ích để chuẩn hóa giá trị linh kiện về series chuẩn, tính toán điện trở song song, và chia áp điện áp, phục vụ cho các builder và calculator chuyên biệt.
 Methods:
