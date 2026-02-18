@@ -1,12 +1,11 @@
 # .\thesis\electronic-chatbot\apps\api\app\domains\circuits\builder\factory.py
 """ AmplifierFactory - API tạo nhanh các mạch khuếch đại (amplifier).
-
 Cung cấp các phương thức factory để sinh nhanh các topology mạch khuếch đại phổ biến:
-    - BJT: CE (Common Emitter), CC (Common Collector), CB (Common Base)
-    - MOSFET: CS (Common Source), CD (Common Drain), CG (Common Gate)
-    - Op-Amp: Inverting, Non-Inverting, Differential, Instrumentation
-    - Power Amps: Class A, AB, B, C, D (dùng ParametricEngine)
-    - Đặc biệt: Darlington, Multi-Stage Cascade
+ * BJT: CE (Common Emitter), CC (Common Collector), CB (Common Base)
+ * MOSFET: CS (Common Source), CD (Common Drain), CG (Common Gate)
+ * Op-Amp: Inverting, Non-Inverting, Differential, Instrumentation
+ * Power Amps: Class A, AB, B, C, D (dùng ParametricEngine)
+ * Đặc biệt: Darlington, Multi-Stage Cascade
 
 Thiết kế theo Domain-Driven Design (DDD), chỉ chứa logic nghiệp vụ tạo mạch, không phụ thuộc tầng ngoài.
 """
@@ -16,11 +15,11 @@ from typing import Dict, Any, Optional
 
 from app.domains.circuits.entities import Circuit
 
-from .common import PowerAmpConfig, SpecialAmpConfig
 from .bjt import BJTConfig, BJTAmplifierBuilder
 from .mosfet import MOSFETConfig, MOSFETAmplifierBuilder
 from .opamp import OpAmpConfig, OpAmpAmplifierBuilder
-from .specialtopo import DarlingtonAmplifierBuilder, MultiStageAmplifierBuilder
+from .poweramp import PowerAmpConfig, PowerAmpBuilder
+from .specialtopo import SpecialAmpConfig, DarlingtonAmplifierBuilder, MultiStageAmplifierBuilder
 from .parametric import ParametricEngine
 
 """Lý do sử dụng thư viện:
@@ -74,10 +73,8 @@ class AmplifierFactory:
         except (ValueError, FileNotFoundError):
             return None
     
-    # ----------------------------------------------------------------
+
     # Convenience methods (topology dispatch)
-    # ----------------------------------------------------------------
-    
     @classmethod
     def create_bjt(cls, topology: str = "CE", gain: float = 10.0, vcc: float = 12.0, **kwargs) -> Circuit:
         """Tạo BJT amplifier theo topology name.
@@ -139,10 +136,9 @@ class AmplifierFactory:
         else:
             raise ValueError(f"Unknown MOSFET topology: {topology}. Supported: CS, CD, CG")
     
-    # ----------------------------------------------------------------
-    # BJT Topologies
-    # ----------------------------------------------------------------
     
+    
+    # BJT Topologies    
     @staticmethod
     def create_bjt_ce(gain: float = 10.0, vcc: float = 12.0, **kwargs) -> Circuit:
         """Tạo BJT Common Emitter amplifier"""
@@ -167,10 +163,8 @@ class AmplifierFactory:
         config = BJTConfig(topology="CB", gain_target=gain, vcc=vcc, **kwargs)
         return BJTAmplifierBuilder(config).build()
     
-    # ----------------------------------------------------------------
-    # MOSFET Topologies
-    # ----------------------------------------------------------------
     
+    # MOSFET Topologies
     @classmethod
     def create_mosfet_cs(cls, gain: float = 15.0, vdd: float = 12.0, **kwargs) -> Circuit:
         """Tạo MOSFET Common Source amplifier"""
@@ -197,11 +191,9 @@ class AmplifierFactory:
             return result
         config = MOSFETConfig(topology="CG", gain_target=gain, vdd=vdd, **kwargs)
         return MOSFETAmplifierBuilder(config).build()
+
     
-    # ----------------------------------------------------------------
-    # Op-Amp Configurations
-    # ----------------------------------------------------------------
-    
+    # Op-Amp Configurations    
     @staticmethod
     def create_opamp_inverting(gain: float = -10.0, **kwargs) -> Circuit:
         """Tạo Op-Amp Inverting amplifier"""
@@ -235,10 +227,8 @@ class AmplifierFactory:
         config = OpAmpConfig(topology="instrumentation", gain=gain, **kwargs)
         return OpAmpAmplifierBuilder(config).build()
     
-    # ----------------------------------------------------------------
-    # Operation Classes (Power Amps)
-    # ----------------------------------------------------------------
-    
+
+    # Operation Classes (Power Amps)    
     @classmethod
     def create_class_a_power(cls, power_output: float = 1.0, load_impedance: float = 8.0, **kwargs) -> Circuit:
         """Tạo Class A Power amplifier"""
@@ -246,7 +236,7 @@ class AmplifierFactory:
         if result:
             return result
         config = PowerAmpConfig(amp_class="A", power_output=power_output, load_impedance=load_impedance, **kwargs)
-        raise NotImplementedError("Class A Power amplifier builder - coming soon")
+        return PowerAmpBuilder(config).build()
     
     @classmethod
     def create_class_ab_push_pull(cls, power_output: float = 10.0, load_impedance: float = 8.0, **kwargs) -> Circuit:
@@ -255,7 +245,7 @@ class AmplifierFactory:
         if result:
             return result
         config = PowerAmpConfig(amp_class="AB", power_output=power_output, load_impedance=load_impedance, **kwargs)
-        raise NotImplementedError("Class AB Push-Pull amplifier builder - coming soon")
+        return PowerAmpBuilder(config).build()
     
     @classmethod
     def create_class_b_push_pull(cls, power_output: float = 10.0, load_impedance: float = 8.0, **kwargs) -> Circuit:
@@ -264,7 +254,7 @@ class AmplifierFactory:
         if result:
             return result
         config = PowerAmpConfig(amp_class="B", power_output=power_output, load_impedance=load_impedance, **kwargs)
-        raise NotImplementedError("Class B Push-Pull amplifier builder - coming soon")
+        return PowerAmpBuilder(config).build()
     
     @classmethod
     def create_class_c_tuned(cls, power_output: float = 5.0, frequency: float = 1e6, load_impedance: float = 50.0, **kwargs) -> Circuit:
@@ -273,7 +263,7 @@ class AmplifierFactory:
         if result:
             return result
         config = PowerAmpConfig(amp_class="C", power_output=power_output, load_impedance=load_impedance, **kwargs)
-        raise NotImplementedError("Class C Tuned amplifier builder - coming soon")
+        return PowerAmpBuilder(config).build()
     
     @classmethod
     def create_class_d_switching(cls, power_output: float = 50.0, frequency: float = 400e3, **kwargs) -> Circuit:
@@ -282,12 +272,12 @@ class AmplifierFactory:
         if result:
             return result
         config = PowerAmpConfig(amp_class="D", power_output=power_output, **kwargs)
-        raise NotImplementedError("Class D Switching amplifier builder - coming soon")
+        return PowerAmpBuilder(config).build()
     
-    # ----------------------------------------------------------------
-    # Special Amplifiers
-    # ----------------------------------------------------------------
     
+    
+    
+    # Special Amplifiers (Darlington, Multi-Stage Cascade)
     @classmethod
     def create_darlington_pair(cls, gain: float = 100.0, vcc: float = 12.0, **kwargs) -> Circuit:
         """Tạo Darlington Pair amplifier"""
@@ -305,3 +295,4 @@ class AmplifierFactory:
             return result
         config = SpecialAmpConfig(topology="multi_stage", num_stages=num_stages, total_gain=total_gain, **kwargs)
         return MultiStageAmplifierBuilder(config).build()
+    
