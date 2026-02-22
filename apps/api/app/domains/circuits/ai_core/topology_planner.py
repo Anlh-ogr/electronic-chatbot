@@ -243,7 +243,7 @@ class TopologyPlanner:
 
 
 
-    """ Tính điểm candidate theo trọng số tuyến tính (linear weighted scoring).
+    """ Tính điểm mẫu theo trọng số tuyến tính (linear weighted scoring).
     Thành phần: family match, supply compatibility, capability coverage, pattern similarity, priority hint.
     Trả về tổng điểm, metadata gốc, và breakdown chi tiết để giải thích.
     """
@@ -279,7 +279,7 @@ class TopologyPlanner:
     def _compute_family_score(self, domain: Dict[str, Any], spec: UserSpec) -> float:
         return 1.0 if domain.get("family") == spec.circuit_type else 0.0
     
-    # Tính điểm nguồn cấp: 1 - phù hợp, 0 - không phù hợp, 0.5 - không rõ
+    # Tính điểm supply: 1 - phù hợp, 0 - không phù hợp, 0.5 - không rõ
     def _compute_supply_score(self, domain: Dict[str, Any], spec: UserSpec) -> float:
         if spec.supply_mode == "auto":
             return 1.0
