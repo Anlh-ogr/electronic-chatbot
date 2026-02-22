@@ -1,0 +1,503 @@
+# app/domains/circuits/ai_core/parameter_solver.py
+""" 3: ParameterSolver — giải tham số (gain, R, C...)
+Giải tham số mạch (R, C, ...) dựa trên gain yêu cầu và constraints.
+Hỗ trợ:
+  - Giải gain equation tìm bộ R
+  - Snap về chuỗi E chuẩn (E6, E12, E24, E48, E96)
+  - Kiểm tra constraints (power, voltage, matching, ...)
+"""
+
+from __future__ import annotations
+
+import math
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+""" lý do sử dụng thư viện
+math: tính log10, sqrt cho snap và giải gain
+logging: ghi log debug trong quá trình solve
+dataclasses: định nghĩa SolvedParams với to_dict() tiện lợi
+field: khởi tạo default_factory cho dict/list trong dataclass
+typing: sử dụng các type hint như Dict, List, Optional để dữ liệu rõ ràng hơn
+"""
+
+logger = logging.getLogger(__name__)
+
+
+# ── Chuỗi E chuẩn ──
+E_SERIES = {
+    "E6": [1.0, 1.5, 2.2, 3.3, 4.7, 6.8],
+    "E12": [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2],
+    "E24": [
+        1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0,
+        3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1,
+    ],
+    "E48": [
+        1.00, 1.05, 1.10, 1.15, 1.21, 1.27, 1.33, 1.40, 1.47, 1.54,
+        1.62, 1.69, 1.78, 1.87, 1.96, 2.05, 2.15, 2.26, 2.37, 2.49,
+        2.61, 2.74, 2.87, 3.01, 3.16, 3.32, 3.48, 3.65, 3.83, 4.02,
+        4.22, 4.42, 4.64, 4.87, 5.11, 5.36, 5.62, 5.90, 6.19, 6.49,
+        6.81, 7.15, 7.50, 7.87, 8.25, 8.66, 9.09, 9.53,
+    ],
+    "E96": [
+        1.00, 1.02, 1.05, 1.07, 1.10, 1.13, 1.15, 1.18, 1.21, 1.24,
+        1.27, 1.30, 1.33, 1.37, 1.40, 1.43, 1.47, 1.50, 1.54, 1.58,
+        1.62, 1.65, 1.69, 1.74, 1.78, 1.82, 1.87, 1.91, 1.96, 2.00,
+        2.05, 2.10, 2.15, 2.21, 2.26, 2.32, 2.37, 2.43, 2.49, 2.55,
+        2.61, 2.67, 2.74, 2.80, 2.87, 2.94, 3.01, 3.09, 3.16, 3.24,
+        3.32, 3.40, 3.48, 3.57, 3.65, 3.74, 3.83, 3.92, 4.02, 4.12,
+        4.22, 4.32, 4.42, 4.53, 4.64, 4.75, 4.87, 4.99, 5.11, 5.23,
+        5.36, 5.49, 5.62, 5.76, 5.90, 6.04, 6.19, 6.34, 6.49, 6.65,
+        6.81, 6.98, 7.15, 7.32, 7.50, 7.68, 7.87, 8.06, 8.25, 8.45,
+        8.66, 8.87, 9.09, 9.31, 9.53, 9.76,
+    ],
+}
+
+
+@dataclass
+class SolvedParams:
+    """ Kết quả solve tham số. 
+    * values: cặp tên tham số - giá trị đã solve (R, C, ...) | key: tên tham số, value: giá trị đã solve
+    * equations used: danh sách các công thức đã sử dụng để giải
+    * constraints report: danh sách báo cáo kiểm tra ràng buộc từ metadata
+    * actual gain: độ khuếch đại thực tế
+    * gain error percent: sai số phần trăm so với yêu cầu
+    * gain formula: công thức khuếch đại đã sử dụng
+    * notes: ghi chú thêm về quá trình giải
+    * warnings: cảnh báo nếu có vấn đề với giá trị đã solve
+    * success: flag cho biết quá trình giải có thành công hay không
+    * message: thông điệp tóm tắt kết quả giải
+    """
+    values: Dict[str, float] = field(default_factory=dict)
+    equations_used: List[str] = field(default_factory=list)
+    constraints_report: List[Dict[str, Any]] = field(default_factory=list)
+    actual_gain: Optional[float] = None
+    gain_error_percent: Optional[float] = None
+    gain_formula: str = ""
+    notes: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    success: bool = True
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "values": self.values,
+            "equations_used": self.equations_used,
+            "constraints_report": self.constraints_report,
+            "actual_gain": self.actual_gain,
+            "gain_error_percent": self.gain_error_percent,
+            "gain_formula": self.gain_formula,
+            "notes": self.notes,
+            "warnings": self.warnings,
+            "success": self.success,
+            "message": self.message,
+        }
+
+
+class ParameterSolver:
+    """ Giải tham số mạch dựa trên gain yêu cầu + metadata constraints.
+    Hỗ trợ các loại gain formula:
+      - -RF / RIN (inverting)
+      - 1 + RF / RG (non-inverting)
+      - R2 / R1 (differential)
+      - (1 + 2*RF/RG) * (R2/R1) (instrumentation)
+      - -RC / re, -RC / (re+RE) (CE)
+      - gm * RD (CS, CG)
+      - beta1 * beta2 (Darlington, current gain)
+    """
+
+    def __init__(self, preferred_series: str = "E24"):
+        self.preferred_series = preferred_series
+
+    def solve(self, target_gain: Optional[float], family: str, metadata: Optional[Dict[str, Any]] = None,) -> SolvedParams:
+        """ Giải tham số cho target_gain theo family.
+        Trả về SolvedParams gồm giá trị R/C + constraint check.
+        """
+        result = SolvedParams()
+
+        if target_gain is None:
+            result.message = "No target gain specified, using template defaults"
+            result.success = True
+            return result
+
+        abs_gain = abs(target_gain)
+
+        # Gửi family vào solver map
+        solver_map = {
+            "inverting": self._solve_inverting,
+            "non_inverting": self._solve_non_inverting,
+            "differential": self._solve_differential,
+            "instrumentation": self._solve_instrumentation,
+            "common_emitter": self._solve_ce,
+            "common_base": self._solve_cb,
+            "common_collector": self._solve_cc,
+            "common_source": self._solve_cs,
+            "common_drain": self._solve_cd,
+            "common_gate": self._solve_cg,
+            "class_a": self._solve_ce,  # Class A dùng cùng CE topology
+            "darlington": self._solve_darlington,
+            "multi_stage": self._solve_multi_stage,
+        }
+
+        # chọn hàm giải phù hợp, nếu không có thì trả về message và success=True nhưng không thay đổi tham số
+        solver_fn = solver_map.get(family)
+        if solver_fn:
+            result = solver_fn(abs_gain, metadata)
+        else:
+            result.message = f"No solver for family '{family}', parameters unchanged"
+            result.success = True
+
+        # kiểm tra ràng buộc từ metadata, kiểm tra lại trong circuit generator 
+        if metadata and result.success:
+            self._check_constraints(result, metadata)
+
+        return result
+
+    
+    # Solvers cho từng family
+    def _solve_inverting(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain = -RF / RIN → tìm RF, RIN.
+        meta solver_hints:
+          rin_base (Ω): giá trị RIN cơ sở (default 10 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        rin_base = hints.get("rin_base", 10_000)
+        rin = self._snap(rin_base)
+        rf = self._snap(rin * gain)
+
+        result.values = {"RIN": rin, "RF": rf}
+        result.actual_gain = rf / rin
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = ["Av = -RF / RIN"]
+        result.gain_formula = "Av = -RF / RIN"
+        result.message = f"Inverting: RF={rf}Ω, RIN={rin}Ω → |Av|={result.actual_gain:.2f}"
+        return result
+
+    def _solve_non_inverting(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain = 1 + RF / RG → tìm RF, RG.
+        meta solver_hints: rg_base (Ω): giá trị RG cơ sở (default 10 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        rg_base = hints.get("rg_base", 10_000)
+
+        if gain <= 1:
+            # Unity gain buffer
+            result.values = {"RF": 0, "RG": float("inf")}
+            result.actual_gain = 1.0
+            result.gain_error_percent = 0 if gain == 1 else abs(1 - gain) / gain * 100
+            result.equations_used = ["Av = 1 (unity buffer)"]
+            result.gain_formula = "Av = 1"
+            result.message = "Non-inverting unity buffer"
+            return result
+
+        rg = self._snap(rg_base)
+        rf = self._snap(rg * (gain - 1))
+
+        result.values = {"RF": rf, "RG": rg}
+        result.actual_gain = 1 + rf / rg
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = ["Av = 1 + RF / RG"]
+        result.gain_formula = "Av = 1 + RF / RG"
+        result.message = f"Non-inverting: RF={rf}Ω, RG={rg}Ω → Av={result.actual_gain:.2f}"
+        return result
+
+    def _solve_differential(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain = R2 / R1 → tìm R1, R2, R3=R1, R4=R2.
+        meta solver_hints:
+          r1_base (Ω): giá trị R1 cơ sở (default 10 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        r1_base = hints.get("r1_base", 10_000)
+        r1 = self._snap(r1_base)
+        r2 = self._snap(r1 * gain)
+
+        result.values = {"R1": r1, "R2": r2, "R3": r1, "R4": r2}
+        result.actual_gain = r2 / r1
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = ["Av = R2 / R1 (matched R3=R1, R4=R2)"]
+        result.gain_formula = "Av = R2 / R1"
+        result.message = f"Differential: R1=R3={r1}Ω, R2=R4={r2}Ω → Av={result.actual_gain:.2f}"
+        return result
+
+    def _solve_instrumentation(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain = (1 + 2*RF/RG) * (R2/R1).
+        Strategy: đặt R2/R1 = 1, giải gain_stage1 = gain.
+        Nếu gain > 100, chia stage1 và stage2.
+        meta solver_hints:
+          r1_base (Ω): giá trị R1 cơ sở (default 10 000)
+          rf_base (Ω): giá trị RF cơ sở cho vòng lặp gain (default 10 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        r1_base = hints.get("r1_base", 10_000)
+        rf_base = hints.get("rf_base", 10_000)
+
+        if gain <= 100:
+            # Stage 1 handles all gain, stage 2 = unity
+            r1 = self._snap(r1_base)
+            r2 = r1
+            # 1 + 2*RF/RG = gain → RG = 2*RF / (gain - 1)
+            rf = self._snap(rf_base)
+            rg_raw = 2 * rf / (gain - 1) if gain > 1 else float("inf")
+            rg = self._snap(rg_raw) if rg_raw < 1e7 else self._snap(1e6)
+        else:
+            # Split gain: stage1 ≈ sqrt(gain), stage2 gets the rest
+            g1 = math.sqrt(gain)
+            g2 = gain / g1
+
+            r1 = self._snap(r1_base)
+            r2 = self._snap(r1 * g2)
+
+            rf = self._snap(rf_base)
+            rg_raw = 2 * rf / (g1 - 1) if g1 > 1 else float("inf")
+            rg = self._snap(rg_raw)
+
+        actual_g1 = 1 + 2 * rf / rg if rg > 0 else 1
+        actual_g2 = r2 / r1 if r1 > 0 else 1
+        total = actual_g1 * actual_g2
+
+        result.values = {
+            "RF1": rf, "RF2": rf, "RG": rg,
+            "R1": r1, "R2": r2, "R3": r1, "R4": r2,
+        }
+        result.actual_gain = total
+        result.gain_error_percent = abs(total - gain) / gain * 100
+        result.equations_used = [
+            "G_total = (1 + 2*RF/RG) * (R2/R1)",
+            f"G_stage1 = {actual_g1:.2f}",
+            f"G_stage2 = {actual_g2:.2f}",
+        ]
+        result.gain_formula = "G = (1 + 2×RF/RG) × (R2/R1)"
+        result.message = (
+            f"Instrumentation: RF={rf}Ω, RG={rg}Ω, R1=R3={r1}Ω, R2=R4={r2}Ω "
+            f"→ G={total:.2f} (target={gain})"
+        )
+        return result
+
+    def _solve_ce(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain ≈ RC / re (bypassed) hoặc RC / (re + RE) (unbypassed).
+        meta solver_hints:
+          ic_ma (mA)  : collector current → re = 26 / ic_ma  (default 2 mA → re≈13Ω)
+          bypassed    : True/False bỏ qua tụ CE (default True)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        ic_ma = hints.get("ic_ma", 2.0)
+        bypassed = hints.get("bypassed", True)
+
+        re = 26.0 / ic_ma  # emitter resistance ≈ VT / IC
+
+        if bypassed:
+            rc = self._snap(gain * re)
+            re_ext = self._snap(rc / 10)  # RE ≈ RC/10 cho DC stability
+            actual_gain = rc / re
+            formula = "Av ≈ -RC / re (CE bypassed)"
+            gain_formula = "Av ≈ -RC / re"
+        else:
+            # Av = RC / (re + RE), chọn RE cố định rồi tính RC
+            re_ext = self._snap(max(re * 5, 100))          # RE ≥ 5·re
+            rc = self._snap(gain * (re + re_ext))
+            actual_gain = rc / (re + re_ext)
+            formula = "Av ≈ -RC / (re + RE) (CE unbypassed)"
+            gain_formula = "Av ≈ -RC / (re + RE)"
+
+        result.values = {"RC": rc, "RE": re_ext}
+        result.actual_gain = actual_gain
+        result.gain_error_percent = abs(actual_gain - gain) / gain * 100
+        result.equations_used = [formula, f"re = 26mV/{ic_ma}mA = {re:.1f}Ω"]
+        result.gain_formula = gain_formula
+        result.message = f"CE: RC={rc}Ω, RE={re_ext}Ω → |Av|≈{actual_gain:.1f} (IC={ic_ma}mA, {'bypassed' if bypassed else 'unbypassed'})"
+        return result
+
+    def _solve_cb(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain ≈ RC / re.
+        meta solver_hints:
+          ic_ma (mA): collector current → re = 26 / ic_ma  (default 2 mA)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        ic_ma = hints.get("ic_ma", 2.0)
+        re = 26.0 / ic_ma
+        rc = self._snap(gain * re)
+
+        result.values = {"RC": rc}
+        result.actual_gain = rc / re
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = ["Av ≈ RC / re", f"re = 26mV/{ic_ma}mA = {re:.1f}Ω"]
+        result.gain_formula = "Av ≈ RC / re"
+        result.message = f"CB: RC={rc}Ω → Av≈{result.actual_gain:.1f} (IC={ic_ma}mA)"
+        return result
+
+    def _solve_cc(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ CC: gain ≈ 1, chỉ tính RE.
+        meta solver_hints:
+          re_base (Ω): giá trị RE cơ sở (default 1 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        re_base = hints.get("re_base", 1_000)
+        re_ext = self._snap(re_base)
+
+        result.values = {"RE": re_ext}
+        result.actual_gain = 1.0
+        result.gain_error_percent = 0
+        result.equations_used = ["Av ≈ 1 (emitter follower)"]
+        result.gain_formula = "Av ≈ 1"
+        result.message = f"CC: RE={re_ext}Ω, Av≈1"
+        return result
+
+    def _solve_cs(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain ≈ gm * RD.
+        meta solver_hints:
+          gm_ma (mA/V): transconductance (default 5 mA/V)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        gm_ma = hints.get("gm_ma", 5.0)
+        gm = gm_ma / 1000  # convert mA/V → A/V
+        rd = self._snap(gain / gm)
+
+        result.values = {"RD": rd}
+        result.actual_gain = gm * rd
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = [f"Av ≈ gm × RD (CS), gm={gm_ma}mA/V"]
+        result.gain_formula = "Av ≈ gm × RD"
+        result.message = f"CS: RD={rd}Ω → Av≈{result.actual_gain:.1f} (gm={gm_ma}mA/V)"
+        return result
+
+    def _solve_cd(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ CD: gain ≈ 1.
+        meta solver_hints:
+          rs_base (Ω): giá trị RS cơ sở (default 1 000)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        rs_base = hints.get("rs_base", 1_000)
+        rs = self._snap(rs_base)
+
+        result.values = {"RS": rs}
+        result.actual_gain = 1.0
+        result.gain_error_percent = 0
+        result.equations_used = ["Av ≈ 1 (source follower)"]
+        result.gain_formula = "Av ≈ 1"
+        result.message = f"CD: RS={rs}Ω, Av≈1"
+        return result
+
+    def _solve_cg(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Gain ≈ gm * RD. """
+        return self._solve_cs(gain, meta)  # Same formula
+
+    def _solve_darlington(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Current gain = β1 * β2. Chọn β phù hợp.
+        meta solver_hints:
+          beta1 : hfe transistor thứ nhất (default 100)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        beta1 = hints.get("beta1", 100)
+        beta2 = max(1, round(gain / beta1))
+
+        result.values = {"beta1": beta1, "beta2": beta2}
+        result.actual_gain = beta1 * beta2
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
+        result.equations_used = ["Ai = β1 × β2 (current gain)"]
+        result.gain_formula = "Ai = β1 × β2"
+        result.message = f"Darlington: β1={beta1}, β2={beta2} → Ai={result.actual_gain}"
+        return result
+
+    def _solve_multi_stage(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
+        """ Multi-stage: chia đều gain theo số tầng.
+        meta solver_hints:
+          num_stages (int)    : số tầng khuếch đại (default 2)
+          topology (str)      : "CE+CC" | "CE+CE" | "CS+CD"  (default "CE+CC")
+          ic_ma (mA)          : collector current mỗi tầng BJT (default 2 mA)
+          gm_ma (mA/V)        : transconductance mỗi tầng FET (default 5 mA/V)
+        """
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        num_stages = max(1, int(hints.get("num_stages", 2)))
+        topology = hints.get("topology", "CE+CC").upper()
+
+        # Mỗi tầng khuếch đại gain^(1/num_stages), trừ follower (CC/CD) → 1
+        per_stage_gain = gain ** (1.0 / num_stages)
+
+        # Chọn solver cho từng tầng theo topology
+        _solver_map = {
+            "CE": self._solve_ce,
+            "CB": self._solve_cb,
+            "CC": self._solve_cc,
+            "CS": self._solve_cs,
+            "CD": self._solve_cd,
+            "CG": self._solve_cg,
+        }
+        stage_names = [s.strip() for s in topology.split("+")][:num_stages]
+        # Điền đầy nếu topology có ít tên hơn num_stages
+        while len(stage_names) < num_stages:
+            stage_names.append(stage_names[-1])
+
+        combined_values: Dict[str, float] = {}
+        total_gain = 1.0
+        all_equations: List[str] = []
+
+        for idx, stage_name in enumerate(stage_names, start=1):
+            solver_fn = _solver_map.get(stage_name)
+            if solver_fn is None:
+                solver_fn = self._solve_ce  # fallback
+            
+            # Follower tầng cuối không cần gain
+            stage_target = 1.0 if stage_name in ("CC", "CD") else per_stage_gain
+            s_result = solver_fn(stage_target, meta)
+            
+            # Prefix tên resistor để tránh trùng key
+            for k, v in s_result.values.items():
+                combined_values[f"{k}_S{idx}"] = v
+            total_gain *= (s_result.actual_gain or 1.0)
+            all_equations += [f"[Stage {idx} – {stage_name}] " + eq for eq in s_result.equations_used]
+
+        result.values = combined_values
+        result.actual_gain = total_gain
+        result.gain_error_percent = abs(total_gain - gain) / gain * 100
+        result.equations_used = [f"A_total = {'×'.join(['Av' + str(i+1) for i in range(num_stages)])} ({topology})"] + all_equations
+        result.gain_formula = f"A_total = {'×'.join([f'Av_{s}' for s in stage_names])}"
+        result.message = f"Multi-stage ({topology}, {num_stages} tầng): A_total≈{total_gain:.2f} (target={gain})"
+        return result
+
+    # ── Đóng gói ──
+    def _snap(self, value: float) -> float:
+        """Snap giá trị vào chuỗi E chuẩn gần nhất."""
+        if value <= 0 or math.isinf(value) or math.isnan(value):
+            return value
+
+        series = E_SERIES.get(self.preferred_series, E_SERIES["E24"])
+
+        # Chuẩn hóa [1, 10] để tìm nearest trong chuỗi E, sau đó scale lại
+        decade = math.floor(math.log10(value))
+        normalized = value / (10 ** decade)
+
+        # Tìm giá trị gần nhất trong chuỗi E
+        best = min(series, key=lambda x: abs(x - normalized))
+
+        return best * (10 ** decade)
+
+    def _check_constraints(self, result: SolvedParams, metadata: Dict) -> None:
+        """Kiểm tra constraints từ metadata."""
+        solver_hints = metadata.get("solver_hints", {})
+        constraints = solver_hints.get("constraints", [])
+
+        for c in constraints:
+            name = c.get("name", "")
+            rule = c.get("rule", "")
+            severity = c.get("severity", "hard")
+
+            report_entry = {
+                "name": name,
+                "rule": rule,
+                "severity": severity,
+                "status": "passed",  # simplified: mark passed for now
+                "note": "Constraint noted, full validation pending in CircuitGenerator",
+            }
+            result.constraints_report.append(report_entry)
