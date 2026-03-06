@@ -139,6 +139,19 @@ class AICore:
 
 
     #  Public API
+    def handle_spec(self, spec: UserSpec) -> PipelineResult:
+        """Nhận UserSpec đã parse sẵn, bỏ qua Step 1 (Parse), chạy Plan→Solve→Generate."""
+        result = PipelineResult(user_text=spec.raw_text)
+        result.spec = spec
+        result.stage_reached = "parse"
+
+        if not spec.circuit_type:
+            result.success = False
+            result.error = "Could not determine circuit type from input"
+            return result
+
+        return self._run_pipeline_from_plan(result, spec)
+
     def handle_request(self, user_text: str) -> PipelineResult:
         # Khởi tạo kết quả pipeline với user_text và trạng thái mặc định
         result = PipelineResult(user_text=user_text)
@@ -160,6 +173,11 @@ class AICore:
             result.success = False
             result.error = "Could not determine circuit type from input"
             return result
+
+        return self._run_pipeline_from_plan(result, spec)
+
+    def _run_pipeline_from_plan(self, result: PipelineResult, spec: UserSpec) -> PipelineResult:
+        """Chạy Steps 2–4 (Plan → Solve → Generate) từ UserSpec đã có sẵn."""
 
         # ── Step 2: Plan: UserSpec -> TopologyPlan ──
         try:
@@ -243,7 +261,7 @@ class AICore:
             result.error = f"Generate error: {e}"
             logger.error(result.error)
             return result
-        
+
         return result
 
 
