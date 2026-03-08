@@ -228,7 +228,7 @@ class NLPSpecParser:
 
     # llm fallback
     def _llm_parse(self, user_text: str) -> Optional[UserSpec]:
-        """ Gọi LLM để phân tích dữ liệu input. """
+        # Gọi LLM để phân tích dữ liệu input.
         try:
             from app.application.ai.gemini_client import GeminiMessage  # type: ignore
             MessageCls = GeminiMessage
@@ -289,7 +289,7 @@ class NLPSpecParser:
         spec.gain = self._extract_gain(text)
     
     def _parse_vcc(self, text: str, spec: UserSpec) -> None:
-        """ Trích giá trị VCC (điện áp nguồn) từ text. """
+        # Trích giá trị VCC (điện áp nguồn) từ text.
         spec.vcc = self._extract_number(text, [
             # lọc vcc trước - tránh match giá trị khác
             r"\bvcc\b\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",
@@ -308,8 +308,8 @@ class NLPSpecParser:
         ])
 
     def _parse_frequency(self, text: str, spec: UserSpec) -> None:
-        """ Trích giá trị tần số từ text. """
-        # kHz trước để tránh match nhầm Hz
+        # Trích tần số hoạt động từ text. ưu tiên match
+        # kHz trước
         khz = self._extract_number(text, [
             r"\b(\d+(?:\.\d+)?)\s*k\s*hz\b",
             r"\b(\d+(?:\.\d+)?)\s*khz\b",
@@ -321,7 +321,7 @@ class NLPSpecParser:
             spec.frequency = khz * 1000
             return
         
-        # Hz
+        # Hz sau
         spec.frequency = self._extract_number(text, [
             r"\b(\d+(?:\.\d+)?)\s*hz\b",
             r"\btần\s*số\s*[=:]?\s*(\d+(?:\.\d+)?)\b",
@@ -330,7 +330,7 @@ class NLPSpecParser:
         ])
 
     def _parse_flags(self, text: str, spec: UserSpec) -> None:
-        """ Phân tích syntax các flag yêu cầu đặc biệt. """
+        # Phân tích các flag đặc biệt như high CMRR, output buffer, power output.
         spec.high_cmr = self._has_pattern(text, [
             r"\bcmrr\b", r"high\s*cmrr", r"good\s*cmrr", r"common[\s-]*mode\s*rejection",
         ])
@@ -389,17 +389,34 @@ class NLPSpecParser:
         
         spec.extra_requirements = extras
 
-
+    # def _calc_confidence(self, spec: UserSpec) -> None:
+    #     """ Tính điểm tin cậy dựa trên kết quả phân tích regex. """
+    #     if spec.circuit_type and spec.circuit_type != "unknown":
+    #         spec.confidence = 0.6
+    #         if spec.gain is not None:       spec.confidence += 0.1
+    #         if spec.vcc is not None:        spec.confidence += 0.1
+    #         if spec.frequency is not None:  spec.confidence += 0.05
+    #         if spec.extra_requirements:     spec.confidence += 0.05
+    #     else:
+    #         spec.confidence = 0.1
+    
     def _calc_confidence(self, spec: UserSpec) -> None:
-        """ Tính điểm tin cậy dựa trên kết quả phân tích regex. """
+        # Tính điểm tin cậy dựa trên kết quả phân tích regex.
         if spec.circuit_type and spec.circuit_type != "unknown":
-            spec.confidence = 0.6
-            if spec.gain is not None:       spec.confidence += 0.1
-            if spec.vcc is not None:        spec.confidence += 0.1
-            if spec.frequency is not None:  spec.confidence += 0.05
-            if spec.extra_requirements:     spec.confidence += 0.05
+            score = 0.6
         else:
             spec.confidence = 0.1
+            return
+        
+        bonuses = [(spec.gain, 0.1),
+                   (spec.vcc, 0.1),
+                   (spec.frequency, 0.05),
+                   (spec.extra_requirements, 0.05)]
+        
+        for attr, points in bonuses:
+            if attr:
+                score += points
+        spec.confidence = round(score, 2)
 
 
     # Lõi regex
@@ -421,7 +438,7 @@ class NLPSpecParser:
         return "unknown"
 
     def _extract_gain(self, text: str) -> Optional[float]:
-        """ Trích giá trị gain từ text. """
+        # Trích giá trị gain từ text từ nhiều pattern -> tăng nhận diện.
         return self._extract_number(text, [
             r"gain\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)",
             r"khuếch\s*đại\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)",
@@ -431,7 +448,7 @@ class NLPSpecParser:
         ])
 
     def _extract_number(self, text: str, patterns: List[str]) -> Optional[float]:
-        """ Extract số đầu tiên match từ danh sách patterns. """
+        # Trích số đầu tiên match từ danh sách patterns.
         for pat in patterns:
             match = re.search(pat, text, re.IGNORECASE)
             if match:
@@ -442,5 +459,5 @@ class NLPSpecParser:
         return None
 
     def _has_pattern(self, text: str, patterns: List[str]) -> bool:
-        """Check xem text có match bất kỳ pattern nào không."""
+        # Check xem text có match bất kỳ pattern nào không.
         return any(re.search(pat, text, re.IGNORECASE) for pat in patterns)
