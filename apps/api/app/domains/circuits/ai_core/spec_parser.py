@@ -408,6 +408,7 @@ class NLPSpecParser:
             spec.confidence = 0.1
             return
         
+        # tạo danh sách các thuộc tính và điểm thưởng tương ứng nếu có giá trị hợp lệ.
         bonuses = [(spec.gain, 0.1),
                    (spec.vcc, 0.1),
                    (spec.frequency, 0.05),
