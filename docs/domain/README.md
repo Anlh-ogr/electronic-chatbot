@@ -21,6 +21,7 @@ electronic-chatbot/docs/domain/
 ├── 📋 ARCHITECTURE.md          # Visual architecture guide
 ├── 📋 ACTION_ITEMS.md          # Prioritized task list
 ├── 📋 RULES_EVALUATION.md      # Rules engine deep-dive
+├── 📋 BLOCK_TOPOLOGY_PLACEMENT_PIPELINE_DESIGN.md # ML+Rule pipeline spec (implementation-ready)
 └── 📋 README.md                # This file
 ```
 
