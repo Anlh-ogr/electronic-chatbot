@@ -1,0 +1,497 @@
+{
+  "description": "Index mapping template_id -> metadata file",
+  "generated_at": "2026-02-12T09:40:11Z",
+  "total": 70,
+  "entries": [
+    {
+      "template_id": "BJT-CE-01",
+      "metadata_file": "BJT-CE-01.meta.json",
+      "template_file": "bjt_ce_voltage_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CE-02",
+      "metadata_file": "BJT-CE-02.meta.json",
+      "template_file": "bjt_ce_fixed_bias_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CE-03",
+      "metadata_file": "BJT-CE-03.meta.json",
+      "template_file": "bjt_ce_fixed_bias_degen_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CE-04",
+      "metadata_file": "BJT-CE-04.meta.json",
+      "template_file": "bjt_ce_degen_unbypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CE-05",
+      "metadata_file": "BJT-CE-05.meta.json",
+      "template_file": "bjt_ce_externally_biased_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CE-06",
+      "metadata_file": "BJT-CE-06.meta.json",
+      "template_file": "bjt_ce_externally_biased_bypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_emitter"
+    },
+    {
+      "template_id": "BJT-CB-01",
+      "metadata_file": "BJT-CB-01.meta.json",
+      "template_file": "bjt_cb_vdiv_bypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_base"
+    },
+    {
+      "template_id": "BJT-CB-02",
+      "metadata_file": "BJT-CB-02.meta.json",
+      "template_file": "bjt_cb_vdiv_nobypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_base"
+    },
+    {
+      "template_id": "BJT-CB-03",
+      "metadata_file": "BJT-CB-03.meta.json",
+      "template_file": "bjt_cb_fixed_bias_bypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_base"
+    },
+    {
+      "template_id": "BJT-CB-04",
+      "metadata_file": "BJT-CB-04.meta.json",
+      "template_file": "bjt_cb_externally_biased_bypass_amplifier.json",
+      "category": "bjt",
+      "family": "common_base"
+    },
+    {
+      "template_id": "BJT-CC-01",
+      "metadata_file": "BJT-CC-01.meta.json",
+      "template_file": "bjt_cc_voltage_divider_bias_buffer.json",
+      "category": "bjt",
+      "family": "common_collector"
+    },
+    {
+      "template_id": "BJT-CC-02",
+      "metadata_file": "BJT-CC-02.meta.json",
+      "template_file": "bjt_cc_voltage_divider_bias_nocout_buffer.json",
+      "category": "bjt",
+      "family": "common_collector"
+    },
+    {
+      "template_id": "BJT-CC-03",
+      "metadata_file": "BJT-CC-03.meta.json",
+      "template_file": "bjt_cc_fixed_bias_buffer.json",
+      "category": "bjt",
+      "family": "common_collector"
+    },
+    {
+      "template_id": "BJT-CC-04",
+      "metadata_file": "BJT-CC-04.meta.json",
+      "template_file": "bjt_cc_externally_biased_buffer.json",
+      "category": "bjt",
+      "family": "common_collector"
+    },
+    {
+      "template_id": "FET-CS-01",
+      "metadata_file": "FET-CS-01.meta.json",
+      "template_file": "mosfet_cs_vdiv_bypass_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CS-02",
+      "metadata_file": "FET-CS-02.meta.json",
+      "template_file": "mosfet_cs_vdiv_unbypassed_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CS-03",
+      "metadata_file": "FET-CS-03.meta.json",
+      "template_file": "mosfet_cs_fixedgate_bypass_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CS-04",
+      "metadata_file": "FET-CS-04.meta.json",
+      "template_file": "mosfet_cs_fixedgate_unbypassed_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CS-05",
+      "metadata_file": "FET-CS-05.meta.json",
+      "template_file": "mosfet_cs_externally_biased_bypass_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CS-06",
+      "metadata_file": "FET-CS-06.meta.json",
+      "template_file": "mosfet_cs_externally_biased_ac_coupled_amplifier.json",
+      "category": "mosfet",
+      "family": "common_source"
+    },
+    {
+      "template_id": "FET-CD-01",
+      "metadata_file": "FET-CD-01.meta.json",
+      "template_file": "mosfet_cd_vdiv_buffer.json",
+      "category": "mosfet",
+      "family": "common_drain"
+    },
+    {
+      "template_id": "FET-CD-02",
+      "metadata_file": "FET-CD-02.meta.json",
+      "template_file": "mosfet_cd_vdiv_nocout_buffer.json",
+      "category": "mosfet",
+      "family": "common_drain"
+    },
+    {
+      "template_id": "FET-CD-03",
+      "metadata_file": "FET-CD-03.meta.json",
+      "template_file": "mosfet_cd_fixedgate_buffer.json",
+      "category": "mosfet",
+      "family": "common_drain"
+    },
+    {
+      "template_id": "FET-CD-04",
+      "metadata_file": "FET-CD-04.meta.json",
+      "template_file": "mosfet_cd_externally_biased_buffer.json",
+      "category": "mosfet",
+      "family": "common_drain"
+    },
+    {
+      "template_id": "FET-CG-01",
+      "metadata_file": "FET-CG-01.meta.json",
+      "template_file": "mosfet_cg_vdiv_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "FET-CG-02",
+      "metadata_file": "FET-CG-02.meta.json",
+      "template_file": "mosfet_cg_vdiv_gatebyp_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "FET-CG-03",
+      "metadata_file": "FET-CG-03.meta.json",
+      "template_file": "mosfet_cg_fixedgate_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "FET-CG-04",
+      "metadata_file": "FET-CG-04.meta.json",
+      "template_file": "mosfet_cg_fixedgate_gatebyp_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "FET-CG-05",
+      "metadata_file": "FET-CG-05.meta.json",
+      "template_file": "mosfet_cg_externally_biased_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "FET-CG-06",
+      "metadata_file": "FET-CG-06.meta.json",
+      "template_file": "mosfet_cg_externally_biased_gatebyp_amplifier.json",
+      "category": "mosfet",
+      "family": "common_gate"
+    },
+    {
+      "template_id": "OP-01",
+      "metadata_file": "OP-01.meta.json",
+      "template_file": "opamp_inverting_dual_supply_core.json",
+      "category": "opamp",
+      "family": "inverting"
+    },
+    {
+      "template_id": "OP-02",
+      "metadata_file": "OP-02.meta.json",
+      "template_file": "opamp_inverting_single_supply_vref.json",
+      "category": "opamp",
+      "family": "inverting"
+    },
+    {
+      "template_id": "OP-03",
+      "metadata_file": "OP-03.meta.json",
+      "template_file": "opamp_inverting_single_supply_vref_ac_coupled.json",
+      "category": "opamp",
+      "family": "inverting"
+    },
+    {
+      "template_id": "OP-04",
+      "metadata_file": "OP-04.meta.json",
+      "template_file": "opamp_inverting_single_supply_vref_ac_coupled_io.json",
+      "category": "opamp",
+      "family": "inverting"
+    },
+    {
+      "template_id": "OP-05",
+      "metadata_file": "OP-05.meta.json",
+      "template_file": "opamp_non_inverting_dual_supply_core.json",
+      "category": "opamp",
+      "family": "non_inverting"
+    },
+    {
+      "template_id": "OP-06",
+      "metadata_file": "OP-06.meta.json",
+      "template_file": "opamp_non_inverting_single_supply_vref.json",
+      "category": "opamp",
+      "family": "non_inverting"
+    },
+    {
+      "template_id": "OP-07",
+      "metadata_file": "OP-07.meta.json",
+      "template_file": "opamp_non_inverting_single_supply_vref_ac_coupled.json",
+      "category": "opamp",
+      "family": "non_inverting"
+    },
+    {
+      "template_id": "OP-08",
+      "metadata_file": "OP-08.meta.json",
+      "template_file": "opamp_non_inverting_single_supply_vref_ac_coupled_io.json",
+      "category": "opamp",
+      "family": "non_inverting"
+    },
+    {
+      "template_id": "OP-09",
+      "metadata_file": "OP-09.meta.json",
+      "template_file": "opamp_differential_dual_supply_4r.json",
+      "category": "opamp",
+      "family": "differential"
+    },
+    {
+      "template_id": "OP-10",
+      "metadata_file": "OP-10.meta.json",
+      "template_file": "opamp_differential_single_supply_vref_ac_coupled.json",
+      "category": "opamp",
+      "family": "differential"
+    },
+    {
+      "template_id": "OP-11",
+      "metadata_file": "OP-11.meta.json",
+      "template_file": "opamp_instrumentation_3opamp_basic.json",
+      "category": "opamp",
+      "family": "instrumentation"
+    },
+    {
+      "template_id": "OP-12",
+      "metadata_file": "OP-12.meta.json",
+      "template_file": "opamp_instrumentation_3opamp_single_supply_vref.json",
+      "category": "opamp",
+      "family": "instrumentation"
+    },
+    {
+      "template_id": "OP-13",
+      "metadata_file": "OP-13.meta.json",
+      "template_file": "opamp_instrumentation_3opamp_single_supply_vref_ac_coupled.json",
+      "category": "opamp",
+      "family": "instrumentation"
+    },
+    {
+      "template_id": "CLASS-A-01",
+      "metadata_file": "CLASS-A-01.meta.json",
+      "template_file": "class_a_power_amp_voltage_divider_bias_full.json",
+      "category": "power_amplifier",
+      "family": "class_a"
+    },
+    {
+      "template_id": "CLASS-A-02",
+      "metadata_file": "CLASS-A-02.meta.json",
+      "template_file": "class_a_power_amp_voltage_divider_bias_unbypassed_emitter.json",
+      "category": "power_amplifier",
+      "family": "class_a"
+    },
+    {
+      "template_id": "CLASS-A-03",
+      "metadata_file": "CLASS-A-03.meta.json",
+      "template_file": "class_a_power_amp_fixed_bias_emitter_bypass.json",
+      "category": "power_amplifier",
+      "family": "class_a"
+    },
+    {
+      "template_id": "CLASS-A-04",
+      "metadata_file": "CLASS-A-04.meta.json",
+      "template_file": "class_a_power_stage_externally_biased_base.json",
+      "category": "power_amplifier",
+      "family": "class_a"
+    },
+    {
+      "template_id": "CLASS-AB-01",
+      "metadata_file": "CLASS-AB-01.meta.json",
+      "template_file": "class_ab_push_pull_amp_diode_bias_full.json",
+      "category": "power_amplifier",
+      "family": "class_ab"
+    },
+    {
+      "template_id": "CLASS-AB-02",
+      "metadata_file": "CLASS-AB-02.meta.json",
+      "template_file": "class_ab_push_pull_amp_diode_bias_dc_coupled.json",
+      "category": "power_amplifier",
+      "family": "class_ab"
+    },
+    {
+      "template_id": "CLASS-AB-03",
+      "metadata_file": "CLASS-AB-03.meta.json",
+      "template_file": "class_ab_push_pull_amp_fixed_bias_no_diodes.json",
+      "category": "power_amplifier",
+      "family": "class_ab"
+    },
+    {
+      "template_id": "CLASS-AB-04",
+      "metadata_file": "CLASS-AB-04.meta.json",
+      "template_file": "class_ab_push_pull_stage_externally_biased_bases.json",
+      "category": "power_amplifier",
+      "family": "class_ab"
+    },
+    {
+      "template_id": "CLASS-B-01",
+      "metadata_file": "CLASS-B-01.meta.json",
+      "template_file": "class_b_push_pull_amp_no_bias_full_ac_coupled.json",
+      "category": "power_amplifier",
+      "family": "class_b"
+    },
+    {
+      "template_id": "CLASS-B-02",
+      "metadata_file": "CLASS-B-02.meta.json",
+      "template_file": "class_b_push_pull_no_bias_dc_coupled.json",
+      "category": "power_amplifier",
+      "family": "class_b"
+    },
+    {
+      "template_id": "CLASS-B-03",
+      "metadata_file": "CLASS-B-03.meta.json",
+      "template_file": "class_b_push_pull_externally_biased_bases.json",
+      "category": "power_amplifier",
+      "family": "class_b"
+    },
+    {
+      "template_id": "CLASS-C-01",
+      "metadata_file": "CLASS-C-01.meta.json",
+      "template_file": "class_c_tuned_amp_voltage_divider_bias_full.json",
+      "category": "power_amplifier",
+      "family": "class_c"
+    },
+    {
+      "template_id": "CLASS-C-02",
+      "metadata_file": "CLASS-C-02.meta.json",
+      "template_file": "class_c_tuned_amp_voltage_divider_bias_no_cin.json",
+      "category": "power_amplifier",
+      "family": "class_c"
+    },
+    {
+      "template_id": "CLASS-C-03",
+      "metadata_file": "CLASS-C-03.meta.json",
+      "template_file": "class_c_tuned_amp_fixed_bias.json",
+      "category": "power_amplifier",
+      "family": "class_c"
+    },
+    {
+      "template_id": "CLASS-C-04",
+      "metadata_file": "CLASS-C-04.meta.json",
+      "template_file": "class_c_tuned_stage_externally_biased_base.json",
+      "category": "power_amplifier",
+      "family": "class_c"
+    },
+    {
+      "template_id": "CLASS-D-01",
+      "metadata_file": "CLASS-D-01.meta.json",
+      "template_file": "class_d_mosfet_pwm_comparator_lc_filter_full.json",
+      "category": "power_amplifier",
+      "family": "class_d"
+    },
+    {
+      "template_id": "CLASS-D-02",
+      "metadata_file": "CLASS-D-02.meta.json",
+      "template_file": "class_d_mosfet_pwm_output_stage_no_lc_filter.json",
+      "category": "power_amplifier",
+      "family": "class_d"
+    },
+    {
+      "template_id": "CLASS-D-03",
+      "metadata_file": "CLASS-D-03.meta.json",
+      "template_file": "class_d_mosfet_hbridge_external_pwm_input.json",
+      "category": "power_amplifier",
+      "family": "class_d"
+    },
+    {
+      "template_id": "CLASS-D-04",
+      "metadata_file": "CLASS-D-04.meta.json",
+      "template_file": "class_d_mosfet_halfbridge_simple_lc_filter_minimal.json",
+      "category": "power_amplifier",
+      "family": "class_d"
+    },
+    {
+      "template_id": "SPECIAL-DAR-01",
+      "metadata_file": "SPECIAL-DAR-01.meta.json",
+      "template_file": "special_darlington_pair_voltage_divider_bias_full.json",
+      "category": "special",
+      "family": "darlington"
+    },
+    {
+      "template_id": "SPECIAL-DAR-02",
+      "metadata_file": "SPECIAL-DAR-02.meta.json",
+      "template_file": "special_darlington_pair_voltage_divider_unbypassed_emitter.json",
+      "category": "special",
+      "family": "darlington"
+    },
+    {
+      "template_id": "SPECIAL-DAR-03",
+      "metadata_file": "SPECIAL-DAR-03.meta.json",
+      "template_file": "special_darlington_pair_fixed_bias_emitter_bypass.json",
+      "category": "special",
+      "family": "darlington"
+    },
+    {
+      "template_id": "SPECIAL-DAR-04",
+      "metadata_file": "SPECIAL-DAR-04.meta.json",
+      "template_file": "special_darlington_pair_externally_biased_base.json",
+      "category": "special",
+      "family": "darlington"
+    },
+    {
+      "template_id": "SPECIAL-MS-01",
+      "metadata_file": "SPECIAL-MS-01.meta.json",
+      "template_file": "multi_stage_two_stage_ce_cc_full_coupling.json",
+      "category": "special",
+      "family": "multi_stage"
+    },
+    {
+      "template_id": "SPECIAL-MS-02",
+      "metadata_file": "SPECIAL-MS-02.meta.json",
+      "template_file": "multi_stage_two_stage_cecc_emitter_degeneration.json",
+      "category": "special",
+      "family": "multi_stage"
+    },
+    {
+      "template_id": "SPECIAL-MS-03",
+      "metadata_file": "SPECIAL-MS-03.meta.json",
+      "template_file": "multi_stage_two_stage_cecc_fixed_bias_stage2.json",
+      "category": "special",
+      "family": "multi_stage"
+    },
+    {
+      "template_id": "SPECIAL-MS-04",
+      "metadata_file": "SPECIAL-MS-04.meta.json",
+      "template_file": "multi_stage_two_stage_cecc_externally_biased_stage2.json",
+      "category": "special",
+      "family": "multi_stage"
+    }
+  ]
+}
