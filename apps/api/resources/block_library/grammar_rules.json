@@ -1,0 +1,231 @@
+{
+  "$schema": "https://electronic-chatbot.local/schema/grammar-rules.schema.json",
+  "version": "v4.0.0",
+  "description": "Luật ghép topology (Circuit Grammar Rules). Mỗi rule mô tả cách lắp ráp các block thành mạch hoàn chỉnh theo loại yêu cầu.",
+
+  "topology_rules": {
+    "common_emitter_amplifier": {
+      "description": "Mạch khuếch đại BJT emitter chung 1 tầng",
+      "pattern": ["ce_block"],
+      "required_capabilities": ["voltage_gain"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "-RC / (re + RE)",
+      "typical_use_cases": ["audio_preamp", "general_purpose_amplification"],
+      "match_families": ["common_emitter"]
+    },
+    "common_base_amplifier": {
+      "description": "Mạch khuếch đại BJT base chung 1 tầng",
+      "pattern": ["cb_block"],
+      "required_capabilities": ["voltage_gain", "low_input_impedance"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "RC / re",
+      "typical_use_cases": ["rf_amplifier", "current_buffer"],
+      "match_families": ["common_base"]
+    },
+    "emitter_follower": {
+      "description": "BJT emitter follower (unity gain buffer)",
+      "pattern": ["cc_block"],
+      "required_capabilities": ["buffering", "low_output_impedance"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "~1",
+      "typical_use_cases": ["impedance_matching", "output_buffer"],
+      "match_families": ["common_collector"]
+    },
+    "common_source_amplifier": {
+      "description": "Mạch khuếch đại MOSFET source chung 1 tầng",
+      "pattern": ["cs_block"],
+      "required_capabilities": ["voltage_gain", "high_input_impedance"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "-gm * RD",
+      "typical_use_cases": ["general_purpose", "high_impedance_source"],
+      "match_families": ["common_source"]
+    },
+    "source_follower": {
+      "description": "MOSFET source follower (unity gain buffer)",
+      "pattern": ["cd_block"],
+      "required_capabilities": ["buffering", "high_input_impedance"],
+      "optional_blocks": ["ac_coupling_block"],
+      "gain_formula": "~1",
+      "typical_use_cases": ["impedance_matching", "output_buffer"],
+      "match_families": ["common_drain"]
+    },
+    "common_gate_amplifier": {
+      "description": "Mạch khuếch đại MOSFET gate chung",
+      "pattern": ["cg_block"],
+      "required_capabilities": ["voltage_gain", "low_input_impedance"],
+      "optional_blocks": ["ac_coupling_block"],
+      "gain_formula": "gm * RD",
+      "typical_use_cases": ["rf_amplifier", "current_buffer"],
+      "match_families": ["common_gate"]
+    },
+    "inverting_amplifier": {
+      "description": "Mạch khuếch đại đảo op-amp",
+      "pattern": ["inverting_block"],
+      "required_capabilities": ["voltage_gain", "phase_inversion"],
+      "optional_blocks": ["vref_block", "ac_coupling_block"],
+      "gain_formula": "-RF / RIN",
+      "typical_use_cases": ["signal_conditioning", "summing_amplifier"],
+      "match_families": ["inverting"]
+    },
+    "non_inverting_amplifier": {
+      "description": "Mạch khuếch đại không đảo op-amp",
+      "pattern": ["non_inverting_block"],
+      "required_capabilities": ["voltage_gain", "high_input_impedance"],
+      "optional_blocks": ["vref_block", "ac_coupling_block"],
+      "gain_formula": "1 + RF / RG",
+      "typical_use_cases": ["sensor_amplification", "buffer_with_gain"],
+      "match_families": ["non_inverting"]
+    },
+    "differential_amplifier": {
+      "description": "Mạch khuếch đại vi sai op-amp",
+      "pattern": ["differential_block"],
+      "required_capabilities": ["differential_input", "voltage_gain"],
+      "optional_blocks": ["vref_block", "ac_coupling_block"],
+      "gain_formula": "R2 / R1",
+      "typical_use_cases": ["signal_subtraction", "bridge_amplifier"],
+      "match_families": ["differential"]
+    },
+    "instrumentation_amplifier": {
+      "description": "Mạch khuếch đại đo lường 3 op-amp (2 buffer + 1 diff)",
+      "pattern": ["non_inverting_block", "non_inverting_block", "differential_block"],
+      "required_capabilities": ["differential_input", "high_cmrr", "precision_gain"],
+      "optional_blocks": ["vref_block", "ac_coupling_block"],
+      "gain_formula": "(1 + 2*RF/RG) * (R2/R1)",
+      "typical_use_cases": ["measurement", "sensor_interface", "biomedical"],
+      "match_families": ["instrumentation"],
+      "assembly_rules": [
+        { "from": "non_inverting_block:0", "to": "differential_block:IN_POS", "signal": "analog" },
+        { "from": "non_inverting_block:1", "to": "differential_block:IN_NEG", "signal": "analog" }
+      ]
+    },
+    "class_a_power_amplifier": {
+      "description": "Tầng công suất Class A",
+      "pattern": ["class_a_block"],
+      "required_capabilities": ["power_amplification", "full_cycle"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "-RC / (re + RE)",
+      "typical_use_cases": ["audio_power", "low_power_driver"],
+      "match_families": ["class_a"]
+    },
+    "class_b_push_pull": {
+      "description": "Push-pull Class B",
+      "pattern": ["class_b_block"],
+      "required_capabilities": ["power_amplification", "push_pull"],
+      "optional_blocks": ["ac_coupling_block"],
+      "gain_formula": "~1",
+      "typical_use_cases": ["audio_power", "motor_driver"],
+      "match_families": ["class_b"]
+    },
+    "class_ab_push_pull": {
+      "description": "Push-pull Class AB (giảm crossover distortion)",
+      "pattern": ["class_ab_block"],
+      "required_capabilities": ["power_amplification", "push_pull", "low_distortion"],
+      "optional_blocks": ["ac_coupling_block"],
+      "gain_formula": "~1",
+      "typical_use_cases": ["audio_power", "hi-fi_amplifier"],
+      "match_families": ["class_ab"]
+    },
+    "class_c_tuned_amplifier": {
+      "description": "Class C với tải cộng hưởng",
+      "pattern": ["class_c_block"],
+      "required_capabilities": ["rf_amplification", "high_efficiency"],
+      "optional_blocks": [],
+      "gain_formula": "tank_dependent",
+      "typical_use_cases": ["rf_transmitter", "oscillator"],
+      "match_families": ["class_c"]
+    },
+    "class_d_switching_amplifier": {
+      "description": "Class D switching amplifier",
+      "pattern": ["class_d_block"],
+      "required_capabilities": ["power_amplification", "high_efficiency", "switching"],
+      "optional_blocks": [],
+      "gain_formula": "VDD * duty_cycle",
+      "typical_use_cases": ["audio_power", "motor_driver", "power_supply"],
+      "match_families": ["class_d"]
+    },
+    "darlington_amplifier": {
+      "description": "Darlington pair amplifier",
+      "pattern": ["darlington_block"],
+      "required_capabilities": ["high_current_gain"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "beta1 * beta2 (current)",
+      "typical_use_cases": ["high_current_driver", "switch"],
+      "match_families": ["darlington"]
+    },
+    "two_stage_ce_cc": {
+      "description": "Mạch 2 tầng CE-CC (gain + buffer)",
+      "pattern": ["ce_block", "cc_block"],
+      "required_capabilities": ["voltage_gain", "low_output_impedance"],
+      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "gain_formula": "A_ce * A_cc ≈ A_ce",
+      "typical_use_cases": ["audio_amplifier", "general_purpose"],
+      "match_families": ["multi_stage"],
+      "assembly_rules": [
+        { "from": "ce_block:OUT_COLLECTOR", "to": "cc_block:IN_BASE", "signal": "analog" }
+      ]
+    },
+    "instrumentation_with_output_buffer": {
+      "description": "Instrumentation amp + emitter/source follower output buffer (Cấp 2 - mở rộng)",
+      "pattern": ["non_inverting_block", "non_inverting_block", "differential_block", "cc_block"],
+      "required_capabilities": ["differential_input", "high_cmrr", "low_output_impedance"],
+      "optional_blocks": [],
+      "gain_formula": "(1 + 2*RF/RG) * (R2/R1) * ~1",
+      "typical_use_cases": ["measurement_with_drive"],
+      "match_families": ["instrumentation"],
+      "level": "level_2",
+      "assembly_rules": [
+        { "from": "non_inverting_block:0", "to": "differential_block:IN_POS", "signal": "analog" },
+        { "from": "non_inverting_block:1", "to": "differential_block:IN_NEG", "signal": "analog" },
+        { "from": "differential_block:OUT", "to": "cc_block:IN_BASE", "signal": "analog" }
+      ]
+    }
+  },
+
+  "extension_rules": {
+    "description": "Quy tắc mở rộng mạch khi template gốc chưa đủ (Cấp 1: đề xuất, Cấp 2: tự ghép)",
+    "allowed_extensions": [
+      {
+        "base_pattern": ["non_inverting_block", "non_inverting_block", "differential_block"],
+        "extension_block": "cc_block",
+        "attach_to": "differential_block:OUT",
+        "reason": "Thêm output buffer để giảm Zout",
+        "level": "level_1_suggest"
+      },
+      {
+        "base_pattern": ["ce_block"],
+        "extension_block": "cc_block",
+        "attach_to": "ce_block:OUT_COLLECTOR",
+        "reason": "Thêm emitter follower để match impedance với tải",
+        "level": "level_1_suggest"
+      },
+      {
+        "base_pattern": ["cs_block"],
+        "extension_block": "cd_block",
+        "attach_to": "cs_block:OUT_DRAIN",
+        "reason": "Thêm source follower output buffer",
+        "level": "level_1_suggest"
+      },
+      {
+        "base_pattern": ["class_ab_block"],
+        "extension_block": "ce_block",
+        "attach_to": "class_ab_block:IN_SIGNAL",
+        "attach_position": "before",
+        "reason": "Thêm tầng driver CE phía trước push-pull",
+        "level": "level_2_auto"
+      }
+    ]
+  },
+
+  "matching_algorithm": {
+    "description": "Thuật toán matching request → topology",
+    "steps": [
+      "1. Parse NLP → extract intent_keys, required_capabilities",
+      "2. Filter topology_rules by match_families intersection",
+      "3. Score remaining rules by capability coverage + priority_score",
+      "4. If exact match → return best template_id",
+      "5. If partial match → check extension_rules for augmentation",
+      "6. Level 1: suggest extension to user",
+      "7. Level 2: auto-assemble extended topology"
+    ]
+  }
+}
