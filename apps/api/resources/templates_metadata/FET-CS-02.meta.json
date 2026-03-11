@@ -1,0 +1,199 @@
+{
+  "template_id": "FET-CS-02",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "mosfet_cs_vdiv_unbypassed_amplifier.json",
+    "template_sha256": "0be71e50d13b9d70a16521db166d696c5b22275e123c91056a9e98d6c67939b3",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "mosfet",
+    "family": "common_source",
+    "topology_tags": [
+      "common_source",
+      "voltage_divider",
+      "unbypassed"
+    ],
+    "target_use_cases": [
+      "high_impedance_amplification",
+      "general_amplification"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VDD",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "cs_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "M1",
+          "RD",
+          "RS",
+          "R1",
+          "R2",
+          "CIN",
+          "COUT"
+        ],
+        "gain_formula": "-gm * RD / (1 + gm*RS)",
+        "roles": [
+          "amplification"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "cs_block"
+      ],
+      "graph_hash": "0f11e2ce6bf5da4c",
+      "motifs": []
+    },
+    "total_gain_formula": "-gm * RD",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "common source",
+      "CS amplifier",
+      "MOSFET amplifier"
+    ],
+    "required_capabilities": [
+      "voltage_gain",
+      "high_input_impedance"
+    ],
+    "optional_capabilities": [
+      "cd_block"
+    ],
+    "priority_score": 0.88,
+    "fallback_rank": 2,
+    "compatible_extensions": [
+      "cd_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rd_resistance",
+        "symbol": "RD",
+        "component_ref": "RD",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rs_resistance",
+        "symbol": "RS",
+        "component_ref": "RS",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r1_resistance",
+        "symbol": "R1",
+        "component_ref": "R1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r2_resistance",
+        "symbol": "R2",
+        "component_ref": "R2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "-gm * RD",
+        "variables": [
+          "RD",
+          "RS",
+          "R1",
+          "R2"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "vds_saturation",
+        "rule": "VDS > VGS - Vth",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": []
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": [
+      "phase_inverted_output"
+    ]
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}

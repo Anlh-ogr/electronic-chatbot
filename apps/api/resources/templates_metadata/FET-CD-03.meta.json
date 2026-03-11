@@ -1,0 +1,164 @@
+{
+  "template_id": "FET-CD-03",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "mosfet_cd_fixedgate_buffer.json",
+    "template_sha256": "1fc640c966859d6a04358771ff28d0a6d987577ed73f47b8f15fc4f5b11451cf",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "mosfet",
+    "family": "common_drain",
+    "topology_tags": [
+      "common_drain",
+      "fixed_gate"
+    ],
+    "target_use_cases": [
+      "impedance_matching",
+      "output_buffer"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VDD",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "cd_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "M1",
+          "RG",
+          "RS",
+          "CIN",
+          "COUT"
+        ],
+        "gain_formula": "gm*RS / (1 + gm*RS) ≈ 1",
+        "roles": [
+          "buffering",
+          "impedance_matching"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "cd_block"
+      ],
+      "graph_hash": "6affa2b75ec7a5e0",
+      "motifs": []
+    },
+    "total_gain_formula": "gm*RS / (1 + gm*RS) ≈ 1",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "source follower",
+      "common drain",
+      "MOSFET buffer",
+      "CD"
+    ],
+    "required_capabilities": [
+      "buffering",
+      "high_input_impedance"
+    ],
+    "optional_capabilities": [],
+    "priority_score": 0.83,
+    "fallback_rank": 3,
+    "compatible_extensions": []
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rg_resistance",
+        "symbol": "RG",
+        "component_ref": "RG",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rs_resistance",
+        "symbol": "RS",
+        "component_ref": "RS",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "gm*RS / (1 + gm*RS) ≈ 1",
+        "variables": [
+          "RG",
+          "RS"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "vds_saturation",
+        "rule": "VDS > VGS - Vth",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": []
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}
