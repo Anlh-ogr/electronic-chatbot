@@ -1,0 +1,218 @@
+{
+  "template_id": "CLASS-B-02",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "class_b_push_pull_no_bias_dc_coupled.json",
+    "template_sha256": "a776217c33e601a45df292a2051e2a573221a21108d183523cc240aafdc73d10",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "power_amplifier",
+    "family": "class_b",
+    "topology_tags": [
+      "class_b",
+      "dc_coupled"
+    ],
+    "target_use_cases": [
+      "audio_power",
+      "motor_driver"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "class_b_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "Q1",
+          "Q2",
+          "RB1",
+          "RB2",
+          "RC1",
+          "RC2",
+          "CIN",
+          "CDEC",
+          "RL"
+        ],
+        "gain_formula": "~1 (push-pull)",
+        "roles": [
+          "power_amplification",
+          "push_pull"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "class_b_block"
+      ],
+      "graph_hash": "2d462cf0542974d1",
+      "motifs": [
+        "push_pull"
+      ]
+    },
+    "total_gain_formula": "~1 (push-pull)",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "class B",
+      "push-pull",
+      "class B amplifier"
+    ],
+    "required_capabilities": [
+      "power_amplification",
+      "push_pull"
+    ],
+    "optional_capabilities": [
+      "ce_block"
+    ],
+    "priority_score": 0.8,
+    "fallback_rank": 2,
+    "compatible_extensions": [
+      "ce_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rb1_resistance",
+        "symbol": "RB1",
+        "component_ref": "RB1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rb2_resistance",
+        "symbol": "RB2",
+        "component_ref": "RB2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rc1_resistance",
+        "symbol": "RC1",
+        "component_ref": "RC1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rc2_resistance",
+        "symbol": "RC2",
+        "component_ref": "RC2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rl_resistance",
+        "symbol": "RL",
+        "component_ref": "RL",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "~1 (push-pull)",
+        "variables": [
+          "RB1",
+          "RB2",
+          "RC1",
+          "RC2"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "symmetry",
+        "rule": "beta_NPN ≈ beta_PNP",
+        "severity": "soft"
+      }
+    ],
+    "optimization_targets": [
+      "power_efficiency"
+    ]
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": [
+      "crossover_distortion_present"
+    ]
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}

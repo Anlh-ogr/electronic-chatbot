@@ -1,0 +1,219 @@
+{
+  "template_id": "CLASS-B-01",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "class_b_push_pull_amp_no_bias_full_ac_coupled.json",
+    "template_sha256": "b747dcece4f7be4a2ca3fe91e017562bd125b95c0d8d7a5971ef22865dc07e46",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "power_amplifier",
+    "family": "class_b",
+    "topology_tags": [
+      "class_b",
+      "ac_coupled"
+    ],
+    "target_use_cases": [
+      "audio_power",
+      "motor_driver"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "class_b_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "Q1",
+          "Q2",
+          "Rin",
+          "Rgate1",
+          "Rgate2",
+          "Re",
+          "CIN",
+          "COUT",
+          "Cdec",
+          "RL"
+        ],
+        "gain_formula": "~1 (push-pull)",
+        "roles": [
+          "power_amplification",
+          "push_pull"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "class_b_block"
+      ],
+      "graph_hash": "2d462cf0542974d1",
+      "motifs": [
+        "push_pull"
+      ]
+    },
+    "total_gain_formula": "~1 (push-pull)",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "class B",
+      "push-pull",
+      "class B amplifier"
+    ],
+    "required_capabilities": [
+      "power_amplification",
+      "push_pull"
+    ],
+    "optional_capabilities": [
+      "ce_block"
+    ],
+    "priority_score": 0.8,
+    "fallback_rank": 1,
+    "compatible_extensions": [
+      "ce_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rin_resistance",
+        "symbol": "Rin",
+        "component_ref": "Rin",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rgate1_resistance",
+        "symbol": "Rgate1",
+        "component_ref": "Rgate1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rgate2_resistance",
+        "symbol": "Rgate2",
+        "component_ref": "Rgate2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "re_resistance",
+        "symbol": "Re",
+        "component_ref": "Re",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rl_resistance",
+        "symbol": "RL",
+        "component_ref": "RL",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "~1 (push-pull)",
+        "variables": [
+          "Rin",
+          "Rgate1",
+          "Rgate2",
+          "Re"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "symmetry",
+        "rule": "beta_NPN ≈ beta_PNP",
+        "severity": "soft"
+      }
+    ],
+    "optimization_targets": [
+      "power_efficiency"
+    ]
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": [
+      "crossover_distortion_present"
+    ]
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}

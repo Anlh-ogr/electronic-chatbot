@@ -1,0 +1,199 @@
+{
+  "template_id": "CLASS-C-02",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "class_c_tuned_amp_voltage_divider_bias_no_cin.json",
+    "template_sha256": "ae2424cf22c2eaf3daaa916900dde496e23f078d4f2c772ae387c963992418c2",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "power_amplifier",
+    "family": "class_c",
+    "topology_tags": [
+      "class_c",
+      "voltage_divider"
+    ],
+    "target_use_cases": [
+      "rf_transmitter",
+      "oscillator_buffer"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "class_c_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "Q1",
+          "Rin",
+          "Rbias",
+          "Re",
+          "Ctank",
+          "Cdec",
+          "Ltank",
+          "RL"
+        ],
+        "gain_formula": "tank_dependent",
+        "roles": [
+          "rf_amplification",
+          "power_amplification"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "class_c_block"
+      ],
+      "graph_hash": "712a457ef446bf24",
+      "motifs": []
+    },
+    "total_gain_formula": "tank_dependent",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "class C",
+      "class C amplifier",
+      "tuned amplifier",
+      "RF power"
+    ],
+    "required_capabilities": [
+      "rf_amplification",
+      "high_efficiency"
+    ],
+    "optional_capabilities": [],
+    "priority_score": 0.75,
+    "fallback_rank": 2,
+    "compatible_extensions": []
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rin_resistance",
+        "symbol": "Rin",
+        "component_ref": "Rin",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rbias_resistance",
+        "symbol": "Rbias",
+        "component_ref": "Rbias",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "re_resistance",
+        "symbol": "Re",
+        "component_ref": "Re",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rl_resistance",
+        "symbol": "RL",
+        "component_ref": "RL",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "tank_dependent",
+        "variables": [
+          "Rin",
+          "Rbias",
+          "Re",
+          "RL"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "resonance",
+        "rule": "f = 1/(2*pi*sqrt(L*C))",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": [
+      "bandwidth"
+    ]
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": [
+      "only_narrowband_rf_signals"
+    ]
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "template_id": "CLASS-D-01",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "class_d_mosfet_pwm_comparator_lc_filter_full.json",
+    "template_sha256": "43e60fe0cc48198ea022f4c38ec2185109bb064fb56726a0ce0a0f857a2d1d33",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "power_amplifier",
+    "family": "class_d",
+    "topology_tags": [
+      "class_d",
+      "pwm",
+      "lc_filter"
+    ],
+    "target_use_cases": [
+      "audio_power",
+      "motor_driver",
+      "power_conversion"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "PWM_IN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        },
+        {
+          "name": "TRI_IN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "class_d_block",
+        "inputs": [
+          "PWM_IN",
+          "TRI_IN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "U1",
+          "M1",
+          "M2",
+          "Rin",
+          "Rg1",
+          "Rg2",
+          "L1",
+          "Cin",
+          "Cout",
+          "Cdec",
+          "RL"
+        ],
+        "gain_formula": "VDD * duty_cycle",
+        "roles": [
+          "power_amplification",
+          "high_efficiency"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "class_d_block"
+      ],
+      "graph_hash": "3c70d9aef4c40683",
+      "motifs": []
+    },
+    "total_gain_formula": "VDD * duty_cycle",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "class D",
+      "class D amplifier",
+      "switching amplifier",
+      "PWM"
+    ],
+    "required_capabilities": [
+      "power_amplification",
+      "high_efficiency",
+      "switching"
+    ],
+    "optional_capabilities": [],
+    "priority_score": 0.82,
+    "fallback_rank": 1,
+    "compatible_extensions": []
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rin_resistance",
+        "symbol": "Rin",
+        "component_ref": "Rin",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rg1_resistance",
+        "symbol": "Rg1",
+        "component_ref": "Rg1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rg2_resistance",
+        "symbol": "Rg2",
+        "component_ref": "Rg2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rl_resistance",
+        "symbol": "RL",
+        "component_ref": "RL",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "VDD * duty_cycle",
+        "variables": [
+          "Rin",
+          "Rg1",
+          "Rg2",
+          "RL"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "switching_freq",
+        "rule": "f_sw >> 2*f_max",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": [
+      "power_efficiency"
+    ]
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}
