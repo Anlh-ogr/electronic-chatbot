@@ -1,0 +1,408 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://electronic-chatbot.local/schema/template-metadata.schema.json",
+  "title": "Circuit Template Functional Metadata",
+  "description": "Schema mô tả lớp metadata chức năng (functional layer) cho mỗi template mạch điện tử. Dùng cho Topology Planner, Parameter Solver, và Circuit Generator.",
+  "type": "object",
+  "required": [
+    "template_id",
+    "metadata_version",
+    "physical_template_ref",
+    "domain",
+    "functional_structure",
+    "planner_hints",
+    "solver_hints",
+    "validation",
+    "sync"
+  ],
+  "properties": {
+    "template_id": {
+      "type": "string",
+      "description": "ID duy nhất khớp 1-1 với template gốc (ví dụ: BJT-CE-01, OP-11, CLASS-AB-02)",
+      "minLength": 1
+    },
+    "metadata_version": {
+      "type": "string",
+      "description": "Phiên bản metadata, theo semver",
+      "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "physical_template_ref": {
+      "type": "object",
+      "description": "Tham chiếu ngược đến file template vật lý gốc",
+      "required": ["template_file", "template_sha256"],
+      "properties": {
+        "template_file": {
+          "type": "string",
+          "description": "Tên file template gốc (e.g. bjt_ce_fixed_bias_amplifier.json)"
+        },
+        "template_sha256": {
+          "type": "string",
+          "description": "SHA256 hash của file template gốc, dùng để detect thay đổi",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "kicanvas_compatible": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "domain": {
+      "type": "object",
+      "description": "Phân loại domain của mạch",
+      "required": ["category", "family", "topology_tags"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Loại mạch chính: bjt, mosfet, opamp, power_amplifier, special",
+          "enum": ["bjt", "mosfet", "opamp", "power_amplifier", "special"]
+        },
+        "family": {
+          "type": "string",
+          "description": "Họ mạch cụ thể: common_emitter, common_base, common_collector, common_source, common_drain, common_gate, inverting, non_inverting, differential, instrumentation, class_a, class_b, class_ab, class_c, class_d, darlington, multi_stage"
+        },
+        "topology_tags": {
+          "type": "array",
+          "description": "Tags mô tả topology: fixed_bias, voltage_divider, bypass, ac_coupled, ...",
+          "items": { "type": "string" }
+        },
+        "target_use_cases": {
+          "type": "array",
+          "description": "Ứng dụng mục tiêu: audio, sensor, rf, measurement, power, buffer, ...",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "functional_structure": {
+      "type": "object",
+      "description": "Mô tả cấu trúc chức năng (functional graph) của mạch",
+      "required": ["ports", "blocks", "connections", "pattern_signature"],
+      "properties": {
+        "ports": {
+          "type": "object",
+          "description": "Các cổng I/O bên ngoài",
+          "required": ["external_inputs", "external_outputs", "supply_ports"],
+          "properties": {
+            "external_inputs": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/port" }
+            },
+            "external_outputs": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/port" }
+            },
+            "supply_ports": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/port" }
+            }
+          }
+        },
+        "blocks": {
+          "type": "array",
+          "description": "Danh sách các functional block trong mạch",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/block_instance" }
+        },
+        "connections": {
+          "type": "array",
+          "description": "Kết nối giữa các block (signal flow graph)",
+          "items": { "$ref": "#/$defs/connection" }
+        },
+        "pattern_signature": {
+          "type": "object",
+          "description": "Chữ ký topology để matching nhanh",
+          "required": ["ordered_block_types", "graph_hash"],
+          "properties": {
+            "ordered_block_types": {
+              "type": "array",
+              "description": "Danh sách block type theo thứ tự signal flow",
+              "items": { "type": "string" }
+            },
+            "graph_hash": {
+              "type": "string",
+              "description": "Hash duy nhất của graph topology"
+            },
+            "motifs": {
+              "type": "array",
+              "description": "Các motif/pattern đặc trưng: feedback_loop, push_pull, cascode, ...",
+              "items": { "type": "string" }
+            }
+          }
+        },
+        "total_gain_formula": {
+          "type": "string",
+          "description": "Công thức gain tổng của mạch (ví dụ: -RC/(re+RE), (1+2*RF/RG)*(R2/R1))"
+        },
+        "stage_count": {
+          "type": "integer",
+          "description": "Số tầng khuếch đại",
+          "minimum": 1
+        }
+      }
+    },
+    "planner_hints": {
+      "type": "object",
+      "description": "Gợi ý cho Topology Planner khi chọn/match template",
+      "required": ["intent_keys", "required_capabilities", "priority_score"],
+      "properties": {
+        "intent_keys": {
+          "type": "array",
+          "description": "Các từ khóa NLP mà user có thể dùng để chỉ loại mạch này",
+          "items": { "type": "string" }
+        },
+        "required_capabilities": {
+          "type": "array",
+          "description": "Khả năng BẮT BUỘC mạch phải có (ví dụ: high_gain, high_cmr, low_output_impedance)",
+          "items": { "type": "string" }
+        },
+        "optional_capabilities": {
+          "type": "array",
+          "description": "Khả năng KHÔNG BẮT BUỘC nhưng hữu ích",
+          "items": { "type": "string" }
+        },
+        "priority_score": {
+          "type": "number",
+          "description": "Điểm ưu tiên khi cùng match nhiều template (0.0 - 1.0)",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "fallback_rank": {
+          "type": "integer",
+          "description": "Thứ tự fallback trong cùng family (1 = ưu tiên nhất)",
+          "minimum": 1
+        },
+        "compatible_extensions": {
+          "type": "array",
+          "description": "Các block type có thể thêm vào để mở rộng mạch (Cấp 1: đề xuất, Cấp 2: tự ghép)",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "solver_hints": {
+      "type": "object",
+      "description": "Gợi ý cho Parameter Solver khi giải tham số",
+      "required": ["parameters", "equations", "constraints"],
+      "properties": {
+        "parameters": {
+          "type": "array",
+          "description": "Danh sách tham số có thể điều chỉnh",
+          "items": { "$ref": "#/$defs/parameter" }
+        },
+        "equations": {
+          "type": "array",
+          "description": "Các phương trình liên hệ giữa tham số",
+          "items": { "$ref": "#/$defs/equation" }
+        },
+        "constraints": {
+          "type": "array",
+          "description": "Ràng buộc cứng/mềm khi giải",
+          "items": { "$ref": "#/$defs/constraint" }
+        },
+        "optimization_targets": {
+          "type": "array",
+          "description": "Mục tiêu tối ưu: gain_accuracy, power_efficiency, bandwidth, noise, ...",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "description": "Quy tắc validate kết quả sinh ra",
+      "required": ["domain_rules", "min_checks"],
+      "properties": {
+        "domain_rules": {
+          "type": "array",
+          "description": "Luật domain phải tuân thủ",
+          "items": { "type": "string" }
+        },
+        "min_checks": {
+          "type": "array",
+          "description": "Kiểm tra tối thiểu phải pass",
+          "items": { "type": "string" }
+        },
+        "known_limitations": {
+          "type": "array",
+          "description": "Hạn chế đã biết của template này",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "description": "Thông tin đồng bộ giữa metadata và template gốc",
+      "required": ["source_template_last_modified", "metadata_last_modified", "status"],
+      "properties": {
+        "source_template_last_modified": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "metadata_last_modified": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_sync", "needs_review", "outdated"]
+        },
+        "reviewer": {
+          "type": "string",
+          "description": "Tên người review metadata cuối cùng"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": ["name", "role"],
+      "properties": {
+        "name": { "type": "string" },
+        "role": {
+          "type": "string",
+          "enum": ["signal_in", "signal_out", "supply", "ground", "bias", "reference"]
+        },
+        "polarity": {
+          "type": "string",
+          "enum": ["pos", "neg", "single_ended", "n/a"]
+        }
+      }
+    },
+    "block_instance": {
+      "type": "object",
+      "required": ["id", "type", "inputs", "outputs"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID block instance (e.g. stage1, bias_network)"
+        },
+        "type": {
+          "type": "string",
+          "description": "Loại block từ block_library (e.g. ce_block, non_inverting_block)"
+        },
+        "inputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "outputs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "internal_components": {
+          "type": "array",
+          "description": "Danh sách component IDs từ template gốc thuộc block này",
+          "items": { "type": "string" }
+        },
+        "gain_formula": {
+          "type": "string",
+          "description": "Công thức gain riêng của block này"
+        },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/constraint" }
+        },
+        "roles": {
+          "type": "array",
+          "description": "Vai trò chức năng: amplification, buffering, biasing, filtering, level_shifting, ...",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "required": ["from_block", "from_port", "to_block", "to_port", "signal_type"],
+      "properties": {
+        "from_block": { "type": "string" },
+        "from_port": { "type": "string" },
+        "to_block": { "type": "string" },
+        "to_port": { "type": "string" },
+        "signal_type": {
+          "type": "string",
+          "enum": ["analog", "bias", "feedback", "power", "digital", "rf"]
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "required": ["name", "symbol", "component_type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tên mô tả (e.g. feedback_resistor, collector_resistor)"
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Ký hiệu (e.g. RF, RC, RG)"
+        },
+        "component_ref": {
+          "type": "string",
+          "description": "ID component trong template gốc (e.g. RF1, RC)"
+        },
+        "component_type": {
+          "type": "string",
+          "enum": ["resistor", "capacitor", "inductor", "transistor", "opamp", "diode", "scalar"]
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "min": { "type": "number" },
+            "max": { "type": "number" },
+            "unit": { "type": "string" }
+          }
+        },
+        "preferred_series": {
+          "type": "string",
+          "enum": ["E6", "E12", "E24", "E48", "E96", "none"],
+          "default": "E24"
+        },
+        "adjustable": {
+          "type": "boolean",
+          "description": "Tham số này có thể điều chỉnh bởi AI solver hay không",
+          "default": true
+        }
+      }
+    },
+    "equation": {
+      "type": "object",
+      "required": ["id", "expression"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID phương trình (e.g. eq_gain, eq_bias_point)"
+        },
+        "expression": {
+          "type": "string",
+          "description": "Biểu thức toán học (e.g. -RC/(re+RE), 1+RF/RG)"
+        },
+        "variables": {
+          "type": "array",
+          "description": "Danh sách biến trong phương trình",
+          "items": { "type": "string" }
+        },
+        "depends_on": {
+          "type": "array",
+          "description": "Phương trình khác mà PT này phụ thuộc",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "constraint": {
+      "type": "object",
+      "required": ["name", "rule"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Tên ràng buộc (e.g. vce_saturation, power_dissipation)"
+        },
+        "rule": {
+          "type": "string",
+          "description": "Quy tắc dạng biểu thức (e.g. VCE > 0.2, P_RC < 0.25)"
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["hard", "soft"],
+          "default": "hard"
+        }
+      }
+    }
+  }
+}
