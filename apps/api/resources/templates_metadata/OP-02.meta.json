@@ -1,0 +1,204 @@
+{
+  "template_id": "OP-02",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "opamp_inverting_single_supply_vref.json",
+    "template_sha256": "85e096c9dab0253710fe899585630f416d39f9f8da8bd0fcebafac9b1388568f",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "opamp",
+    "family": "inverting",
+    "topology_tags": [
+      "inverting",
+      "single_supply",
+      "virtual_reference"
+    ],
+    "target_use_cases": [
+      "signal_conditioning",
+      "summing"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "inverting_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "U1",
+          "RIN",
+          "RF",
+          "R3",
+          "R4"
+        ],
+        "gain_formula": "-RF / RIN",
+        "roles": [
+          "amplification"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "inverting_block"
+      ],
+      "graph_hash": "20655257605ebe53",
+      "motifs": []
+    },
+    "total_gain_formula": "-RF / RIN",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "inverting amplifier",
+      "inverting opamp",
+      "phase inversion"
+    ],
+    "required_capabilities": [
+      "voltage_gain",
+      "phase_inversion"
+    ],
+    "optional_capabilities": [
+      "cc_block",
+      "cd_block"
+    ],
+    "priority_score": 0.92,
+    "fallback_rank": 2,
+    "compatible_extensions": [
+      "cc_block",
+      "cd_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "rin_resistance",
+        "symbol": "RIN",
+        "component_ref": "RIN",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rf_resistance",
+        "symbol": "RF",
+        "component_ref": "RF",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r3_resistance",
+        "symbol": "R3",
+        "component_ref": "R3",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r4_resistance",
+        "symbol": "R4",
+        "component_ref": "R4",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "-RF / RIN",
+        "variables": [
+          "RIN",
+          "RF",
+          "R3",
+          "R4"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "output_swing",
+        "rule": "|VOUT| < V_supply - headroom",
+        "severity": "hard"
+      },
+      {
+        "name": "gbw_limit",
+        "rule": "gain * BW < GBW",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": [
+      "gain_accuracy"
+    ]
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}

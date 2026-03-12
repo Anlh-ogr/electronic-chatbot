@@ -1,0 +1,214 @@
+{
+  "template_id": "OP-10",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "opamp_differential_single_supply_vref_ac_coupled.json",
+    "template_sha256": "bc1aed0686984ab53885a2d84ac4614f7ed18204143b17a2f01aab49fcbcec42",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "opamp",
+    "family": "differential",
+    "topology_tags": [
+      "differential",
+      "ac_coupled",
+      "single_supply",
+      "virtual_reference"
+    ],
+    "target_use_cases": [
+      "signal_subtraction",
+      "bridge_measurement"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VINP",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        },
+        {
+          "name": "VINN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "differential_block",
+        "inputs": [
+          "VINP",
+          "VINN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "U1",
+          "R1",
+          "R2",
+          "R3",
+          "R4",
+          "CINP",
+          "CINN"
+        ],
+        "gain_formula": "R2 / R1",
+        "roles": [
+          "amplification",
+          "signal_subtraction"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "differential_block"
+      ],
+      "graph_hash": "7e305fdf82ee2f4e",
+      "motifs": [
+        "differential_path"
+      ]
+    },
+    "total_gain_formula": "R2 / R1",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "differential amplifier",
+      "difference amplifier",
+      "subtractor"
+    ],
+    "required_capabilities": [
+      "differential_input",
+      "voltage_gain"
+    ],
+    "optional_capabilities": [
+      "cc_block",
+      "non_inverting_block"
+    ],
+    "priority_score": 0.9,
+    "fallback_rank": 10,
+    "compatible_extensions": [
+      "cc_block",
+      "non_inverting_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "r1_resistance",
+        "symbol": "R1",
+        "component_ref": "R1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r2_resistance",
+        "symbol": "R2",
+        "component_ref": "R2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r3_resistance",
+        "symbol": "R3",
+        "component_ref": "R3",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r4_resistance",
+        "symbol": "R4",
+        "component_ref": "R4",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "R2 / R1",
+        "variables": [
+          "R1",
+          "R2",
+          "R3",
+          "R4"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "output_swing",
+        "rule": "|VOUT| < V_supply - headroom",
+        "severity": "hard"
+      },
+      {
+        "name": "gbw_limit",
+        "rule": "gain * BW < GBW",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": []
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:10Z",
+    "metadata_last_modified": "2026-02-12T09:40:10Z",
+    "status": "in_sync"
+  }
+}
