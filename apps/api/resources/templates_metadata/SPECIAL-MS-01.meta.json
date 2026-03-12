@@ -1,0 +1,247 @@
+{
+  "template_id": "SPECIAL-MS-01",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "multi_stage_two_stage_ce_cc_full_coupling.json",
+    "template_sha256": "edd3c2f83e8c7dea08c551fe3cfaf37adfa5c325d67dfbe8f062931d32c0c858",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "special",
+    "family": "multi_stage",
+    "topology_tags": [
+      "multi_stage"
+    ],
+    "target_use_cases": [
+      "high_gain_audio",
+      "multi_purpose"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "ce_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "Q1_COLLECTOR"
+        ],
+        "internal_components": [
+          "Q1"
+        ],
+        "gain_formula": "-RC1 / (re1 + RE1)",
+        "roles": [
+          "amplification"
+        ]
+      },
+      {
+        "id": "stage2",
+        "type": "cc_block",
+        "inputs": [
+          "Q1_COLLECTOR"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "Q2"
+        ],
+        "gain_formula": "~1",
+        "roles": [
+          "buffering"
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "from_block": "stage1",
+        "from_port": "OUT",
+        "to_block": "stage2",
+        "to_port": "IN",
+        "signal_type": "analog"
+      }
+    ],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "ce_block",
+        "cc_block"
+      ],
+      "graph_hash": "52851b184ecd2941",
+      "motifs": [
+        "multi_stage"
+      ]
+    },
+    "total_gain_formula": "A_stage1 * A_stage2",
+    "stage_count": 2
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "two stage",
+      "multi stage",
+      "CE-CC",
+      "cascade"
+    ],
+    "required_capabilities": [
+      "voltage_gain",
+      "low_output_impedance"
+    ],
+    "optional_capabilities": [],
+    "priority_score": 0.88,
+    "fallback_rank": 1,
+    "compatible_extensions": []
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "r1a_resistance",
+        "symbol": "R1a",
+        "component_ref": "R1a",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r2a_resistance",
+        "symbol": "R2a",
+        "component_ref": "R2a",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rc1_resistance",
+        "symbol": "RC1",
+        "component_ref": "RC1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "re1_resistance",
+        "symbol": "RE1",
+        "component_ref": "RE1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r1b_resistance",
+        "symbol": "R1b",
+        "component_ref": "R1b",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r2b_resistance",
+        "symbol": "R2b",
+        "component_ref": "R2b",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "re2_resistance",
+        "symbol": "RE2",
+        "component_ref": "RE2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "A_stage1 * A_stage2",
+        "variables": [
+          "R1a",
+          "R2a",
+          "RC1",
+          "RE1"
+        ]
+      }
+    ],
+    "constraints": [],
+    "optimization_targets": []
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:11Z",
+    "metadata_last_modified": "2026-02-12T09:40:11Z",
+    "status": "in_sync"
+  }
+}
