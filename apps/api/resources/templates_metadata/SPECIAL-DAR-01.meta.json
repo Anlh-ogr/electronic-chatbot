@@ -1,0 +1,196 @@
+{
+  "template_id": "SPECIAL-DAR-01",
+  "metadata_version": "v3.0.0",
+  "physical_template_ref": {
+    "template_file": "special_darlington_pair_voltage_divider_bias_full.json",
+    "template_sha256": "22b07e7c5d4f6bc09c4f15e1ee9d782d52a96d8feee96fd600c4ecd99dc4e167",
+    "kicanvas_compatible": true
+  },
+  "domain": {
+    "category": "special",
+    "family": "darlington",
+    "topology_tags": [
+      "darlington",
+      "voltage_divider"
+    ],
+    "target_use_cases": [
+      "high_current_switch",
+      "relay_driver"
+    ]
+  },
+  "functional_structure": {
+    "ports": {
+      "external_inputs": [
+        {
+          "name": "VIN",
+          "role": "signal_in",
+          "polarity": "single_ended"
+        }
+      ],
+      "external_outputs": [
+        {
+          "name": "VOUT",
+          "role": "signal_out",
+          "polarity": "single_ended"
+        }
+      ],
+      "supply_ports": [
+        {
+          "name": "VCC",
+          "role": "supply",
+          "polarity": "n/a"
+        },
+        {
+          "name": "GND",
+          "role": "ground",
+          "polarity": "n/a"
+        }
+      ]
+    },
+    "blocks": [
+      {
+        "id": "stage1",
+        "type": "darlington_block",
+        "inputs": [
+          "VIN"
+        ],
+        "outputs": [
+          "VOUT"
+        ],
+        "internal_components": [
+          "Q1",
+          "Q2"
+        ],
+        "gain_formula": "beta1 * beta2 (current gain)",
+        "roles": [
+          "high_current_gain",
+          "amplification"
+        ]
+      }
+    ],
+    "connections": [],
+    "pattern_signature": {
+      "ordered_block_types": [
+        "darlington_block"
+      ],
+      "graph_hash": "07c80867d584d9a2",
+      "motifs": []
+    },
+    "total_gain_formula": "beta1 * beta2 (current gain)",
+    "stage_count": 1
+  },
+  "planner_hints": {
+    "intent_keys": [
+      "darlington",
+      "darlington pair",
+      "high current gain"
+    ],
+    "required_capabilities": [
+      "high_current_gain"
+    ],
+    "optional_capabilities": [
+      "cc_block"
+    ],
+    "priority_score": 0.78,
+    "fallback_rank": 1,
+    "compatible_extensions": [
+      "cc_block"
+    ]
+  },
+  "solver_hints": {
+    "parameters": [
+      {
+        "name": "r1_resistance",
+        "symbol": "R1",
+        "component_ref": "R1",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "r2_resistance",
+        "symbol": "R2",
+        "component_ref": "R2",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "rc_resistance",
+        "symbol": "RC",
+        "component_ref": "RC",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      },
+      {
+        "name": "re_resistance",
+        "symbol": "RE",
+        "component_ref": "RE",
+        "component_type": "resistor",
+        "adjustable": true,
+        "range": {
+          "min": 100,
+          "max": 1000000,
+          "unit": "ohm"
+        },
+        "preferred_series": "E24"
+      }
+    ],
+    "equations": [
+      {
+        "id": "eq_gain",
+        "expression": "beta1 * beta2 (current gain)",
+        "variables": [
+          "R1",
+          "R2",
+          "RC",
+          "RE"
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "name": "vce_active",
+        "rule": "VCE > 0.2V",
+        "severity": "hard"
+      },
+      {
+        "name": "power_dissipation",
+        "rule": "P_Q < P_max",
+        "severity": "hard"
+      }
+    ],
+    "optimization_targets": []
+  },
+  "validation": {
+    "domain_rules": [
+      "all_required_ports_connected",
+      "valid_supply_domain"
+    ],
+    "min_checks": [
+      "gain_equation_satisfiable"
+    ],
+    "known_limitations": []
+  },
+  "sync": {
+    "source_template_last_modified": "2026-02-12T09:40:11Z",
+    "metadata_last_modified": "2026-02-12T09:40:11Z",
+    "status": "in_sync"
+  }
+}
