@@ -79,7 +79,7 @@ class ModelConfig:
 
 @dataclass
 class RoleConfig:
-    # Model ưu tiên đi kèm danh sách dự phòng (1st->2nd->3rd).
+    # Cấu hình các model ưu tiên + dự phòng (1st->2nd->3rd).
     primary: ModelConfig
     fallbacks: List[ModelConfig] = field(default_factory=list)
 
@@ -112,7 +112,6 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
         _groq("GROQ_AIR_MODEL_2", "meta-llama/llama-4-scout-17b-16e-instruct", 15.0, 8192),
         _groq("GROQ_AIR_MODEL_3", "llama-3.1-8b-instant", 10.0, 2048),
     ]
-
     # Gemini chain: gemma-3-27b → gemma-3-12b → gemini-2.5-flash-lite
     air_gemini = [
         _gemini("GEMINI_AIR_MODEL_1", "google/gemma-3-27b-it", 30.0, 8192),
@@ -147,24 +146,11 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
         LLMRole.REASONING: RoleConfig(primary=pro_groq[0], fallback=[pro_groq[1], pro_groq[2]]),
         LLMRole.PRESENTATION: RoleConfig(primary=pro_gemini[1], fallback=[pro_gemini[2], pro_groq[1]]),
     }
-
     return {LLMMode.AIR: air, LLMMode.PRO: pro}
 
 
-# 
 class LLMRouter:
-    """
-    Multi-model orchestrator.
-
-    Gọi model phù hợp cho từng vai trò, tự động fallback khi lỗi (429, timeout, ...).
-
-    Usage::
-
-        router = LLMRouter()
-        result = router.chat_json(LLMRole.ROUTER, system="...", user_content="...")
-        text   = router.chat_text(LLMRole.PRESENTATION, system="...", user_content="...")
-    """
-
+    # Gọi model phù hợp cho từng vai trò, tự động fallback khi lỗi (429, timeout, ...).
     def __init__(self) -> None:
         self._mode_configs = _build_mode_configs()
         mode_str = _env("DEFAULT_MODE", "air").lower()
@@ -178,93 +164,70 @@ class LLMRouter:
         )
 
     # ── Public API ──
-
-    def chat_json(
-        self,
-        role: LLMRole,
-        *,
-        mode: Optional[LLMMode] = None,
-        system: str = "",
-        user_content: str = "",
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Gọi LLM cho role, trả về parsed JSON dict.
-        Tự động fallback. Trả None nếu cả primary + fallback đều lỗi.
-        """
-        cfg = self._get_config(role, mode)
-        if not cfg:
-            logger.error(f"No config for role {role}")
+    def chat_json(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[Dict[str, Any]]:
+        # Gọi config -> cấu hình role
+        confg = self._get_config(role, mode)
+        if not confg:
+            logger.error(f"Không có cấu hình cho role {role}")
             return None
 
-        # Try primary
-        result = self._try_call_json(cfg.primary, system, user_content, temperature, max_tokens)
+        # Kiểm tra model (1st).
+        result = self._try_call_json(confg.primary, system, user_content, temperature, max_tokens)
         if result is not None:
             return result
 
-        # Try fallback chain (2nd, 3rd, ...)
-        for fb in cfg.fallbacks:
-            logger.info(f"[{role.value}] Trying fallback ({fb.model_id})")
-            result = self._try_call_json(fb, system, user_content, temperature, max_tokens)
+        # Thử chuỗi fallback (2nd, 3rd, ...)
+        for faback in confg.fallbacks:
+            logger.info(f"[{role.value}] Trying fallback ({faback.model_id})")
+            result = self._try_call_json(faback, system, user_content, temperature, max_tokens)
             if result is not None:
                 return result
 
-        logger.warning(f"[{role.value}] All models failed, returning None")
+        logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def chat_text(
-        self,
-        role: LLMRole,
-        *,
-        mode: Optional[LLMMode] = None,
-        system: str = "",
-        user_content: str = "",
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Optional[str]:
-        """
-        Gọi LLM cho role, trả về raw text.
-        Tự động fallback. Trả None nếu tất cả đều lỗi.
-        """
-        cfg = self._get_config(role, mode)
-        if not cfg:
-            logger.error(f"No config for role {role}")
+    # * truyền keyword-only agr (mode=LLMMode.A/P)
+    def chat_text(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[str]:
+        # Gọi config -> cấu hình role.
+        cofig = self._get_config(role, mode)
+        if not cofig:
+            logger.error(f"Không có cấu hình cho role {role}")
             return None
-
-        result = self._try_call_text(cfg.primary, system, user_content, temperature, max_tokens)
+        
+        # kiểm tra model (1st).
+        result = self._try_call_text(cofig.primary, system, user_content, temperature, max_tokens)
         if result is not None:
             return result
-
-        for fb in cfg.fallbacks:
-            logger.info(f"[{role.value}] Trying fallback ({fb.model_id})")
-            result = self._try_call_text(fb, system, user_content, temperature, max_tokens)
+        
+        # Thử chuỗi fallback (2nd, 3rd, ...)
+        for faback in cofig.fallbacks:
+            logger.info(f"[{role.value}] Trying fallback ({faback.model_id})")
+            result = self._try_call_text(faback, system, user_content, temperature, max_tokens)
             if result is not None:
                 return result
-
-        logger.warning(f"[{role.value}] All models failed, returning None")
+    
+        logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
     def is_available(self, role: LLMRole, mode: Optional[LLMMode] = None) -> bool:
-        """Kiểm tra xem role có model nào khả dụng (có API key) không."""
-        cfg = self._get_config(role, mode)
-        if not cfg:
-            return False
-        if cfg.primary.api_key:
-            return True
-        return any(fb.api_key for fb in cfg.fallbacks)
+        # Kiểm tra model khả dụng
+        cofig = self._get_config(role, mode)
+        if not cofig: return False
+        if cofig.primary.api_key: return True
+        return any(faback.api_key for faback in cofig.fallbacks)
 
     def get_status(self) -> Dict[str, Any]:
-        """Trả về trạng thái các model theo mode."""
+        # Trả về trạng thái các model theo mode.
         status: Dict[str, Any] = {
             "default_mode": self._default_mode.value,
             "groq_available": self._groq_available,
             "gemini_available": self._gemini_available,
             "modes": {},
         }
+        # Lọc/lấy/kiểm tra/fallback thông tin cho từng role+mode(A/P)
         for mode, configs in self._mode_configs.items():
             status["modes"][mode.value] = {}
-            for role, cfg in configs.items():
+            for role, cofig in configs.items():
                 status["modes"][mode.value][role.value] = {
                     "chain": [
                         {
@@ -272,136 +235,126 @@ class LLMRouter:
                             "has_key": bool(m.api_key),
                             "tier": "primary" if i == 0 else f"fallback_{i}",
                         }
-                        for i, m in enumerate([cfg.primary] + cfg.fallbacks)
+                        for i, m in enumerate([cofig.primary] + cofig.fallbacks)
                     ],
                 }
         return status
 
+
     # ── Internal call helpers ──
-
     def _get_config(self, role: LLMRole, mode: Optional[LLMMode]) -> Optional[RoleConfig]:
-        """Lấy RoleConfig theo mode (fallback về default mode nếu None)."""
-        m = mode if mode is not None else self._default_mode
-        return self._mode_configs.get(m, {}).get(role)
+        # Sử dụng RoleConfig hoạt động với Role
+        mod = mode if mode is not None else self._default_mode
+        return self._mode_configs.get(mod, {}).get(role)
 
-    def _try_call_json(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: Optional[float], max_tokens: Optional[int],
-    ) -> Optional[Dict[str, Any]]:
-        """Gọi 1 model, trả JSON dict hoặc None nếu lỗi."""
+    def _try_call_json(self, model: ModelConfig, system: str, user_content: str,
+                             temperature: Optional[float], max_tokens: Optional[int],) -> Optional[Dict[str, Any]]:
+        # Gọi 1 model, trả JSON dict hoặc None nếu lỗi.
         if not model.api_key:
             return None
+        
+        # lấy 'sáng tạo' và 'token' được cấu hình -> để truyền client gọi LLM service.
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
+        
         try:
             if model.provider == LLMProvider.GROQ:
                 return self._groq_json(model, system, user_content, temp, tokens)
             else:
                 return self._gemini_json(model, system, user_content, temp, tokens)
         except Exception as e:
-            logger.warning(f"[{model.provider.value}/{model.model_id}] JSON call failed: {e}")
+            logger.warning(f"[{model.provider.value}/{model.model_id}] JSON failed: {e}")
             return None
 
-    def _try_call_text(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: Optional[float], max_tokens: Optional[int],
-    ) -> Optional[str]:
-        """Gọi 1 model, trả text hoặc None nếu lỗi."""
+    def _try_call_text(self, model: ModelConfig, system: str, user_content: str,
+                             temperature: Optional[float], max_tokens: Optional[int],) -> Optional[str]:
+        # Gọi 1 model, trả text hoặc None nếu lỗi.
         if not model.api_key:
             return None
+        
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
+        
         try:
             if model.provider == LLMProvider.GROQ:
                 return self._groq_text(model, system, user_content, temp, tokens)
             else:
                 return self._gemini_text(model, system, user_content, temp, tokens)
         except Exception as e:
-            logger.warning(f"[{model.provider.value}/{model.model_id}] Text call failed: {e}")
+            logger.warning(f"[{model.provider.value}/{model.model_id}] Text failed: {e}")
             return None
 
-    # ── Groq (OpenAI-compatible) calls ──
 
-    def _groq_json(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: float, max_tokens: int,
-    ) -> Dict[str, Any]:
-        from app.application.ai.llm_client import (
-            OpenAICompatibleLLMClient, ChatMessage,
-        )
-        client = OpenAICompatibleLLMClient(
-            api_key=model.api_key,
-            base_url=model.base_url,
-            model=model.model_id,
-            timeout_sec=model.timeout_sec,
-        )
+    # ── Groq (OpenAI-compatible) calls ──
+    def _groq_json(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> Dict[str, Any]:
+        from app.application.ai.llm_client import (OpenAICompatibleLLMClient, ChatMessage,)
+        
+        client = OpenAICompatibleLLMClient(api_key=model.api_key,
+                                           base_url=model.base_url,
+                                           model=model.model_id,
+                                           timeout_sec=model.timeout_sec,)
+        
+        # gói message (role + content) -> LLM client
         messages = []
         if system:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=user_content))
+        
         return client.chat_json(messages, temperature=temperature, max_tokens=max_tokens)
 
-    def _groq_text(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: float, max_tokens: int,
-    ) -> str:
-        from app.application.ai.llm_client import (
-            OpenAICompatibleLLMClient, ChatMessage,
-        )
-        client = OpenAICompatibleLLMClient(
-            api_key=model.api_key,
-            base_url=model.base_url,
-            model=model.model_id,
-            timeout_sec=model.timeout_sec,
-        )
+    def _groq_text(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> str:
+        from app.application.ai.llm_client import (OpenAICompatibleLLMClient, ChatMessage,)
+        
+        client = OpenAICompatibleLLMClient(api_key=model.api_key,
+                                           base_url=model.base_url,
+                                           model=model.model_id,
+                                           timeout_sec=model.timeout_sec,)
+        
+        # Gói message (role + content) -> LLM client
         messages = []
         if system:
             messages.append(ChatMessage(role="system", content=system))
         messages.append(ChatMessage(role="user", content=user_content))
+        
         return client.chat_text(messages, temperature=temperature, max_tokens=max_tokens)
 
+    
     # ── Gemini calls ──
-
-    def _gemini_json(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: float, max_tokens: int,
-    ) -> Dict[str, Any]:
+    def _gemini_json(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> Dict[str, Any]:
         from app.application.ai.gemini_client import GeminiClient, GeminiMessage
-        client = GeminiClient(
-            api_key=model.api_key,
-            model=model.model_id,
-            timeout_sec=model.timeout_sec,
-        )
+        
+        client = GeminiClient(api_key=model.api_key,
+                              model=model.model_id,
+                              timeout_sec=model.timeout_sec,)
+        
+        # Gói message (role + content) -> LLM client
         messages = [GeminiMessage(role="user", content=user_content)]
+        
         return client.chat_json(
             messages, system_instruction=system,
             temperature=temperature, max_tokens=max_tokens,
         )
 
-    def _gemini_text(
-        self, model: ModelConfig, system: str, user_content: str,
-        temperature: float, max_tokens: int,
-    ) -> str:
+    def _gemini_text(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> str:
         from app.application.ai.gemini_client import GeminiClient, GeminiMessage
-        client = GeminiClient(
-            api_key=model.api_key,
-            model=model.model_id,
-            timeout_sec=model.timeout_sec,
-        )
+        
+        client = GeminiClient(api_key=model.api_key,
+                              model=model.model_id,
+                              timeout_sec=model.timeout_sec,)
+        
         messages = [GeminiMessage(role="user", content=user_content)]
+        
         return client.chat_text(
             messages, system_instruction=system,
             temperature=temperature, max_tokens=max_tokens,
         )
 
 
-# ── Singleton ──
-
+# ── Singleton ── Lưu instance tái sd tiết kiệm tìa nguyên
 _router: Optional[LLMRouter] = None
 
-
+# Trả về singleton LLMRouter.
 def get_router() -> LLMRouter:
-    """Trả về singleton LLMRouter."""
     global _router
     if _router is None:
         _router = LLMRouter()
