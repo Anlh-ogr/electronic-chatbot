@@ -292,6 +292,8 @@ class Component:
             ComponentType.CONNECTOR,
             ComponentType.PORT,
             ComponentType.GROUND,
+            ComponentType.VOLTAGE_SOURCE,
+            ComponentType.CURRENT_SOURCE,
         )
         if self.type not in single_pin_types:
             if len(self.pins) < 2:
