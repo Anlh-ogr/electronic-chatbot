@@ -1,10 +1,11 @@
-"""AI integration utilities (LLM clients, NLU, NLG, Chatbot).
+"""AI application layer utilities.
 
-Cung cấp:
-- GeminiClient: Google Gemini AI client
-- NLUService: Natural Language Understanding
-- NLGService: Natural Language Generation
-- ChatbotService: Orchestrator chính
+Bao gồm các thành phần chính:
+- GoogleCloudClient: client gọi Google Cloud Generative Language API
+- LLMRouter: điều phối model theo 2 mode Air/Pro
+- NLUService: phân tích intent người dùng
+- NLGService: sinh phản hồi tự nhiên
+- ChatbotService: điều phối toàn bộ luồng xử lý chatbot
 
-Nếu không có API key, hệ thống fallback sang rule/keyword logic.
+Nếu không có API key, hệ thống fallback sang cơ chế rule-based.
 """
