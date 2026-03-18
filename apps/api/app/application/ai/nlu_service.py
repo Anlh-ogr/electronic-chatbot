@@ -807,6 +807,7 @@ class NLUService:
         
         if obj is None:
             return None
+        
         # Đưa kết quả về intent
         return self._build_intent_from_llm(user_text, obj)
     
