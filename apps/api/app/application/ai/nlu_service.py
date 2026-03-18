@@ -50,6 +50,9 @@ class CircuitIntent:
     gain_target: Optional[float] = None
     vcc: Optional[float] = None
     frequency: Optional[float] = None
+    input_channels: int = 1
+    channel_inputs: Dict[str, Dict[str, Optional[float]]] = field(default_factory=dict)
+    voltage_range: Dict[str, Optional[float]] = field(default_factory=dict)
     input_mode: str = "single_ended"
     high_cmr: bool = False                  # common-mode rejection ratio
     output_buffer: bool = False
@@ -83,6 +86,9 @@ class CircuitIntent:
             "gain_target": self.gain_target,
             "vcc": self.vcc,
             "frequency": self.frequency,
+            "input_channels": self.input_channels,
+            "channel_inputs": self.channel_inputs,
+            "voltage_range": self.voltage_range,
             "input_mode": self.input_mode,
             "high_cmr": self.high_cmr,
             "output_buffer": self.output_buffer,
@@ -364,6 +370,9 @@ class NLUService:
         self._parse_gain(lower, intent)
         self._parse_vcc(lower, intent)
         self._parse_frequency(lower, intent)
+        self._parse_input_channels(lower, intent)
+        self._parse_channel_inputs(lower, intent)
+        self._parse_voltage_range(lower, intent)
         self._parse_flags(lower, intent)
         self._parse_input_mode(lower, intent)
         self._parse_supply_mode(lower, intent)
@@ -498,6 +507,61 @@ class NLUService:
             r"\bfreq(?:uency)?\s*[=:]?\s*(\d+(?:\.\d+)?)\b",
             r"\bf\s*[=:]?\s*(\d+(?:\.\d+)?)\b",
         ])
+
+    def _parse_input_channels(self, text: str, intent: CircuitIntent) -> None:
+        # Parse number of channels from text (e.g. "2 kênh", "stereo").
+        if self._has_pattern(text, [r"\bstereo\b", r"2\s*kênh", r"2\s*kenh", r"2\s*channels?"]):
+            intent.input_channels = 2
+            return
+        m = re.search(r"(\d+)\s*(?:kênh|kenh|channels?|ch)\b", text, re.IGNORECASE)
+        if m:
+            intent.input_channels = max(1, int(m.group(1)))
+
+    def _parse_channel_inputs(self, text: str, intent: CircuitIntent) -> None:
+        # Parse per-channel input amplitude and optional frequency.
+        channel_inputs: Dict[str, Dict[str, Optional[float]]] = {}
+        for m in re.finditer(
+            r"(?:ch|kênh|kenh)\s*([0-9]+)\s*[:=]?\s*"
+            r"([0-9]+(?:\.[0-9]+)?)\s*(mv|v)"
+            r"(?:\s*[,;]?\s*(?:at|@|tần\s*số|tan\s*so|f(?:req(?:uency)?)?)\s*"
+            r"([0-9]+(?:\.[0-9]+)?)\s*(hz|khz))?",
+            text,
+            re.IGNORECASE,
+        ):
+            idx = int(m.group(1))
+            amp = float(m.group(2))
+            amp_unit = (m.group(3) or "v").lower()
+            if amp_unit == "mv":
+                amp *= 1e-3
+            freq_val: Optional[float] = None
+            if m.group(4):
+                freq_val = float(m.group(4))
+                freq_unit = (m.group(5) or "hz").lower()
+                if freq_unit == "khz":
+                    freq_val *= 1000
+            channel_inputs[f"CH{idx}"] = {
+                "amplitude_v": amp,
+                "frequency_hz": freq_val,
+            }
+
+        if channel_inputs:
+            intent.channel_inputs = channel_inputs
+            intent.input_channels = max(intent.input_channels, len(channel_inputs))
+
+    def _parse_voltage_range(self, text: str, intent: CircuitIntent) -> None:
+        # Parse explicit voltage range: "-1V..1V", "0-5V", "range 0 to 3.3V".
+        patterns = [
+            r"([-+]?[0-9]+(?:\.[0-9]+)?)\s*v\s*(?:to|\-|\.\.|~)\s*([-+]?[0-9]+(?:\.[0-9]+)?)\s*v",
+            r"(?:range|dải|phạm\s*vi)\s*([-+]?[0-9]+(?:\.[0-9]+)?)\s*(?:to|\-|\.\.|~)\s*([-+]?[0-9]+(?:\.[0-9]+)?)\s*v",
+        ]
+        for pat in patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if not m:
+                continue
+            v1 = float(m.group(1))
+            v2 = float(m.group(2))
+            intent.voltage_range = {"min": min(v1, v2), "max": max(v1, v2)}
+            return
 
     def _parse_flags(self, text: str, intent: CircuitIntent) -> None:
         # Phân tích các flag yêu cầu đặc biệt.
@@ -765,6 +829,9 @@ class NLUService:
             '  "gain_target":        number | null,   // Voltage gain magnitude (e.g. 10 for 20dB)\n'
             '  "vcc":                number | null,   // Supply voltage in Volts (e.g. 12 for "12V")\n'
             '  "frequency":          number | null,   // Operating/cutoff frequency in Hz (e.g. 1000 for "1kHz")\n'
+            '  "input_channels":     number,          // Number of input channels, default 1\n'
+            '  "channel_inputs":      object,          // Per-channel params. Example: {"CH1": {"amplitude_v": 0.02, "frequency_hz": 1000}}\n'
+            '  "voltage_range":       object,          // Signal voltage range. Example: {"min": -1.0, "max": 1.0}\n'
             '  "input_mode":         string,          // "single_ended" | "differential". Default: "single_ended"\n'
             '  "high_cmr":           boolean,         // High CMRR required? Default: false\n'
             '  "output_buffer":      boolean,         // Low-impedance output buffer required? Default: false\n'
@@ -835,7 +902,7 @@ class NLUService:
         
         # phân tích các đặc thù cơ bản
         self._fill_basic_fields(intent, obj)
-        self._parse_edit_operations(intent, obj)
+        self._parse_llm_edit_operations(intent, obj)
         self._parse_explain_fields(intent, obj)
         
         if not intent.requested_actions:
@@ -851,6 +918,25 @@ class NLUService:
         intent.gain_target = obj.get("gain_target")
         intent.vcc = obj.get("vcc")
         intent.frequency = obj.get("frequency")
+        intent.input_channels = int(obj.get("input_channels", 1) or 1)
+        channel_inputs = obj.get("channel_inputs", {})
+        if isinstance(channel_inputs, dict):
+            normalized_channels: Dict[str, Dict[str, Optional[float]]] = {}
+            for key, val in channel_inputs.items():
+                if isinstance(val, dict):
+                    normalized_channels[str(key).upper()] = {
+                        "amplitude_v": (float(val["amplitude_v"]) if val.get("amplitude_v") is not None else None),
+                        "frequency_hz": (float(val["frequency_hz"]) if val.get("frequency_hz") is not None else None),
+                    }
+            intent.channel_inputs = normalized_channels
+        voltage_range = obj.get("voltage_range", {})
+        if isinstance(voltage_range, dict):
+            vmin = voltage_range.get("min")
+            vmax = voltage_range.get("max")
+            intent.voltage_range = {
+                "min": float(vmin) if vmin is not None else None,
+                "max": float(vmax) if vmax is not None else None,
+            }
         
         intent.input_mode = str(obj.get("input_mode", "single_ended"))
         intent.high_cmr = bool(obj.get("high_cmr", False))
@@ -867,7 +953,7 @@ class NLUService:
         intent.hard_constraints = obj.get("hard_constraints", {})
         intent.soft_preferences = obj.get("soft_preferences", [])
         
-    def _parse_edit_operations(self, intent: CircuitIntent, obj: dict) -> None:
+    def _parse_llm_edit_operations(self, intent: CircuitIntent, obj: dict) -> None:
         # Phân tích nhận diện edit_operations từ json
         raw_ops = obj.get("edit_operations", []) # Json phản hồi
        
@@ -927,6 +1013,9 @@ class NLUService:
         merged.gain_target = llm.gain_target if llm.gain_target is not None else rule.gain_target
         merged.vcc = llm.vcc if llm.vcc is not None else rule.vcc
         merged.frequency = llm.frequency if llm.frequency is not None else rule.frequency
+        merged.input_channels = llm.input_channels if llm.input_channels > 1 else rule.input_channels
+        merged.channel_inputs = llm.channel_inputs if llm.channel_inputs else rule.channel_inputs
+        merged.voltage_range = llm.voltage_range if llm.voltage_range else rule.voltage_range
 
 
         # Flags: merge
