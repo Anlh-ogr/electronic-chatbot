@@ -477,6 +477,51 @@
       "compatible_predecessors": ["any"],
       "compatible_successors": ["any"],
       "roles": ["ac_coupling", "dc_blocking"]
+    },
+    "direct_coupling_block": {
+      "name": "Direct Coupling Block",
+      "description": "Ghép nối trực tiếp (DC coupling) giữa hai tầng, không dùng tụ chặn DC.",
+      "device_type": "passive",
+      "input_ports": ["IN"],
+      "output_ports": ["OUT"],
+      "supply_ports": [],
+      "bias_ports": [],
+      "gain_formula": "1",
+      "phase_inversion": false,
+      "typical_gain_range": { "min": 1, "max": 1 },
+      "input_impedance": "Z_next_stage",
+      "output_impedance": "Z_prev_stage",
+      "bandwidth_hint": "dc_to_high",
+      "internal_components_pattern": ["wire_link", "level_shift?"],
+      "constraints": [
+        { "name": "dc_bias_compatibility", "rule": "Vdc_stage_n_out compatible with Vdc_stage_n1_in", "severity": "hard" }
+      ],
+      "compatible_predecessors": ["any"],
+      "compatible_successors": ["any"],
+      "roles": ["direct_coupling", "dc_path"]
+    },
+    "transformer_coupling_block": {
+      "name": "Transformer Coupling Block",
+      "description": "Ghép nối tầng bằng biến áp, cho cách ly DC và matching trở kháng.",
+      "device_type": "passive",
+      "input_ports": ["IN_PRIMARY"],
+      "output_ports": ["OUT_SECONDARY"],
+      "supply_ports": [],
+      "bias_ports": [],
+      "gain_formula": "N_secondary / N_primary",
+      "phase_inversion": "depends_on_dot_convention",
+      "typical_gain_range": { "min": 0.2, "max": 10.0 },
+      "input_impedance": "(N_primary/N_secondary)^2 * Z_load",
+      "output_impedance": "(N_secondary/N_primary)^2 * Z_source",
+      "bandwidth_hint": "band_limited_by_core",
+      "internal_components_pattern": ["T1", "damping_network?"],
+      "constraints": [
+        { "name": "core_saturation", "rule": "Bmax < Bsat", "severity": "hard" },
+        { "name": "turns_ratio", "rule": "N_secondary/N_primary matches impedance target", "severity": "hard" }
+      ],
+      "compatible_predecessors": ["any"],
+      "compatible_successors": ["any"],
+      "roles": ["transformer_coupling", "impedance_matching", "isolation"]
     }
   }
 }
