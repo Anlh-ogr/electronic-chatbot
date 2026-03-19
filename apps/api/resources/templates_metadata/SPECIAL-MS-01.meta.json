@@ -118,7 +118,12 @@
     "optional_capabilities": [],
     "priority_score": 0.88,
     "fallback_rank": 1,
-    "compatible_extensions": []
+    "compatible_extensions": [],
+    "coupling_modes_supported": [
+      "capacitor",
+      "direct",
+      "transformer"
+    ]
   },
   "solver_hints": {
     "parameters": [
