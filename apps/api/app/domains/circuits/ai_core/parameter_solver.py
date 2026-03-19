@@ -75,6 +75,7 @@ class SolvedParams:
     actual_gain: Optional[float] = None
     gain_error_percent: Optional[float] = None
     gain_formula: str = ""
+    stage_analysis: List[Dict[str, Any]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     success: bool = True
@@ -88,6 +89,7 @@ class SolvedParams:
             "actual_gain": self.actual_gain,
             "gain_error_percent": self.gain_error_percent,
             "gain_formula": self.gain_formula,
+            "stage_analysis": self.stage_analysis,
             "notes": self.notes,
             "warnings": self.warnings,
             "success": self.success,
@@ -442,6 +444,7 @@ class ParameterSolver:
         combined_values: Dict[str, float] = {}
         total_gain = 1.0
         all_equations: List[str] = []
+        stage_analysis: List[Dict[str, Any]] = []
 
         for idx, stage_name in enumerate(stage_names, start=1):
             solver_fn = _solver_map.get(stage_name)
@@ -455,16 +458,225 @@ class ParameterSolver:
             # Prefix tên resistor để tránh trùng key
             for k, v in s_result.values.items():
                 combined_values[f"{k}_S{idx}"] = v
-            total_gain *= (s_result.actual_gain or 1.0)
+            stage_gain = (s_result.actual_gain or 1.0)
+            total_gain *= stage_gain
             all_equations += [f"[Stage {idx} – {stage_name}] " + eq for eq in s_result.equations_used]
+            stage_analysis.append(
+                {
+                    "stage": idx,
+                    "type": stage_name,
+                    "gain": stage_gain,
+                    "equation": s_result.gain_formula,
+                    **self._estimate_stage_metrics(stage_name, s_result.values, stage_gain),
+                }
+            )
 
         result.values = combined_values
         result.actual_gain = total_gain
         result.gain_error_percent = abs(total_gain - gain) / gain * 100
         result.equations_used = [f"A_total = {'×'.join(['Av' + str(i+1) for i in range(num_stages)])} ({topology})"] + all_equations
         result.gain_formula = f"A_total = {'×'.join([f'Av_{s}' for s in stage_names])}"
+        result.stage_analysis = stage_analysis
         result.message = f"Multi-stage ({topology}, {num_stages} tầng): A_total≈{total_gain:.2f} (target={gain})"
         return result
+
+    def _estimate_stage_metrics(self, stage_name: str, stage_values: Dict[str, float], stage_gain: float) -> Dict[str, Optional[float]]:
+        """Estimate Zin/Zout/BW for one stage from topology and stage params."""
+        vals = {str(k).upper(): float(v) for k, v in stage_values.items() if isinstance(v, (int, float))}
+        zin: Optional[float] = None
+        zout: Optional[float] = None
+        bw_hz: Optional[float] = None
+        st = stage_name.upper()
+
+        if st == "CE":
+            re = vals.get("RE", 100.0)
+            beta = 100.0
+            re_small = 26.0 / 2.0
+            zin = beta * (re + re_small)
+            zout = vals.get("RC")
+        elif st == "CB":
+            zin = 26.0 / 2.0
+            zout = vals.get("RC")
+        elif st == "CC":
+            re = vals.get("RE")
+            beta = 100.0
+            if re is not None:
+                zin = beta * re
+                zout = re / beta
+        elif st == "CS":
+            zin = 1e6
+            zout = vals.get("RD")
+        elif st == "CD":
+            zin = 1e6
+            gm = 5e-3
+            zout = 1.0 / gm
+        elif st == "CG":
+            gm = 5e-3
+            zin = 1.0 / gm
+            zout = vals.get("RD")
+
+        if stage_gain and stage_gain > 0:
+            # Generic gain-bandwidth approximation for first-order estimation.
+            bw_hz = 1e6 / stage_gain
+
+        return {
+            "zin_ohm": zin,
+            "zout_ohm": zout,
+            "bandwidth_hz": bw_hz,
+        }
+
+    def analyze_topology(
+        self,
+        family: str,
+        solved_values: Dict[str, float],
+        gain_actual: Optional[float],
+        frequency_hz: Optional[float],
+        supply_mode: str = "auto",
+        vcc: Optional[float] = None,
+        stage_analysis: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Compute Zin/Zout/BW and stage table using topology-aware formulas."""
+        vals = {str(k).upper(): float(v) for k, v in solved_values.items() if isinstance(v, (int, float))}
+
+        zin: Optional[float] = None
+        zout: Optional[float] = None
+        bw_hz: Optional[float] = None
+
+        if family == "inverting":
+            rin = vals.get("RIN")
+            rf = vals.get("RF")
+            if rin and rin > 0:
+                zin = rin
+            zout = 50.0
+            if gain_actual and gain_actual > 0:
+                bw_hz = 1e6 / gain_actual
+
+        elif family == "non_inverting":
+            rg = vals.get("RG")
+            rf = vals.get("RF")
+            zin = 1e6
+            zout = 50.0
+            if gain_actual and gain_actual > 0:
+                bw_hz = 1e6 / gain_actual
+            if rg and rf and rg > 0:
+                # Extra note: closed-loop gain from resistor network is tracked in gain_actual.
+                pass
+
+        elif family == "differential":
+            r1 = vals.get("R1")
+            r2 = vals.get("R2")
+            if r1 and r1 > 0:
+                zin = 2.0 * r1
+            zout = 100.0
+            if gain_actual and gain_actual > 0:
+                bw_hz = 1e6 / gain_actual
+
+        elif family == "instrumentation":
+            zin = 1e9
+            zout = 100.0
+            if gain_actual and gain_actual > 0:
+                bw_hz = 5e5 / max(gain_actual, 1.0)
+
+        elif family in {"common_emitter", "class_a"}:
+            rc = vals.get("RC")
+            re = vals.get("RE", 100.0)
+            beta = 100.0
+            re_small = 26.0 / 2.0  # assume ~2mA when missing dedicated operating point
+            zin = beta * (re_small + re)
+            zout = rc if rc and rc > 0 else None
+            cout = vals.get("COUT") or vals.get("COUPLING")
+            if zout and cout and cout > 0:
+                bw_hz = 1.0 / (2.0 * math.pi * zout * cout)
+
+        elif family == "common_base":
+            rc = vals.get("RC")
+            re_small = 26.0 / 2.0
+            zin = re_small
+            zout = rc if rc and rc > 0 else None
+
+        elif family == "common_collector":
+            re = vals.get("RE")
+            beta = 100.0
+            if re and re > 0:
+                zin = beta * re
+                zout = re / beta
+
+        elif family == "common_source":
+            rd = vals.get("RD")
+            gm = 5e-3
+            zin = 1e6
+            zout = rd if rd and rd > 0 else None
+            if rd and rd > 0:
+                # Approximate pole with small parasitic 20pF when explicit cap missing.
+                bw_hz = 1.0 / (2.0 * math.pi * rd * 20e-12)
+
+        elif family == "common_drain":
+            rs = vals.get("RS")
+            gm = 5e-3
+            zin = 1e6
+            if rs and rs > 0 and gm > 0:
+                zout = 1.0 / gm
+
+        elif family == "common_gate":
+            rd = vals.get("RD")
+            gm = 5e-3
+            if gm > 0:
+                zin = 1.0 / gm
+            zout = rd if rd and rd > 0 else None
+
+        elif family in {"multi_stage", "darlington"}:
+            # Derive aggregate values from first and last stages if present.
+            first_zin = None
+            last_zout = None
+            table = stage_analysis or []
+            if table:
+                first = table[0]
+                last = table[-1]
+                if first.get("type") in {"CE", "CB", "CC"}:
+                    first_zin = vals.get("RE_S1", vals.get("R1_S1", 1000.0)) * 100.0
+                if first.get("type") in {"CS", "CD", "CG"}:
+                    first_zin = 1e6 if first.get("type") != "CG" else 200.0
+
+                if last.get("type") in {"CC", "CD"}:
+                    last_zout = vals.get(f"RE_S{last.get('stage')}", vals.get(f"RS_S{last.get('stage')}", 100.0)) / 100.0
+                elif last.get("type") in {"CE", "CB", "CS", "CG"}:
+                    last_zout = vals.get(f"RC_S{last.get('stage')}", vals.get(f"RD_S{last.get('stage')}", 1000.0))
+            zin = first_zin
+            zout = last_zout
+            if not table and family == "darlington":
+                b1 = vals.get("BETA1")
+                b2 = vals.get("BETA2")
+                table = [
+                    {
+                        "stage": 1,
+                        "type": "BJT",
+                        "gain": b1,
+                        "equation": "Ai1 = β1",
+                        "zin_ohm": None,
+                        "zout_ohm": None,
+                        "bandwidth_hz": None,
+                    },
+                    {
+                        "stage": 2,
+                        "type": "BJT",
+                        "gain": b2,
+                        "equation": "Ai2 = β2",
+                        "zin_ohm": None,
+                        "zout_ohm": None,
+                        "bandwidth_hz": None,
+                    },
+                ]
+
+        if bw_hz is None and frequency_hz is not None:
+            bw_hz = float(frequency_hz)
+
+        return {
+            "input_impedance_ohm": zin,
+            "output_impedance_ohm": zout,
+            "bandwidth_hz": bw_hz,
+            "stage_table": table if family in {"multi_stage", "darlington"} else (stage_analysis or []),
+            "total_gain": gain_actual,
+        }
 
     # ── Đóng gói ──
     def _snap(self, value: float) -> float:
