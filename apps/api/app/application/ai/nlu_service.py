@@ -1,15 +1,27 @@
-# app/application/ai/nlu_service.py
-""" NLU Service.
+# .\thesis\electronic-chatbot\apps\api\app\application\ai\nlu_service.py
+"""Natural Language Understanding (NLU) Service.
+
+Phân tích ý definition từ user input thành CircuitIntent domain object.
+
 Luồng xử lý NLU:
-1. Rule-based parsing (regex/spec parser)
-2. LLM parsing theo mode Air/Pro
-3. Hợp nhất kết quả và fallback về rule-based khi cần
+ 1. Rule-based parsing: regex + spec parser (nhanh, deterministic)
+ 2. LLM parsing: LLM Router theo mode Air/Pro (chính xác hơn, slow)
+ 3. Hợp nhất: merge rule-based + LLM kết quả
+ 4. Fallback: rule-based khi LLM không khả dụng hoặc fail
+
+Module này chịu trách nhiệm:
+ - Nhận user text → CircuitIntent entity
+ - Phát hiện missing info, hỏi clarification
+ - Bảo đảm intent đủ để sinh mạch
+
+Nguyên tắc:
+ - Adapter pattern: tầng application, phụ thuộc spec parser + LLM Router
+ - Rule-based first: nhanh, consistent, không timeout
+ - LLM enhance: độ chính xác cao hơn nếu có
 """
 
 from __future__ import annotations
 
-# import json
-# import os
 import logging
 import re
 from dataclasses import dataclass, field
@@ -18,13 +30,12 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from app.application.ai.llm_router import LLMMode
 
-""" lý do sử dụng thư viện
-logging: hỗ trợ khả năng ghi log (lịch sử) trong hệ thống
-re: hỗ trợ xử lý regex để phân tích yêu cầu
-dataclass, field: hỗ trợ định nghĩa các class dữ liệu để lưu trữ kết quả phân tích
-typing: hỗ trợ type hint để code rõ ràng hơn và dễ bảo trì
-TYPE_CHECKING: tránh import vòng khi type hinting với các class khác trong module ai
-"""
+# ====== Lý do sử dụng thư viện ======
+# __future__ annotations: forward reference cho CircuitIntent (type hinting)
+# logging: ghi log analyze flow, detect missing info
+# re: regex parse pattern từ user input (e.g., "gain 50", "12V")
+# dataclass + field: định nghĩa CircuitIntent, EditOperation value objects
+# typing + TYPE_CHECKING: type safe, tránh circular import LLMMode
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +388,7 @@ class NLUService:
         self._parse_input_mode(lower, intent)
         self._parse_supply_mode(lower, intent)
         self._parse_device_preference(lower, intent)
+        self._apply_device_topology_fallback(intent)
         self._parse_extra_requirements(lower, intent)
         self._parse_edit_operations(lower, intent)
         self._parse_explain_focus(lower, intent)
@@ -626,6 +638,22 @@ class NLUService:
             r"op[\s_-]*amp\s*stage", r"tầng\s*opamp",
             r"khuếch\s*đại\s*thuật\s*toán",
         ]): intent.device_preference = "opamp"
+
+    def _apply_device_topology_fallback(self, intent: CircuitIntent) -> None:
+        """Infer a default topology when user indicates device family but not explicit topology."""
+        unknown_topology = not intent.circuit_type or intent.circuit_type.startswith("unknown")
+        if not unknown_topology:
+            return
+
+        default_by_device = {
+            "opamp": "non_inverting",
+            "bjt": "common_emitter",
+            "mosfet": "common_source",
+        }
+        fallback = default_by_device.get(intent.device_preference)
+        if fallback:
+            intent.topology = fallback
+            intent.circuit_type = fallback
 
     def _parse_extra_requirements(self, text: str, intent: CircuitIntent) -> None:
         # Trích xuất các yêu cầu bổ sung như low_noise, high_bandwidth, rail_to_rail, ac_coupled từ text.
