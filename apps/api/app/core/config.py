@@ -1,10 +1,33 @@
-# ./app/application/core/config.py
-""" Quản lý cấu hình ứng dụng, nạp biến môi trường (env local)
-Cấu hình kết nối DB, đường dẫn lưu trữ file KiCad, đường dẫn static để serve HTML test
-Override cấu hình mặc định nếu biến môi trường không tồn tại, đảm bảo an toàn thông tin nhạy cảm như URL DB được mã hóa và không lộ ra ngoài.
-Sử dụng lru_cache để tối ưu hiệu suất khi truy cập cấu hình nhiều lần.
+# .\\thesis\\electronic-chatbot\\apps\\api\\app\\core\\config.py
+"""Quản lý cấu hình (Configuration) ứng dụng.
+
+Module này quản lý toàn bộ cấu hình ứng dụng bằng cách nạp biến môi trường.
+Nó cấu hình:
+- Kết nối Database (DB_URL, connection pool)
+- Đường dẫn lưu trữ file KiCad
+- Đường dẫn static files để serve HTML test
+- Credentials cho Google API, LLM providers
+- Feature flags
+
+Sử dụng pydantic.BaseModel + lru_cache để tối ưu hiệu suất và đảm bảo
+thông tin nhạy cảm (URLs, tokens) được bảo vệ.
+
+Vietnamese:
+- Trách nhiệm: Tải + validate configuration từ environment
+- Bảo mật: Mã hóa SecretStr cho passwords/tokens
+- Tối ưu: lru_cache để avoid re-reading env variables
+
+English:
+- Responsibility: Load + validate configuration from environment variables
+- Security: Encrypted SecretStr for passwords/tokens
+- Optimization: lru_cache to avoid re-reading env variables
 """
 
+# ====== Lý do sử dụng thư viện ======
+# dotenv: Load environment variables từ .env files
+# lru_cache: Cache configuration objects để tối ưu hiệu suất
+# pathlib: Cross-platform path handling
+# pydantic: Configuration validation + type checking
 from dotenv import load_dotenv
 from functools import lru_cache
 from pathlib import Path
@@ -13,19 +36,19 @@ import os
 
 from pydantic import BaseModel, SecretStr
 
-""" lý do sử dụng thư viện
-load_dotenv: nạp biến môi trường từ env.local -> quản lý cấu hình, tách biệt giữa code và config
-lru_cache: tối ưu hiệu suất khi truy cập cấu hình nhiều lần, tránh việc đọc biến môi trường và tạo đối tượng Settings nhiều lần
-Path: quản lý đường dẫn file, đảm bảo tính tương thích giữa các hệ điều hành, dễ dàng xử lý đường dẫn tuyệt đối và tương đối
-Optional: cho phép biến môi trường có thể không tồn tại, cung cấp giá trị mặc định hoặc xử lý lỗi nếu cần thiết
-BaseModel, SecretStr: định nghĩa lớp cấu hình, đảm bảo tính an toàn khi lưu trữ thông tin nhạy cảm như URL DB, truy cập giá trị một cách an toàn.
-"""
-
+# ====== Load Configuration ======
 load_dotenv(dotenv_path=Path(".env.local"))
 
-class Settings(BaseModel):
-    # Cấu hình Settings lấy biến môi trường từ .env.local
 
+# ====== Settings Configuration Class ======
+class Settings(BaseModel):
+    """Cấu hình (Settings) cho ứng dụng.
+    
+    Class này kế thừa pydantic.BaseModel để tự động validate
+    environment variables với type checking.
+    """
+    
+    # Cấu hình Settings lấy biến môi trường từ .env.local
     database_url: SecretStr
     kicad_files_path: Path
     static_files_path: Path
