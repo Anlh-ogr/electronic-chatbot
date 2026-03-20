@@ -425,6 +425,8 @@ class ChatbotService:
                 gain_formula=circuit.gain_formula,
                 warnings=warnings,
                 template_id=circuit.template_id,
+                simulation=(response.analysis or {}).get("simulation", {}),
+                stage_table=((response.analysis or {}).get("cascading", {}) or {}).get("stage_table", []),
                 mode=mode,
             )
 
@@ -986,16 +988,23 @@ class ChatbotService:
         return None
 
     def _default_simulation_probes(self, circuit_data: Dict[str, Any]) -> List[str]:
-        probes: List[str] = []
+        input_probes: List[str] = []
+        output_probes: List[str] = []
         ports = circuit_data.get("ports", []) if isinstance(circuit_data, dict) else []
         for p in ports:
             direction = str(p.get("direction", "")).lower()
+            net = str(p.get("net") or p.get("net_name") or "").strip()
+            if not net:
+                continue
+            probe = f"v({net.lower()})"
+            if direction == "input":
+                input_probes.append(probe)
             if direction == "output":
-                net = str(p.get("net") or p.get("net_name") or "").strip()
-                if net:
-                    probes.append(f"v({net.lower()})")
+                output_probes.append(probe)
+
+        probes = list(dict.fromkeys(input_probes + output_probes))
         if not probes:
-            probes = ["v(out)"]
+            probes = ["v(in)", "v(out)"]
         return list(dict.fromkeys(probes))
 
     def _apply_simulation_requirements(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> None:
