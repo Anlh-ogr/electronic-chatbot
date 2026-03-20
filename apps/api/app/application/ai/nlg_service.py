@@ -1,26 +1,31 @@
-# app/application/ai/nlg_service.py
-""" NLG Service - Natural Language Generation.
-Sinh câu trả lời tự nhiên cho user dựa trên kết quả pipeline.
-Mode Air/Pro được truyền từ chatbot service để đồng bộ toàn luồng.
+# .\thesis\electronic-chatbot\apps\api\app\application\ai\nlg_service.py
+"""Natural Language Generation (NLG) Service.
+
+Sinh câu trả lời tự nhiên (Tiếng Việt) cho user dựa trên kết quả pipeline.
+
+Module này chịu trách nhiệm:
+ 1. Sinh response thành công: công thức, thông số, cảnh báo
+ 2. Sinh response lỗi: explain tại sao fail, đề xuất sửa
+ 3. Sinh clarification: hỏi user khi không chắc
+ 4. Post-process: chuẩn hóa LaTeX, bảo đảm phương trình đủ
+
+Mode Air/Pro được truyền từ chatbot service để đồng bộ.
+
+Nguyên tắc:
+ - Adapter pattern: tầng application, phụ thuộc LLM Router + template fallback
+ - LLM priority: LLM đầu tiên, fallback template nếu lỗi
+ - Deterministic post-process: bảo đảm output sạch
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from app.application.ai.llm_router import LLMMode
-    
-""" lý do sử dụng thư viện
-annotations: để hỗ trợ type hinting forward reference (LLMMode) mà không cần import trực tiếp, tránh circular import
-logging: để ghi log thông tin và lỗi trong quá trình sinh phản hồi, đặc biệt khi gọi LLM Router
-typing: để định nghĩa kiểu dữ liệu cho các tham số và giá trị trả về của phương thức
-TYPE_CHECKING: để tránh import LLMMode khi không cần thiết, chỉ dùng cho type hinting
-"""
-
 logger = logging.getLogger(__name__)
 
+
+from app.application.ai.llm_router import LLMMode
 
 class NLGService:
     """ Natural Language Generation service.
@@ -47,25 +52,47 @@ class NLGService:
 
 
     #  Public API
-    def generate_success_response(self, circuit_type: str, gain_actual: Optional[float], gain_target: Optional[float], params: Dict[str, float], gain_formula: str = "", warnings: List[str] = None, template_id: str = "", mode: Optional["LLMMode"] = None,) -> str:
+    def generate_success_response(self, circuit_type: str, gain_actual: Optional[float], gain_target: Optional[float], params: Dict[str, float], gain_formula: str = "", warnings: List[str] = None, template_id: str = "", simulation: Optional[Dict[str, Any]] = None, stage_table: Optional[List[Dict[str, Any]]] = None, mode: Optional["LLMMode"] = None,) -> str:
         # Sinh response khi pipeline thành công
         warnings = warnings or []
 
         # Sinh phản hồi qua LLM trước
         if self._router:
             try:
-                return self._llm_success_response(
+                response = self._llm_success_response(
                     circuit_type, gain_actual, gain_target, params,
                     gain_formula, warnings, template_id, mode,
+                )
+                return self._postprocess_success_response(
+                    response,
+                    circuit_type,
+                    gain_actual=gain_actual,
+                    gain_target=gain_target,
+                    gain_formula=gain_formula,
+                    warnings=warnings,
+                    params=params,
+                    simulation=simulation or {},
+                    stage_table=stage_table or [],
                 )
                 
             except Exception as e:
                 logger.warning(f"NLG: LLM failed: {e}")
 
         # Fallback: template-based
-        return self._template_success_response(
+        response = self._template_success_response(
             circuit_type, gain_actual, gain_target, params,
-            gain_formula, warnings, template_id,
+            gain_formula, warnings, template_id, simulation or {}, stage_table or [],
+        )
+        return self._postprocess_success_response(
+            response,
+            circuit_type,
+            gain_actual=gain_actual,
+            gain_target=gain_target,
+            gain_formula=gain_formula,
+            warnings=warnings,
+            params=params,
+            simulation=simulation or {},
+            stage_table=stage_table or [],
         )
 
     def generate_error_response(self, error_msg: str, stage: str, circuit_type: str = "", gain_target: Optional[float] = None, vcc: Optional[float] = None, mode: Optional["LLMMode"] = None,) -> str:
@@ -111,18 +138,31 @@ class NLGService:
 
 
     #  Template-based responses (fallback)
-    def _template_success_response(self, circuit_type: str, gain_actual: Optional[float], gain_target: Optional[float], params: Dict[str, float], gain_formula: str, warnings: List[str], template_id: str,) -> str:
+    def _template_success_response(self, circuit_type: str, gain_actual: Optional[float], gain_target: Optional[float], params: Dict[str, float], gain_formula: str, warnings: List[str], template_id: str, simulation: Dict[str, Any], stage_table: List[Dict[str, Any]],) -> str:
         # Response template khi thành công.
         lines = []
         eq_info = self._build_equation_context(circuit_type)
         lines.append(f"**Đã thiết kế mạch {self._format_type(circuit_type)}** (template: {template_id})")
         lines.append("")
 
-        lines.append("## 1. Chức năng mạch")
+        lines.append("## 1. Hệ phương trình hệ số khuếch đại (Av là chìa khóa)")
+        if gain_formula:
+            lines.append(f"- Phương trình Av dùng để thiết kế: **{gain_formula}**")
+        else:
+            lines.append(f"- Phương trình Av tham chiếu theo cấu hình: **{eq_info['equations']['Av']}**")
+        lines.append(f"- Ai: **{eq_info['equations']['Ai']}**")
+        lines.append(f"- Zi: **{eq_info['equations']['Zi']}**")
+        lines.append(f"- Zo: **{eq_info['equations']['Zo']}**")
+        lines.append(f"- Dự đoán waveform đầu ra: {self._build_waveform_inference(circuit_type, gain_actual, gain_target, warnings)}")
+        lines.append(self._build_waveform_equation_match_line(simulation))
+        lines.extend(self._build_waveform_simulation_block(gain_actual, gain_target, params, warnings))
+        lines.append("")
+
+        lines.append("## 2. Chức năng mạch")
         lines.append(f"Mạch {self._format_type(circuit_type)} thực hiện khuếch đại tín hiệu theo cấu hình đã chọn.")
         lines.append("")
 
-        lines.append("## 2. Giải pháp")
+        lines.append("## 3. Giải pháp")
         lines.append(f"- Họ linh kiện chủ động: **{eq_info['family']}**")
         lines.append("- Phương trình khuếch đại tham chiếu:")
         lines.append(f"  - **Av:** {eq_info['equations']['Av']}")
@@ -139,12 +179,16 @@ class NLGService:
             lines.append(f"  - {step}")
         lines.append("")
 
-        lines.append("## 3. Bước tính toán thiết kế")
+        lines.append("## 4. Bước tính toán thiết kế")
 
         if gain_formula:
-            lines.append(f"**Công thức gain:** `{gain_formula}`")
+            lines.append(f"**Công thức gain (KaTeX):** $$ {self._to_katex_formula(gain_formula)} $$")
         else:
-            lines.append(f"**Công thức gain tham chiếu:** `{eq_info['equations']['Av']}`")
+            lines.append(f"**Công thức gain tham chiếu (KaTeX):** $$ {self._to_katex_formula(eq_info['equations']['Av'])} $$")
+
+        stage_formula_latex = self._build_stage_gain_katex(stage_table)
+        if stage_formula_latex:
+            lines.append(f"**Gain ghép tầng (KaTeX):** $$ {stage_formula_latex} $$")
 
         if gain_target is not None and gain_target != 0 and gain_actual is not None:
             error_pct = abs(gain_actual - gain_target) / gain_target * 100
@@ -152,7 +196,7 @@ class NLGService:
             lines.append(f"**Gain thực tế:** {gain_actual:.2f} (sai lệch: {error_pct:.1f}%)")
             lines.append("")
 
-        lines.append("## 4. Thông số kỹ thuật cuối cùng")
+        lines.append("## 5. Thông số kỹ thuật cuối cùng")
         if gain_actual is not None:
             lines.append(f"- Av (xấp xỉ): {gain_actual:.2f}")
         elif gain_target is not None and gain_target != 0:
@@ -168,7 +212,7 @@ class NLGService:
             lines.append(f"- {key}: {val}")
         lines.append("")
 
-        lines.append("## 5. Kết quả kiểm tra")
+        lines.append("## 6. Kết quả kiểm tra")
         if warnings:
             lines.append("**Cảnh báo ⚠️:**")
             for w in warnings:
@@ -179,14 +223,14 @@ class NLGService:
         lines.append("")
 
         if params:
-            lines.append("## 6. Bảng linh kiện dự tính")
+            lines.append("## 7. Bảng linh kiện dự tính")
             lines.append("| Linh kiện | Giá trị |")
             lines.append("|-----------|---------|")
             for name, val in params.items():
                 lines.append(f"| {name} | {self._format_component_value(name, val)} |")
             lines.append("")
         else:
-            lines.append("## 6. Bảng linh kiện dự tính")
+            lines.append("## 7. Bảng linh kiện dự tính")
             lines.append("Chưa có dữ liệu linh kiện cụ thể.")
 
         return "\n".join(lines)
@@ -231,12 +275,12 @@ class NLGService:
             "Bạn là trợ lý thiết kế mạch điện tử. "
             "Dựa trên kết quả thiết kế, sinh response bằng tiếng Việt cho người dùng.\n"
             "Trình bày phản hồi theo đúng 6 mục sau (dùng Markdown):\n"
-            "1. **Chức năng mạch** - Mô tả luồng tín hiệu từ đầu vào đến đầu ra\n"
-            "2. **Giải pháp** - Phân tích cấu trúc mạch đã chọn, kèm phương trình khuếch đại\n"
-            "3. **Bước tính toán thiết kế** - Công thức lý thuyết và thay số cụ thể cho R, C, L, Gain\n"
-            "4. **Thông số kỹ thuật cuối cùng** - Tóm tắt Av, Ai, Zin, Zout, BW, Vpp...\n"
-            "5. **Kết quả kiểm tra** - Lưu ý khi mô phỏng hoặc lắp mạch thực tế\n"
-            "6. **Bảng linh kiện dự tính** (Markdown Table: Tên | Giá trị | Ghi chú)\n"
+            "1. **Hệ phương trình hệ số khuếch đại (Av là chìa khóa)** - BẮT BUỘC in đầu tiên: Av, Ai, Zi, Zo và kết luận waveform (đảo pha/không đảo pha, nguy cơ méo).\n"
+            "2. **Chức năng mạch** - Mô tả luồng tín hiệu từ đầu vào đến đầu ra\n"
+            "3. **Giải pháp** - Phân tích cấu trúc mạch đã chọn, kèm phương trình khuếch đại\n"
+            "4. **Bước tính toán thiết kế** - Công thức lý thuyết và thay số cụ thể cho R, C, L, Gain\n"
+            "5. **Thông số kỹ thuật cuối cùng** - Tóm tắt Av, Ai, Zin, Zout, BW, Vpp...\n"
+            "6. **Kết quả kiểm tra + Bảng linh kiện dự tính** (Markdown Table: Tên | Giá trị | Ghi chú)\n"
             "Yêu cầu bắt buộc cho mục 2 (Giải pháp):\n"
             "- Luôn nêu phương trình khuếch đại chính gồm: Av, Ai, Zi, Zo (nếu thiếu dữ liệu thì ghi rõ giả định).\n"
             "- BJT (CE/CC/CB): ưu tiên dùng beta (hFE), gm = Ic/0.026, re ~= 26mV/IE, RC, RL, RB1, RB2, RE; nêu điểm Q, mô hình tín hiệu nhỏ, rồi suy ra Av/Ai/Zi/Zo.\n"
@@ -247,6 +291,9 @@ class NLGService:
             "- Class A/B/AB/C/D: nêu thêm thông số công suất-hiệu suất cốt lõi (IQ, Vbias, conduction angle, duty PWM, fsw, LC filter...) ngoài Av/Ai/Zi/Zo.\n"
             "- Tóm tắt yếu tố quyết định độ lợi: BJT -> beta, gm/re, RC/RE/RL; FET -> gm, RD/RL; Op-amp -> tỉ số điện trở hồi tiếp (Rf/Rin hoặc 1 + Rf/Rg).\n"
             "- Ở mục 3 bắt buộc nêu rõ điểm Q và tiến trình tính toán (DC -> tín hiệu nhỏ -> KCL/KVL).\n"
+            "- Mục 1 luôn phải xuất hiện đầu tiên và dùng nó để suy luận waveform đầu ra có độ tin cậy cao.\n"
+            "- Trong mục 1 phải có thêm dạng chuẩn mô phỏng: v_out(t)=Av*v_in(t), và với tín hiệu sin phải nêu Vout_pk, pha phi, điều kiện clipping theo nguồn.\n"
+            "- Ưu tiên định dạng phương trình bằng KaTeX ($...$ hoặc $$...$$) để hiển thị đẹp trên giao diện.\n"
             "Bắt đầu bằng ✅ nếu thành công."
         )
 
@@ -744,3 +791,234 @@ class NLGService:
             min_factor, min_label = scales[unit][-1]
             return f"{value/min_factor:.2f} {min_label}"
         return f"{value:.3e} {unit}" if unit else f"{value:.3e}"
+
+    def _postprocess_success_response(
+        self,
+        text: str,
+        circuit_type: str,
+        gain_actual: Optional[float] = None,
+        gain_target: Optional[float] = None,
+        gain_formula: str = "",
+        warnings: Optional[List[str]] = None,
+        params: Optional[Dict[str, float]] = None,
+        simulation: Optional[Dict[str, Any]] = None,
+        stage_table: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """Normalize text and force gain-equation block to be section #1."""
+        normalized = self._normalize_equation_text(text or "")
+        warnings = warnings or []
+
+        eq = self._build_equation_context(circuit_type).get("equations", {})
+        gain_first_block = [
+            "## 1. Hệ phương trình hệ số khuếch đại (Av là chìa khóa)",
+            f"- Av: {gain_formula or eq.get('Av', 'Av = Vout/Vin')}",
+            f"- Av (KaTeX): $ {self._to_katex_formula(gain_formula or eq.get('Av', 'Av = Vout/Vin'))} $",
+            f"- Ai: {eq.get('Ai', 'Ai = Iout/Iin')}",
+            f"- Zi: {eq.get('Zi', 'Zi = Vin/Iin')}",
+            f"- Zo: {eq.get('Zo', 'Zo = dVout/dIout tại Vin = 0')}",
+            f"- Dự đoán waveform đầu ra: {self._build_waveform_inference(circuit_type, gain_actual, gain_target, warnings)}",
+            self._build_waveform_equation_match_line(simulation or {}),
+        ]
+        stage_formula_latex = self._build_stage_gain_katex(stage_table or [])
+        if stage_formula_latex:
+            gain_first_block.append(f"- Gain ghép tầng (KaTeX): $ {stage_formula_latex} $")
+        gain_first_block.extend(self._build_waveform_simulation_block(gain_actual, gain_target, params or {}, warnings))
+        gain_first_block.append("")
+
+        if not normalized.strip():
+            return "\n".join(gain_first_block).strip()
+
+        lower_text = normalized.lower()
+        has_heading_1 = "## 1." in lower_text
+        has_gain_context = "av" in lower_text and "waveform" in lower_text
+
+        if has_heading_1 and has_gain_context and self._has_core_equations(normalized):
+            return normalized
+
+        cleaned = normalized.strip()
+        return "\n".join(gain_first_block).strip() + "\n\n" + cleaned
+
+    def _build_waveform_inference(
+        self,
+        circuit_type: str,
+        gain_actual: Optional[float],
+        gain_target: Optional[float],
+        warnings: List[str],
+    ) -> str:
+        """Infer output waveform behavior from gain sign/magnitude and warnings."""
+        ctype = (circuit_type or "").lower()
+
+        gain_ref = gain_actual if gain_actual is not None else gain_target
+        abs_gain = abs(gain_ref) if gain_ref is not None else None
+
+        inverting_types = {"common_emitter", "common_source", "inverting"}
+        non_inverting_types = {
+            "common_collector", "common_base", "common_drain", "common_gate",
+            "non_inverting", "differential", "instrumentation", "darlington",
+            "class_a", "class_ab", "class_b", "class_c", "class_d",
+        }
+
+        if gain_ref is not None:
+            phase = "đảo pha 180°" if gain_ref < 0 else "cùng pha với đầu vào"
+        elif ctype in inverting_types:
+            phase = "đảo pha 180° (theo cấu hình lý thuyết)"
+        elif ctype in non_inverting_types:
+            phase = "cùng pha với đầu vào (theo cấu hình lý thuyết)"
+        else:
+            phase = "phụ thuộc cấu hình chi tiết và điểm làm việc"
+
+        warning_text = " ".join(warnings).lower()
+        distortion_keywords = ("méo", "clip", "clipping", "saturation", "bão hòa", "distortion")
+        if any(k in warning_text for k in distortion_keywords):
+            distortion = "có nguy cơ méo do cảnh báo từ pipeline"
+        elif abs_gain is not None and abs_gain > 120:
+            distortion = "có nguy cơ méo nếu biên độ vào lớn hoặc bias chưa tối ưu"
+        else:
+            distortion = "dự kiến tuyến tính nếu điểm Q và biên độ vào nằm trong vùng an toàn"
+
+        if abs_gain is None:
+            gain_desc = "độ lớn Av chưa đủ dữ liệu để định lượng biên độ"
+        else:
+            gain_desc = f"biên độ đầu ra xấp xỉ |Av| = {abs_gain:.2f} lần đầu vào"
+
+        return f"{phase}; {gain_desc}; {distortion}."
+
+    def _build_waveform_simulation_block(
+        self,
+        gain_actual: Optional[float],
+        gain_target: Optional[float],
+        params: Dict[str, float],
+        warnings: List[str],
+    ) -> List[str]:
+        """Build standardized waveform equations for simulation (Transient/AC)."""
+        av = gain_actual if gain_actual is not None else gain_target
+        if av is None:
+            return [
+                "- Dạng chuẩn mô phỏng: v_out(t) = A_v * v_in(t) (cần Av số để thay trực tiếp).",
+                "- Với tín hiệu sin: nếu v_in(t) = V_in_pk * sin(2*pi*f*t) thì v_out(t) = |A_v|*V_in_pk*sin(2*pi*f*t + phi), với phi = 0° hoặc 180°.",
+                "- Điều kiện anti-clipping: |V_out_pk| phải nhỏ hơn biên độ dao động khả dụng của tầng ra.",
+            ]
+
+        phi_deg = 180 if av < 0 else 0
+        av_abs = abs(av)
+
+        vcc = self._extract_supply_value(params)
+        if vcc is not None and vcc > 0:
+            vout_pk_limit = 0.45 * vcc
+            clip_line = (
+                f"- Kiểm tra clipping (xấp xỉ): |V_out_pk| = |A_v|*V_in_pk <= {vout_pk_limit:.2f} V "
+                f"(lấy khoảng 45% VCC={vcc:.2f}V để chừa headroom)."
+            )
+        else:
+            clip_line = "- Kiểm tra clipping: |V_out_pk| = |A_v|*V_in_pk phải nhỏ hơn biên độ swing khả dụng (cần VCC/điểm Q để lượng hóa)."
+
+        warning_text = " ".join(warnings).lower()
+        if any(tok in warning_text for tok in ("méo", "clip", "clipping", "distortion", "bão hòa", "saturation")):
+            quality_line = "- Độ tin cậy mô phỏng waveform: có cảnh báo méo/bão hòa, nên chạy Transient + FFT/THD để xác nhận."
+        else:
+            quality_line = "- Độ tin cậy mô phỏng waveform: cao khi mô phỏng Transient dùng biên độ vào nhỏ-signal quanh điểm Q."
+
+        return [
+            f"- Dạng chuẩn mô phỏng (nhỏ-signal): v_out(t) = {av:.4g} * v_in(t).",
+            f"- Nếu v_in(t) = V_in_pk*sin(2*pi*f*t) => v_out(t) = {av_abs:.4g}*V_in_pk*sin(2*pi*f*t + {phi_deg}°).",
+            clip_line,
+            quality_line,
+        ]
+
+    def _extract_supply_value(self, params: Dict[str, float]) -> Optional[float]:
+        """Extract VCC/VDD value from solved params for waveform headroom checks."""
+        if not params:
+            return None
+
+        for key, value in params.items():
+            key_l = key.lower()
+            if key_l in ("vcc", "vdd", "v_supply", "vsupply", "supply", "vbat"):
+                if isinstance(value, (int, float)):
+                    return float(value)
+
+        for key, value in params.items():
+            key_l = key.lower()
+            if ("vcc" in key_l or "vdd" in key_l or "supply" in key_l) and isinstance(value, (int, float)):
+                return float(value)
+        return None
+
+    def _build_waveform_equation_match_line(self, simulation: Dict[str, Any]) -> str:
+        """Build explicit waveform-vs-equation status line from simulation gain_metrics."""
+        analysis = simulation.get("analysis", {}) if isinstance(simulation, dict) else {}
+        gain_metrics = analysis.get("gain_metrics", {}) if isinstance(analysis, dict) else {}
+        status = str(gain_metrics.get("status", "")).lower()
+        if status != "ok":
+            return "- Waveform khớp hệ phương trình Av: **chưa đủ dữ liệu mô phỏng để kết luận**."
+
+        equation_match = gain_metrics.get("equation_match")
+        if equation_match is True:
+            measured = gain_metrics.get("measured_av")
+            rel_err = gain_metrics.get("rel_error_pct")
+            phase = gain_metrics.get("phase_shift_deg")
+            return (
+                "- Waveform khớp hệ phương trình Av: "
+                f"**KHỚP** (Av đo được={self._fmt_num(measured)}, sai số={self._fmt_num(rel_err)}%, pha={self._fmt_num(phase)}°)."
+            )
+        if equation_match is False:
+            measured = gain_metrics.get("measured_av")
+            expected = gain_metrics.get("expected_av")
+            rel_err = gain_metrics.get("rel_error_pct")
+            phase_ok = gain_metrics.get("phase_match")
+            return (
+                "- Waveform khớp hệ phương trình Av: "
+                f"**KHÔNG KHỚP** (Av đo={self._fmt_num(measured)}, Av kỳ vọng={self._fmt_num(expected)}, "
+                f"sai số={self._fmt_num(rel_err)}%, phase_match={phase_ok})."
+            )
+
+        return "- Waveform khớp hệ phương trình Av: **không xác định** (thiếu expected_av hoặc dữ liệu so sánh)."
+
+    @staticmethod
+    def _fmt_num(value: Any) -> str:
+        if isinstance(value, (int, float)):
+            return f"{float(value):.4g}"
+        return "N/A"
+
+    def _build_stage_gain_katex(self, stage_table: List[Dict[str, Any]]) -> str:
+        """Build stage-product gain formula for KaTeX display, e.g., A_v = A_{stage1} \\cdot A_{stage2}."""
+        if not stage_table:
+            return ""
+
+        terms: List[str] = []
+        for idx, _ in enumerate(stage_table, start=1):
+            terms.append(f"A_{{stage{idx}}}")
+        if not terms:
+            return ""
+        return "A_v = " + " \\cdot ".join(terms)
+
+    def _to_katex_formula(self, expr: str) -> str:
+        """Convert plain gain expression to KaTeX-friendly math text."""
+        if not expr:
+            return "A_v = \\frac{V_{out}}{V_{in}}"
+
+        s = str(expr)
+        s = s.replace("~=", "\\approx")
+        s = s.replace("||", "\\parallel")
+        s = s.replace("*", "\\cdot")
+        s = re.sub(r"A_stage(\d+)", r"A_{stage\1}", s)
+        s = re.sub(r"Rin", "R_{in}", s, flags=re.IGNORECASE)
+        s = re.sub(r"Rout", "R_{out}", s, flags=re.IGNORECASE)
+        s = re.sub(r"Vin", "V_{in}", s, flags=re.IGNORECASE)
+        s = re.sub(r"Vout", "V_{out}", s, flags=re.IGNORECASE)
+        return s
+
+    def _has_core_equations(self, text: str) -> bool:
+        low = (text or "").lower()
+        return all(token in low for token in ["av", "ai", "zi", "zo"])
+
+    def _normalize_equation_text(self, text: str) -> str:
+        if not text:
+            return ""
+
+        out = text
+        out = out.replace("\\\\", "\\")
+
+        # Keep response readable without markdown-inline code wrappers around formulas,
+        # while preserving KaTeX syntax for frontend rendering.
+        out = out.replace("`", "")
+        out = re.sub(r"\s+\n", "\n", out)
+        return out
