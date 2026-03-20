@@ -1,37 +1,47 @@
-# app/application/ai/llm_client.py
-""" Đây là phần giao tiếp với LLM (Language Model) - cụ thể là OpenAI-compatible API.
-Lớp OpenAICompatibleLLMClient cung cấp phương thức chat_json() để gửi prompt và nhận về JSON object.
-Thiết kế này giúp tách biệt phần logic gọi LLM khỏi các phần khác của ứng dụng, đồng thời
-cho phép dễ dàng thay thế hoặc mở rộng sang các provider khác trong tương lai.
+# .\\thesis\\electronic-chatbot\\apps\\api\\app\\application\\ai\\llm_client.py
+"""Giao tiếp với LLM (Language Model) - OpenAI-compatible API.
+
+Module này cung cấp client cho OpenAI-compatible LLM endpoints. Lớp
+OpenAICompatibleLLMClient cung cấp phương thức chat_json() để gửi prompt
+và nhận về JSON objects. Thiết kế này tách biệt phần logic gọi LLM khỏi
+các phần khác của ứng dụng, cho phép dễ dàng thay thế hoặc mở rộng providers.
+
+Vietnamese:
+- Trách nhiệm: Giao tiếp với OpenAI-compatible LLM endpoints
+- Chức năng: chat_json() cho JSON responses, error handling, retries
+- Phụ thuộc: urllib cho HTTP requests (không cần external deps)
+
+English:
+- Responsibility: Communicate with OpenAI-compatible LLM endpoints
+- Features: chat_json() for JSON responses, error handling, retries
+- Dependencies: urllib for HTTP requests (no external deps needed)
 """
 
 from __future__ import annotations
 
+# ====== Lý do sử dụng thư viện ======
+# json: Parse/generate JSON từ LLM responses
+# dataclasses: Data model definitions với proper typing
+# typing: Type hints cho better IDE support
+# urllib: HTTP requests mà không cần external libraries
 import json
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
-
 import urllib.request
 import urllib.error
 
-""" lý do sử dụng thư viện
-annotations: Cho phép sử dụng kiểu dữ liệu mới của Python mà không cần import từ __future__ trong các phiên bản cũ hơn, giúp code gọn hơn.
-json: Cung cấp các hàm để phân tích và tạo chuỗi JSON.
-dataclass: Giúp định nghĩa các lớp dữ liệu đơn giản một cách dễ dàng và tự động tạo các phương thức như __init__ và __repr__.
-typing: Cung cấp các kiểu dữ liệu để chú thích kiểu, giúp code rõ ràng hơn và hỗ trợ kiểm tra kiểu tĩnh.
-urllib.request, urllib.error: Cung cấp các hàm để thực hiện các yêu cầu HTTP, xử lý lỗi HTTP một cách hiệu quả.
-"""
 
-
+# ====== LLM Client Error ======
 class LLMClientError(RuntimeError):
-    # Các vấn đề liên quan giao tiếp LLM 
-    def __init__(self, message:str, code: int = None, details: str = None):
+    """Các vấn đề liên quan giao tiếp LLM."""
+    
+    def __init__(self, message: str, code: int = None, details: str = None):
         super().__init__(message)
         self.code = code
         self.details = details
     
-    # Hiển thị lỗi rõ ràng hơn
     def __str__(self):
+        """Hiển thị lỗi rõ ràng hơn."""
         base = super().__str__()
         if self.code is not None or self.details:
             base += f" (code={self.code})"
