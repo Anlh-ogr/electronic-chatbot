@@ -1,0 +1,192 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://electronic-chatbot.local/schemas/circuit-spec.json",
+  "title": "CircuitSpec",
+  "description": "Circuit specification schema for amplifier MVP - defines components, connections, and labels",
+  "type": "object",
+  "required": ["version", "metadata", "components", "nets"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version",
+      "enum": ["4.0"]
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Circuit metadata",
+      "required": ["name", "type"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Circuit name"
+        },
+        "type": {
+          "type": "string",
+          "description": "Circuit type",
+          "enum": ["amplifier", "oscillator", "filter", "power_supply", "digital", "other"]
+        },
+        "description": {
+          "type": "string",
+          "description": "Circuit description"
+        },
+        "topology": {
+          "type": "string",
+          "description": "Amplifier topology",
+          "enum": ["common_emitter", "common_collector", "common_base", "inverting_opamp", "non_inverting_opamp", "differential", "other"]
+        }
+      }
+    },
+    "components": {
+      "type": "array",
+      "description": "List of circuit components",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "pins"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique component identifier",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "type": {
+            "type": "string",
+            "description": "Component type",
+            "enum": [
+              "resistor",
+              "capacitor",
+              "inductor",
+              "bjt",
+              "mosfet",
+              "diode",
+              "opamp",
+              "voltage_source",
+              "current_source",
+              "ground"
+            ]
+          },
+          "pins": {
+            "type": "array",
+            "description": "Component pin names",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "parameters": {
+            "type": "object",
+            "description": "Component parameters",
+            "properties": {
+              "value": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string"
+                  }
+                }
+              },
+              "resistance": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "default": "Ω"
+                  }
+                }
+              },
+              "capacitance": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "default": "F"
+                  }
+                }
+              },
+              "voltage": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "default": "V"
+                  }
+                }
+              },
+              "model": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "nets": {
+      "type": "array",
+      "description": "List of nets (connections)",
+      "items": {
+        "type": "object",
+        "required": ["id", "pins"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Net identifier",
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_]*$"
+          },
+          "pins": {
+            "type": "array",
+            "description": "Connected pins (component_id.pin_name)",
+            "minItems": 2,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*\\.[a-zA-Z0-9_]+$"
+            }
+          }
+        }
+      }
+    },
+    "ports": {
+      "type": "array",
+      "description": "Circuit external ports/labels",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "net_id"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Port identifier"
+          },
+          "name": {
+            "type": "string",
+            "description": "Port label name (VCC, GND, IN, OUT, etc.)"
+          },
+          "net_id": {
+            "type": "string",
+            "description": "Net this port connects to"
+          },
+          "direction": {
+            "type": "string",
+            "description": "Port direction",
+            "enum": ["input", "output", "bidirectional", "power"]
+          }
+        }
+      }
+    }
+  }
+}
