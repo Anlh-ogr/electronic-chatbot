@@ -1,76 +1,72 @@
-# app/application/ai/llm_router.py
-""" Đây là phần xử lý trung tâm gọi LLM Service
-Điều phối multi-model theo vai trò (router, extraction, reasoning, presentation) và chế độ (AIR vs PRO).
-Hai chế độ hoạt động:
-  ✨ AIR (Tốc độ cao): Groq fast + Gemini Flash — yêu cầu cơ bản, R-L-C, lý thuyết
-  💥 PRO (Suy luận sâu): Gemini Pro + Groq 70B fallback — yêu cầu phức tạp, đa dạng
-  
-Bảng model theo role ⨉ mode (khớp config thực tế):
-    ┌──────────────────────────────────────────────────────────────────────────┐
-    │ Role         │  AIR (primary → fallback)  │   PRO (primary → fallback)   │
-    │──────────────┼────────────────────────────┼──────────────────────────────│
-    │ ROUTER       │ 8b → 2.5lite → scout       │ 3.1lite → 2.5flash → 3flash  │
-    │ EXTRACTION   │ 27b → maverick → 12b       │ gpt-120b → kimi-k2 → 70b     │
-    │ REASONING    │ 27b → maverick → 2.5lite   │ gpt-120b → 70b → kimi-k2     │
-    │ PRESENTATION │ maverick → 2.5lite → 12b   │ 3flash → 2.5flash → 70b      │
-    └──────────────────────────────────────────────────────────────────────────┘
+# .\thesis\electronic-chatbot\apps\api\app\application\ai\llm_router.py
+"""LLM Router - Bộ điều phối model cho chatbot theo 2 chế độ toàn cục.
 
-Chú thích:
- 8b: llama-3.1-8b-instant              │ 2.5lite: gemini-2.5-flash-lite
- 12b: gemma-3-12b-it                   │ maverick: llama-4-maverick-17b-128e-instruct
- scout: llama-4-scout-17b-16e-instruct │ 27b: gemma-3-27b-it
+Module này chịu trách nhiệm:
+ 1. Quản lý LLM API keys (Gemini) từ environment
+ 2. Định nghĩa LLM roles (GENERAL cho tất cả tasks)
+ 3. Định nghĩa LLM modes (AIR: nhanh | PRO: deep reasoning)
+ 4. Cung cấp get_router() singleton
+ 5. Routing: chatbot → (mode=AIR|PRO) → (role=GENERAL) → LLM
 
- 3.1flash: gemini-3.1-flash-lite  │ kimi-k2: kimi-k2-instruct-0905
- 2.5flash: gemini-2.5-flash       │ 70b: llama-3.3-70b-versatile
- 3flash: gemini-3-flash           │ gpt-120b: openai/gpt-oss-120b
+Nguyên tắc:
+ - Singleton pattern: router dùng chung toàn hệ thống
+ - Mode-first: mode quyết định chain, role chỉ để tương thích
+ - Graceful degradation: nếu API key missing → None, fallback rule-based
 """
 
 from __future__ import annotations
 
-#import json
+# ====== Lý do sử dụng thư viện ======
+# logging: ghi log router initialization, API availability
+# os: đọc API keys từ environment variables
+# dataclass + field: định nghĩa ModelConfig, RouterConfig value objects
+# enum: định nghĩa LLMRole, LLMProvider, LLMMode enums
+# typing: type safe router API, generic models support
+
 import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-""" Lý do sử dụng thư viện
-logging: ghi lịch sử log, giúp theo dõi hoạt động của LLMRouter, đặc biệt khi có fallback hoặc lỗi.
-dataclass, field: giúp định nghĩa các cấu hình model và role một cách rõ ràng, dễ quản lý và mở rộng.
-Enum: định nghĩa kiểu dữ liệu tự động cho vai trò (role)
-typing: cung cấp các kiểu dữ liệu rõ ràng cho hàm và cấu hình, giúp code dễ hiểu và tránh lỗi.
-"""
-
 logger = logging.getLogger(__name__)
 
 
-# Helpers - Hàm đọc biến môi trường -> để gọi os.env truy cập
 def _env(name: str, default: str = "") -> str:
+    """Doc bien moi truong va trim khoang trang."""
     return (os.getenv(name) or default).strip()
 
 
-# Enums & Config - Phần sử dụng enum & config vai trò - ổn định dữ liệu.
 class LLMRole(str, Enum):
-    # Pipeline thực hiện trong model
-    ROUTER = "router"               # Phase1: bộ phận trực, điều phối.
-    EXTRACTION = "extraction"       # Phase2: bộ thu thập thông tin.
-    REASONING = "reasoning"         # Phase3: bộ suy luận, xử lý logic.
-    PRESENTATION = "presentation"   # Phase4: bộ phát ngôn, trình bày.
+    """Role LLM. He thong hien tai dung role chung cho moi mode."""
+
+    GENERAL = "general"
+    # Alias tuong thich nguoc: role cu deu map ve luong chung.
+    ROUTER = "general"
+    EXTRACTION = "general"
+    REASONING = "general"
+    PRESENTATION = "general"
+
 
 class LLMProvider(str, Enum):
-    GROQ = "groq"
+    """Nha cung cap model."""
+
     GEMINI = "gemini"
 
+
 class LLMMode(str, Enum):
-    AIR = "air"   # Tốc độ cao - yêu cầu cơ bản.
-    PRO = "pro"   # Suy luận sâu — yêu cầu phức tạp.
+    """Che do van hanh toan cuc cua chatbot."""
+
+    AIR = "air"
+    PRO = "pro"
+
 
 @dataclass
 class ModelConfig:
-    # Cấu hình Model.
+    """Cau hinh cho mot model trong chain."""
+
     provider: LLMProvider
     model_id: str
-    # Groq dùng OpenAI-compatible, Gemini dùng native REST
     api_key: str = ""
     base_url: str = ""
     timeout_sec: float = 30.0
@@ -79,155 +75,136 @@ class ModelConfig:
 
 @dataclass
 class RoleConfig:
-    # Cấu hình các model ưu tiên + dự phòng (1st->2nd->3rd).
+    """Cau hinh model chinh va fallback cho mot role."""
+
     primary: ModelConfig
     fallbacks: List[ModelConfig] = field(default_factory=list)
 
 
-# Xây dựng cấu hình Model
 def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
-    # Đọc local và đưa cấu hình A/P vào từng role (fallback chain 1st-2nd-3rd).
-    gemini_key = _env("GEMINI_API_KEY")
-    groq_key = _env("GROQ_API_KEY")
-    groq_base = "https://api.groq.com/openai/v1"    # latest version (13-Mar-2026)
+    """Tao cau hinh chain model cho tung mode."""
 
-    def _groq(model_env: str, default: str, timeout: float, max_tokens: int, temperature: float = 0.0) -> ModelConfig:
+    google_key = (
+        _env("Google_Cloud_API_Key")
+        or _env("GOOGLE_CLOUD_API_KEY")
+        or _env("GEMINI_API_KEY")
+    )
+
+    def _first_env(names: List[str], default: str) -> str:
+        for name in names:
+            value = _env(name)
+            if value:
+                return value
+        return default
+
+    def _google(model_envs: List[str], default: str, timeout: float, max_tokens: int, temperature: float = 0.0) -> ModelConfig:
         return ModelConfig(
-            provider=LLMProvider.GROQ, model_id=_env(model_env, default),
-            api_key=groq_key, base_url=groq_base,
+            provider=LLMProvider.GEMINI,
+            model_id=_first_env(model_envs, default),
+            api_key=google_key,
             timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
         )
 
-    def _gemini(model_env: str, default: str, timeout: float, max_tokens: int, temperature: float = 0.0) -> ModelConfig:
-        return ModelConfig(
-            provider=LLMProvider.GEMINI, model_id=_env(model_env, default),
-            api_key=gemini_key,
-            timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
-        )
-
-    # ── AIR mode: Tốc độ cao, yêu cầu cơ bản ──
-    # Groq chain: llama-4-maverick → llama-4-scout → llama-3.1-8b
-    air_groq = [
-        _groq("GROQ_AIR_MODEL_1", "meta-llama/llama-4-maverick-17b-128e-instruct", 15.0, 8192),
-        _groq("GROQ_AIR_MODEL_2", "meta-llama/llama-4-scout-17b-16e-instruct", 15.0, 8192),
-        _groq("GROQ_AIR_MODEL_3", "llama-3.1-8b-instant", 10.0, 2048),
-    ]
-    # Gemini chain: gemma-3-27b → gemma-3-12b → gemini-2.5-flash-lite
-    air_gemini = [
-        _gemini("GEMINI_AIR_MODEL_1", "google/gemma-3-27b-it", 30.0, 8192),
-        _gemini("GEMINI_AIR_MODEL_2", "gemini-2.5-flash-lite", 30.0, 8192),
-        _gemini("GEMINI_AIR_MODEL_3", "google/gemma-3-12b-it", 30.0, 8192),
+    # AIR mode: uu tien toc do va chi phi.
+    air_chain = [
+        _google(["GoogleCloud_Fast_Model", "Google_Cloud_Fast_Model"], "gemini-2.5-flash-lite", 25.0, 8192),
+        _google(["GoogleCloud_Pro_Model", "Google_Cloud_Pro_Model"], "gemini-2.0-flash-001", 25.0, 8192),
+        _google(["GoogleCloud_Think_Model", "Google_Cloud_Think_Model"], "gemini-2.5-flash", 30.0, 8192),
     ]
 
     air: Dict[LLMRole, RoleConfig] = {
-        LLMRole.ROUTER: RoleConfig(primary=air_groq[2], fallback=[air_gemini[1], air_groq[1]]),
-        LLMRole.EXTRACTION: RoleConfig(primary=air_gemini[0], fallback=[air_groq[0], air_gemini[2]]),
-        LLMRole.REASONING: RoleConfig(primary=air_gemini[0], fallback=[air_groq[0], air_gemini[1]]),
-        LLMRole.PRESENTATION: RoleConfig(primary=air_groq[0], fallback=[air_gemini[1], air_gemini[2]]),
+        LLMRole.GENERAL: RoleConfig(primary=air_chain[0], fallbacks=[air_chain[1], air_chain[2]]),
     }
 
-    # ── PRO mode: Suy luận sâu, mạch phức tạp ──
-    # Groq chain: gpt-oss-120b → llama-3.3-70b → kimi-k2
-    pro_groq = [
-        _groq("GROQ_PRO_MODEL_1", "openai/gpt-oss-120b", 30.0, 65536),
-        _groq("GROQ_PRO_MODEL_2", "llama-3.3-70b-versatile", 30.0, 32768),
-        _groq("GROQ_PRO_MODEL_3", "moonshotai/kimi-k2-instruct-0905", 30.0, 32768),
-    ]
-    # Gemini chain: gemini-3.1-flash-lite → gemini-3-flash → gemini-2.5-flash
-    pro_gemini = [
-        _gemini("GEMINI_PRO_MODEL_1", "gemini-3.1-flash-lite", 40.0, 16384),
-        _gemini("GEMINI_PRO_MODEL_2", "gemini-3-flash", 40.0, 16384),
-        _gemini("GEMINI_PRO_MODEL_3", "gemini-2.5-flash", 40.0, 16384),
+    # PRO mode: uu tien chat luong va suy luan sau.
+    pro_chain = [
+        _google(["GoogleCloud_Think_Model", "Google_Cloud_Think_Model"], "gemini-2.5-flash", 45.0, 16384),
+        _google(["GoogleCloud_Pro_Model", "Google_Cloud_Pro_Model"], "gemini-2.0-flash-001", 45.0, 16384),
+        _google(["GoogleCloud_Ultra_Model", "Google_Cloud_Ultra_Model"], "gemini-flash-latest", 45.0, 16384),
     ]
 
     pro: Dict[LLMRole, RoleConfig] = {
-        LLMRole.ROUTER: RoleConfig(primary=pro_gemini[0], fallback=[pro_gemini[2], pro_gemini[1]]),
-        LLMRole.EXTRACTION: RoleConfig(primary=pro_groq[0], fallback=[pro_groq[2], pro_groq[1]]),
-        LLMRole.REASONING: RoleConfig(primary=pro_groq[0], fallback=[pro_groq[1], pro_groq[2]]),
-        LLMRole.PRESENTATION: RoleConfig(primary=pro_gemini[1], fallback=[pro_gemini[2], pro_groq[1]]),
+        LLMRole.GENERAL: RoleConfig(primary=pro_chain[0], fallbacks=[pro_chain[1], pro_chain[2]]),
     }
     return {LLMMode.AIR: air, LLMMode.PRO: pro}
 
 
 class LLMRouter:
-    # Gọi model phù hợp cho từng vai trò, tự động fallback khi lỗi (429, timeout, ...).
+    """Dieu phoi model theo mode, tu dong fallback khi goi that bai."""
+
     def __init__(self) -> None:
         self._mode_configs = _build_mode_configs()
-        mode_str = _env("DEFAULT_MODE", "air").lower()
+        mode_str = (
+            _env("GoogleCloud_Default_Mode")
+            or _env("Google_Cloud_Default_Mode")
+            or _env("DEFAULT_MODE", "air")
+        ).lower()
         self._default_mode = LLMMode.PRO if mode_str == "pro" else LLMMode.AIR
-        self._groq_available = bool(_env("GROQ_API_KEY"))
-        self._gemini_available = bool(_env("GEMINI_API_KEY"))
+        self._gemini_available = bool(
+            _env("Google_Cloud_API_Key") or _env("GOOGLE_CLOUD_API_KEY") or _env("GEMINI_API_KEY")
+        )
         logger.info(
             f"LLMRouter initialized: mode={self._default_mode.value}, "
-            f"groq={'yes' if self._groq_available else 'no'}, "
             f"gemini={'yes' if self._gemini_available else 'no'}"
         )
 
     # ── Public API ──
     def chat_json(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[Dict[str, Any]]:
-        # Gọi config -> cấu hình role
-        confg = self._get_config(role, mode)
-        if not confg:
+        config = self._get_config(role, mode)
+        if not config:
             logger.error(f"Không có cấu hình cho role {role}")
             return None
 
-        # Kiểm tra model (1st).
-        result = self._try_call_json(confg.primary, system, user_content, temperature, max_tokens)
+        result = self._try_call_json(config.primary, system, user_content, temperature, max_tokens)
         if result is not None:
             return result
 
-        # Thử chuỗi fallback (2nd, 3rd, ...)
-        for faback in confg.fallbacks:
-            logger.info(f"[{role.value}] Trying fallback ({faback.model_id})")
-            result = self._try_call_json(faback, system, user_content, temperature, max_tokens)
+        for fallback in config.fallbacks:
+            logger.info(f"[{role.value}] Trying fallback ({fallback.model_id})")
+            result = self._try_call_json(fallback, system, user_content, temperature, max_tokens)
             if result is not None:
                 return result
 
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    # * truyền keyword-only agr (mode=LLMMode.A/P)
     def chat_text(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[str]:
-        # Gọi config -> cấu hình role.
-        cofig = self._get_config(role, mode)
-        if not cofig:
+        config = self._get_config(role, mode)
+        if not config:
             logger.error(f"Không có cấu hình cho role {role}")
             return None
-        
-        # kiểm tra model (1st).
-        result = self._try_call_text(cofig.primary, system, user_content, temperature, max_tokens)
+
+        result = self._try_call_text(config.primary, system, user_content, temperature, max_tokens)
         if result is not None:
             return result
-        
-        # Thử chuỗi fallback (2nd, 3rd, ...)
-        for faback in cofig.fallbacks:
-            logger.info(f"[{role.value}] Trying fallback ({faback.model_id})")
-            result = self._try_call_text(faback, system, user_content, temperature, max_tokens)
+
+        for fallback in config.fallbacks:
+            logger.info(f"[{role.value}] Trying fallback ({fallback.model_id})")
+            result = self._try_call_text(fallback, system, user_content, temperature, max_tokens)
             if result is not None:
                 return result
-    
+
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
     def is_available(self, role: LLMRole, mode: Optional[LLMMode] = None) -> bool:
-        # Kiểm tra model khả dụng
-        cofig = self._get_config(role, mode)
-        if not cofig: return False
-        if cofig.primary.api_key: return True
-        return any(faback.api_key for faback in cofig.fallbacks)
+        config = self._get_config(role, mode)
+        if not config:
+            return False
+        if config.primary.api_key:
+            return True
+        return any(fallback.api_key for fallback in config.fallbacks)
 
     def get_status(self) -> Dict[str, Any]:
-        # Trả về trạng thái các model theo mode.
         status: Dict[str, Any] = {
             "default_mode": self._default_mode.value,
-            "groq_available": self._groq_available,
             "gemini_available": self._gemini_available,
             "modes": {},
         }
-        # Lọc/lấy/kiểm tra/fallback thông tin cho từng role+mode(A/P)
+
         for mode, configs in self._mode_configs.items():
             status["modes"][mode.value] = {}
-            for role, cofig in configs.items():
+            for role, config in configs.items():
                 status["modes"][mode.value][role.value] = {
                     "chain": [
                         {
@@ -235,7 +212,7 @@ class LLMRouter:
                             "has_key": bool(m.api_key),
                             "tier": "primary" if i == 0 else f"fallback_{i}",
                         }
-                        for i, m in enumerate([cofig.primary] + cofig.fallbacks)
+                        for i, m in enumerate([config.primary] + config.fallbacks)
                     ],
                 }
         return status
@@ -243,92 +220,48 @@ class LLMRouter:
 
     # ── Internal call helpers ──
     def _get_config(self, role: LLMRole, mode: Optional[LLMMode]) -> Optional[RoleConfig]:
-        # Sử dụng RoleConfig hoạt động với Role
-        mod = mode if mode is not None else self._default_mode
-        return self._mode_configs.get(mod, {}).get(role)
+        resolved_mode = mode if mode is not None else self._default_mode
+        configs = self._mode_configs.get(resolved_mode, {})
+        return configs.get(role) or configs.get(LLMRole.GENERAL)
 
     def _try_call_json(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[Dict[str, Any]]:
-        # Gọi 1 model, trả JSON dict hoặc None nếu lỗi.
         if not model.api_key:
             return None
-        
-        # lấy 'sáng tạo' và 'token' được cấu hình -> để truyền client gọi LLM service.
+
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
         
         try:
-            if model.provider == LLMProvider.GROQ:
-                return self._groq_json(model, system, user_content, temp, tokens)
-            else:
-                return self._gemini_json(model, system, user_content, temp, tokens)
+            return self._gemini_json(model, system, user_content, temp, tokens)
         except Exception as e:
             logger.warning(f"[{model.provider.value}/{model.model_id}] JSON failed: {e}")
             return None
 
     def _try_call_text(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[str]:
-        # Gọi 1 model, trả text hoặc None nếu lỗi.
         if not model.api_key:
             return None
-        
+
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
         
         try:
-            if model.provider == LLMProvider.GROQ:
-                return self._groq_text(model, system, user_content, temp, tokens)
-            else:
-                return self._gemini_text(model, system, user_content, temp, tokens)
+            return self._gemini_text(model, system, user_content, temp, tokens)
         except Exception as e:
             logger.warning(f"[{model.provider.value}/{model.model_id}] Text failed: {e}")
             return None
 
-
-    # ── Groq (OpenAI-compatible) calls ──
-    def _groq_json(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> Dict[str, Any]:
-        from app.application.ai.llm_client import (OpenAICompatibleLLMClient, ChatMessage,)
-        
-        client = OpenAICompatibleLLMClient(api_key=model.api_key,
-                                           base_url=model.base_url,
-                                           model=model.model_id,
-                                           timeout_sec=model.timeout_sec,)
-        
-        # gói message (role + content) -> LLM client
-        messages = []
-        if system:
-            messages.append(ChatMessage(role="system", content=system))
-        messages.append(ChatMessage(role="user", content=user_content))
-        
-        return client.chat_json(messages, temperature=temperature, max_tokens=max_tokens)
-
-    def _groq_text(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> str:
-        from app.application.ai.llm_client import (OpenAICompatibleLLMClient, ChatMessage,)
-        
-        client = OpenAICompatibleLLMClient(api_key=model.api_key,
-                                           base_url=model.base_url,
-                                           model=model.model_id,
-                                           timeout_sec=model.timeout_sec,)
-        
-        # Gói message (role + content) -> LLM client
-        messages = []
-        if system:
-            messages.append(ChatMessage(role="system", content=system))
-        messages.append(ChatMessage(role="user", content=user_content))
-        
-        return client.chat_text(messages, temperature=temperature, max_tokens=max_tokens)
-
     
-    # ── Gemini calls ──
+    # ── Google Cloud calls ──
     def _gemini_json(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> Dict[str, Any]:
-        from app.application.ai.gemini_client import GeminiClient, GeminiMessage
+        from app.application.ai.googlecloud_client import GoogleCloudClient, GoogleCloudMessage
         
-        client = GeminiClient(api_key=model.api_key,
-                              model=model.model_id,
-                              timeout_sec=model.timeout_sec,)
+        client = GoogleCloudClient(api_key=model.api_key,
+                                   model=model.model_id,
+                                   timeout_sec=model.timeout_sec,)
         
-        # Gói message (role + content) -> LLM client
-        messages = [GeminiMessage(role="user", content=user_content)]
+        messages = [GoogleCloudMessage(role="user", content=user_content)]
         
         return client.chat_json(
             messages, system_instruction=system,
@@ -336,13 +269,13 @@ class LLMRouter:
         )
 
     def _gemini_text(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> str:
-        from app.application.ai.gemini_client import GeminiClient, GeminiMessage
+        from app.application.ai.googlecloud_client import GoogleCloudClient, GoogleCloudMessage
         
-        client = GeminiClient(api_key=model.api_key,
-                              model=model.model_id,
-                              timeout_sec=model.timeout_sec,)
+        client = GoogleCloudClient(api_key=model.api_key,
+                                   model=model.model_id,
+                                   timeout_sec=model.timeout_sec,)
         
-        messages = [GeminiMessage(role="user", content=user_content)]
+        messages = [GoogleCloudMessage(role="user", content=user_content)]
         
         return client.chat_text(
             messages, system_instruction=system,
@@ -350,11 +283,12 @@ class LLMRouter:
         )
 
 
-# ── Singleton ── Lưu instance tái sd tiết kiệm tìa nguyên
+# Singleton router
 _router: Optional[LLMRouter] = None
 
-# Trả về singleton LLMRouter.
 def get_router() -> LLMRouter:
+    """Tra ve singleton LLMRouter."""
+
     global _router
     if _router is None:
         _router = LLMRouter()
