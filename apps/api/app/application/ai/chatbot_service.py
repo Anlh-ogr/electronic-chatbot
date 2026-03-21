@@ -408,6 +408,13 @@ class ChatbotService:
             )
             response.template_id = circuit.template_id
 
+            analysis_gain = (
+                ((response.analysis or {}).get("parameters") or {}).get("gain_actual")
+                if isinstance(response.analysis, dict)
+                else None
+            )
+            gain_for_message = analysis_gain if isinstance(analysis_gain, (int, float)) else (solved.actual_gain if solved else None)
+
             # Collect warnings
             warnings = []
             if circuit.validation and circuit.validation.warnings:
@@ -419,7 +426,7 @@ class ChatbotService:
 
             response.message = self._nlg.generate_success_response(
                 circuit_type=intent.circuit_type,
-                gain_actual=solved.actual_gain if solved else None,
+                gain_actual=gain_for_message,
                 gain_target=intent.gain_target,
                 params=solved_values,
                 gain_formula=circuit.gain_formula,
@@ -839,6 +846,9 @@ class ChatbotService:
 
     def _intent_to_spec(self, intent: CircuitIntent) -> UserSpec:
         """Chuyển CircuitIntent → UserSpec cho AI Core (không qua text)."""
+        requested_blocks = self._infer_stage_blocks_from_text(intent.raw_text)
+        coupling_pref = self._infer_coupling_preference_from_text(intent.raw_text)
+
         return UserSpec(
             circuit_type=intent.circuit_type,
             gain=intent.gain_target,
@@ -852,12 +862,60 @@ class ChatbotService:
             output_buffer=intent.output_buffer,
             power_output=intent.power_output,
             supply_mode=intent.supply_mode,
+            coupling_preference=coupling_pref,
             device_preference=intent.device_preference,
+            requested_stage_blocks=requested_blocks,
             extra_requirements=list(intent.extra_requirements),
             confidence=intent.confidence,
             source=intent.source,
             raw_text=intent.raw_text,
         )
+
+    @staticmethod
+    def _infer_stage_blocks_from_text(text: str) -> List[str]:
+        raw = (text or "").lower()
+        compact = re.sub(r"[^a-z]", "", raw)
+
+        explicit_pairs = {
+            "cscd": ["cs_block", "cd_block"],
+            "cecc": ["ce_block", "cc_block"],
+            "cecb": ["ce_block", "cb_block"],
+            "cscg": ["cs_block", "cg_block"],
+        }
+        for key, blocks in explicit_pairs.items():
+            if key in compact:
+                return blocks
+
+        token_to_block = {
+            "ce": "ce_block",
+            "cb": "cb_block",
+            "cc": "cc_block",
+            "cs": "cs_block",
+            "cd": "cd_block",
+            "cg": "cg_block",
+        }
+        tokens = re.findall(r"\b(ce|cb|cc|cs|cd|cg)\b", raw)
+        ordered: List[str] = []
+        for t in tokens:
+            block = token_to_block[t]
+            if block not in ordered:
+                ordered.append(block)
+        return ordered if len(ordered) >= 2 else []
+
+    @staticmethod
+    def _infer_coupling_preference_from_text(text: str) -> str:
+        raw = (text or "").lower()
+        if re.search(
+            r"direct\s*coupl|gh[ée]p\s*tr[ựu]c\s*ti[ếe]p|kh[ôo]ng\s*(?:d[ùu]ng\s*)?t[ụu]\s*gh[ée]p|kh[ôo]ng\s*d[ùu]ng\s*t[ụu]\s*coupling",
+            raw,
+            re.IGNORECASE,
+        ):
+            return "direct"
+        if re.search(r"transformer\s*coupl|gh[ée]p\s*bi[ếe]n\s*[áa]p", raw, re.IGNORECASE):
+            return "transformer"
+        if re.search(r"capacitor\s*coupl|ac\s*coupl|gh[ée]p\s*t[ụu]", raw, re.IGNORECASE):
+            return "capacitor"
+        return "auto"
 
     def _build_design_analysis(
         self,
@@ -872,10 +930,32 @@ class ChatbotService:
         input_channels = max(intent.input_channels, self._estimate_input_channels(circuit_data, intent.raw_text))
         v_range = dict(intent.voltage_range) if intent.voltage_range else self._estimate_voltage_range(intent, circuit_data)
 
+        reported_gain = gain_actual
+        composition_plan = circuit_data.get("composition_plan") if isinstance(circuit_data, dict) else None
+        if isinstance(composition_plan, dict):
+            target_gain = composition_plan.get("target_gain")
+            if isinstance(target_gain, (int, float)) and abs(float(target_gain)) > 1.0:
+                reported_gain = float(target_gain)
+
+            stages = composition_plan.get("stages")
+            if isinstance(stages, list):
+                inversion_count = 0
+                for stage in stages:
+                    if not isinstance(stage, dict):
+                        continue
+                    block_name = str(stage.get("block", "")).strip().lower()
+                    if any(tag in block_name for tag in ("ce", "cs", "cb", "cg", "inverting")):
+                        inversion_count += 1
+
+                if inversion_count % 2 == 1 and isinstance(reported_gain, (int, float)):
+                    reported_gain = -abs(float(reported_gain))
+                elif inversion_count % 2 == 0 and isinstance(reported_gain, (int, float)):
+                    reported_gain = abs(float(reported_gain))
+
         topology_metrics = ParameterSolver().analyze_topology(
             family=intent.circuit_type,
             solved_values=solved_values,
-            gain_actual=gain_actual,
+            gain_actual=reported_gain,
             frequency_hz=intent.frequency,
             supply_mode=intent.supply_mode,
             vcc=intent.vcc,
@@ -899,7 +979,7 @@ class ChatbotService:
             "parameters": {
                 "circuit_type": intent.circuit_type,
                 "gain_target": intent.gain_target,
-                "gain_actual": gain_actual,
+                "gain_actual": reported_gain,
                 "frequency_hz": intent.frequency,
                 "bandwidth_hz": bandwidth_hz,
                 "vcc": intent.vcc,
@@ -942,7 +1022,8 @@ class ChatbotService:
                 "gain": {
                     "symbolic": gain_formula,
                     "substitution": self._render_gain_substitution(gain_formula, solved_values),
-                    "computed_gain": gain_actual,
+                    "computed_gain": reported_gain,
+                    "target_gain": intent.gain_target,
                 }
             },
             "simulation": simulation,
@@ -992,7 +1073,9 @@ class ChatbotService:
         output_probes: List[str] = []
         ports = circuit_data.get("ports", []) if isinstance(circuit_data, dict) else []
         for p in ports:
-            direction = str(p.get("direction", "")).lower()
+            if not isinstance(p, dict):
+                continue
+            direction = str(p.get("direction") or p.get("type") or "").lower()
             net = str(p.get("net") or p.get("net_name") or "").strip()
             if not net:
                 continue
@@ -1004,7 +1087,7 @@ class ChatbotService:
 
         probes = list(dict.fromkeys(input_probes + output_probes))
         if not probes:
-            probes = ["v(in)", "v(out)"]
+            probes = ["v(net_in)", "v(net_out)"]
         return list(dict.fromkeys(probes))
 
     def _apply_simulation_requirements(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> None:
@@ -1161,7 +1244,11 @@ class ChatbotService:
         if "2 kênh" in text or "2 kenh" in text or "stereo" in text:
             return 2
         ports = circuit_data.get("ports", []) if isinstance(circuit_data, dict) else []
-        in_ports = [p for p in ports if str(p.get("direction", "")).lower() == "input"]
+        in_ports = [
+            p for p in ports
+            if isinstance(p, dict)
+            and str(p.get("direction") or p.get("type") or "").lower() == "input"
+        ]
         return max(1, len(in_ports))
 
     def _estimate_voltage_range(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> Dict[str, Optional[float]]:
