@@ -1,0 +1,1 @@
+Thư mục này chỉ chứa code Python backend, không chứa file tĩnh, export, hay script.
