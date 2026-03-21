@@ -156,7 +156,13 @@
       "description": "Mạch 2 tầng CE-CC (gain + buffer)",
       "pattern": ["ce_block", "cc_block"],
       "required_capabilities": ["voltage_gain", "low_output_impedance"],
-      "optional_blocks": ["ac_coupling_block", "bias_network_block"],
+      "optional_blocks": [
+        "ac_coupling_block",
+        "direct_coupling_block",
+        "transformer_coupling_block",
+        "bias_network_block"
+      ],
+      "supported_coupling_modes": ["capacitor", "direct", "transformer"],
       "gain_formula": "A_ce * A_cc ≈ A_ce",
       "typical_use_cases": ["audio_amplifier", "general_purpose"],
       "match_families": ["multi_stage"],
@@ -177,6 +183,51 @@
         { "from": "non_inverting_block:0", "to": "differential_block:IN_POS", "signal": "analog" },
         { "from": "non_inverting_block:1", "to": "differential_block:IN_NEG", "signal": "analog" },
         { "from": "differential_block:OUT", "to": "cc_block:IN_BASE", "signal": "analog" }
+      ]
+    }
+  },
+
+  "coupling_rules": {
+    "capacitor": {
+      "label": "interstage_capacitor",
+      "mode": "capacitor",
+      "intermediary_block": "ac_coupling_block",
+      "description": "Nối tầng bằng tụ ghép để chặn DC, truyền AC.",
+      "default_component_prefix": "C_CP",
+      "default_parameters": {
+        "capacitance": 1e-6,
+        "voltage_rating_v": 50
+      },
+      "constraints": [
+        "f_low = 1/(2*pi*R_in_next*C_couple) must be below signal_min_freq"
+      ]
+    },
+    "direct": {
+      "label": "interstage_direct",
+      "mode": "direct",
+      "intermediary_block": "direct_coupling_block",
+      "description": "Nối tầng trực tiếp để giữ thành phần DC và giảm linh kiện ghép.",
+      "default_component_prefix": "J_DC",
+      "default_parameters": {
+        "dc_path": true
+      },
+      "constraints": [
+        "dc_bias_stage_n_out compatible with dc_bias_stage_n1_in"
+      ]
+    },
+    "transformer": {
+      "label": "interstage_transformer",
+      "mode": "transformer",
+      "intermediary_block": "transformer_coupling_block",
+      "description": "Nối tầng bằng biến áp để matching trở kháng và cách ly DC.",
+      "default_component_prefix": "T_CP",
+      "default_parameters": {
+        "turns_ratio": "1:1",
+        "primary_inductance_h": 0.01
+      },
+      "constraints": [
+        "transformer bandwidth must cover target signal band",
+        "core saturation must be avoided"
       ]
     }
   },
