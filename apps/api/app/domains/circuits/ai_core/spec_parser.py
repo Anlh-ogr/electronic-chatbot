@@ -34,12 +34,17 @@ class UserSpec:
     gain: Optional[float] = None
     vcc: Optional[float] = None
     frequency: Optional[float] = None       # Tần số hoạt động (Hz)
+    input_channels: int = 1
+    channel_inputs: Dict[str, Dict[str, Optional[float]]] = field(default_factory=dict)
+    voltage_range: Dict[str, Optional[float]] = field(default_factory=dict)
     high_cmr: bool = False                  # cmrr: common-mode rejection ratio: Loại bỏ nhiễu chung
     input_mode: str = "single_ended"        # mode: single_ended | differential: tín hiệu-gnd | tín hiệu-hai đầu
     output_buffer: bool = False
     power_output: bool = False
     supply_mode: str = "auto"               # auto | dual_supply | single_supply
+    coupling_preference: str = "auto"       # auto | capacitor | direct | transformer
     device_preference: str = "auto"         # auto | bjt | mosfet | opamp
+    requested_stage_blocks: List[str] = field(default_factory=list)
     extra_requirements: List[str] = field(default_factory=list)
     confidence: float = 0.0                 # 0.0 - 1.0
     source: str = "rule_based"              # rule_based | llm | hybrid
@@ -49,9 +54,14 @@ class UserSpec:
         return {
             "circuit_type": self.circuit_type, "gain": self.gain,
             "vcc": self.vcc, "frequency": self.frequency,
+            "input_channels": self.input_channels,
+            "channel_inputs": self.channel_inputs,
+            "voltage_range": self.voltage_range,
             "high_cmr": self.high_cmr, "input_mode": self.input_mode,
             "output_buffer": self.output_buffer, "power_output": self.power_output,
-            "supply_mode": self.supply_mode, "device_preference": self.device_preference,
+            "supply_mode": self.supply_mode, "coupling_preference": self.coupling_preference,
+            "device_preference": self.device_preference,
+            "requested_stage_blocks": self.requested_stage_blocks,
             "extra_requirements": self.extra_requirements,
             "confidence": round(self.confidence, 3), "source": self.source,
             "raw_text": self.raw_text,
@@ -83,7 +93,7 @@ CIRCUIT_TYPE_KEYWORDS = {
     
     "inverting": [
         # existing...
-        r"inverting(?!\s*non)", r"đảo\s*pha",
+        r"(?<!non\s)(?<!non-)(?<!non_)inverting", r"đảo\s*pha",
         # proposed
         r"inv\s*amp", r"opamp\s*đảo", r"mạch\s*đảo", r"khuếch\s*đại\s*đảo", r"gain\s*âm",
     ],
@@ -209,8 +219,15 @@ class NLPSpecParser:
         self._parse_flags(text, spec)
         self._parse_input_mode(text, spec)
         self._parse_supply_mode(text, spec)
+        self._parse_coupling_preference(text, spec)
         self._parse_device_preference(text, spec)
+        self._parse_requested_stage_blocks(text, spec)
         self._parse_extra_requirements(text, spec)
+
+        # If user explicitly requested a stage chain (e.g., CS-CD), force multi-stage planning.
+        if len(spec.requested_stage_blocks) >= 2:
+            spec.circuit_type = "multi_stage"
+
         self._calc_confidence(spec)
         spec.source = "rule_based"
 
@@ -253,7 +270,9 @@ class NLPSpecParser:
             '  "frequency": number|null,\n'
             '  "input_mode": "single_ended"|"differential",\n'
             '  "supply_mode": "auto"|"single_supply"|"dual_supply",\n'
+            '  "coupling_preference": "auto"|"capacitor"|"direct"|"transformer",\n'
             '  "device_preference": "auto"|"bjt"|"mosfet"|"opamp",\n'
+            '  "requested_stage_blocks": string[],\n'
             '  "extra_requirements": string[],\n'
             '  "confidence": number\n'
             "}\n"
@@ -277,10 +296,69 @@ class NLPSpecParser:
         spec.frequency = obj.get("frequency")
         spec.input_mode = str(obj.get("input_mode", "single_ended"))
         spec.supply_mode = str(obj.get("supply_mode", "auto"))
+        spec.coupling_preference = str(obj.get("coupling_preference", "auto"))
         spec.device_preference = str(obj.get("device_preference", "auto"))
+        spec.requested_stage_blocks = [str(x) for x in obj.get("requested_stage_blocks", []) if isinstance(x, str)]
         spec.extra_requirements = obj.get("extra_requirements", [])
         spec.confidence = float(obj.get("confidence", 0.5))
         return spec
+
+    def _parse_requested_stage_blocks(self, text: str, spec: UserSpec) -> None:
+        compact = re.sub(r"[^a-z]", "", text.lower())
+        explicit_pairs = {
+            "cscd": ["cs_block", "cd_block"],
+            "cecc": ["ce_block", "cc_block"],
+            "cecb": ["ce_block", "cb_block"],
+            "cscg": ["cs_block", "cg_block"],
+        }
+        for token, chain in explicit_pairs.items():
+            if token in compact:
+                spec.requested_stage_blocks = chain
+                return
+
+        block_patterns = [
+            (r"\bce\b|common[\s_-]*emitter|emitter\s*chung", "ce_block"),
+            (r"\bcb\b|common[\s_-]*base|base\s*chung", "cb_block"),
+            (r"\bcc\b|common[\s_-]*collector|collector\s*chung|emitter\s*follower", "cc_block"),
+            (r"\bcs\b|common[\s_-]*source|source\s*chung", "cs_block"),
+            (r"\bcd\b|common[\s_-]*drain|drain\s*chung|source\s*follower", "cd_block"),
+            (r"\bcg\b|common[\s_-]*gate|gate\s*chung", "cg_block"),
+            (r"non[\s_-]*inverting|không\s*đảo", "non_inverting_block"),
+            (r"(?<!non\s)(?<!non-)(?<!non_)inverting|đảo\s*pha|mạch\s*đảo", "inverting_block"),
+            (r"differential|vi\s*sai", "differential_block"),
+            (r"instrumentation|in[\s_-]*amp|đo\s*lường", "instrumentation_block"),
+            (r"darlington", "darlington_block"),
+            (r"class[\s_-]*ab", "class_ab_block"),
+            (r"class[\s_-]*a(?![a-z])", "class_a_block"),
+            (r"class[\s_-]*b(?![a-z])", "class_b_block"),
+            (r"class[\s_-]*c(?![a-z])", "class_c_block"),
+            (r"class[\s_-]*d(?![a-z])", "class_d_block"),
+        ]
+
+        # Collect candidates with span info, then keep non-overlapping matches.
+        candidates: List[tuple[int, int, int, str]] = []
+        for priority, (pattern, block) in enumerate(block_patterns):
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                candidates.append((match.start(), match.end(), priority, block))
+
+        if not candidates:
+            return
+
+        # Sort by position, then longer span first to prefer specific phrases.
+        candidates.sort(key=lambda x: (x[0], -(x[1] - x[0]), x[2]))
+        selected: List[tuple[int, int, str]] = []
+
+        for start, end, _priority, block in candidates:
+            overlap = any(not (end <= s or start >= e) for s, e, _b in selected)
+            if overlap:
+                continue
+            selected.append((start, end, block))
+
+        selected.sort(key=lambda x: x[0])
+        ordered: List[str] = [block for _, _, block in selected]
+
+        if len(ordered) >= 2:
+            spec.requested_stage_blocks = ordered
 
     def _parse_circuit_type(self, text: str, spec: UserSpec) -> None:
         spec.circuit_type = self._detect_circuit_type(text)
@@ -369,6 +447,31 @@ class NLPSpecParser:
         elif self._has_pattern(text, [r"\bop[\s-]*amp\b", r"\bopamp\b", r"operational[\s_-]*amplifier", r"op[\s_-]*amp", r"opamp\s*stage", r"tầng\s*opamp", r"khuếch\s*đại\s*thu\s*động",]):
             spec.device_preference = "opamp"
 
+    def _parse_coupling_preference(self, text: str, spec: UserSpec) -> None:
+        if self._has_pattern(text, [
+            r"tụ\s*nối\s*tầng", r"ghép\s*tụ", r"ac[\s_-]*coupling", r"ac[\s_-]*coupled",
+            r"capacitive[\s_-]*coupling", r"coupling\s*capacitor",
+            r"ghep\s*tu", r"tu\s*noi\s*tang",
+        ]):
+            spec.coupling_preference = "capacitor"
+            return
+
+        if self._has_pattern(text, [
+            r"nối\s*trực\s*tiếp", r"ghép\s*trực\s*tiếp", r"dc[\s_-]*coupling",
+            r"direct[\s_-]*coupling", r"directly\s*coupled",
+            r"noi\s*truc\s*tiep", r"ghep\s*truc\s*tiep",
+        ]):
+            spec.coupling_preference = "direct"
+            return
+
+        if self._has_pattern(text, [
+            r"biến\s*áp\s*nối\s*tầng", r"ghép\s*biến\s*áp", r"transformer[\s_-]*coupling",
+            r"interstage\s*transformer", r"transformer\s*coupled",
+            r"bien\s*ap\s*noi\s*tang", r"ghep\s*bien\s*ap",
+        ]):
+            spec.coupling_preference = "transformer"
+            return
+
     def _parse_extra_requirements(self, text: str, spec: UserSpec) -> None:
         extras = []
         # Low noise
@@ -425,11 +528,12 @@ class NLPSpecParser:
         """Detect circuit type từ text bằng regex matching."""
         # Ưu tiên match dài hơn trước (instrumentation trước inverting)
         priority_order = [
+            "multi_stage",
             "instrumentation", "differential", "non_inverting", "inverting",
             "class_ab", "class_a", "class_b", "class_c", "class_d",
             "common_emitter", "common_base", "common_collector",
             "common_source", "common_drain", "common_gate",
-            "darlington", "multi_stage",
+            "darlington",
         ]
         for ctype in priority_order:
             patterns = CIRCUIT_TYPE_KEYWORDS.get(ctype, [])
