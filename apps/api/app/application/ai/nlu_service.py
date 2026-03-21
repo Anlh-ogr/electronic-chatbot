@@ -477,14 +477,42 @@ class NLUService:
 
     def _parse_circuit_type(self, text: str, intent: CircuitIntent) -> None:
         # Nhận diện cấu trúc/topology của mạch từ text → gán topo + loại mạch
+        # Prefer multi-stage when user explicitly asks stage count/chain/coupling between stages.
+        stage_chain_patterns = [
+            r"\b(ce|cb|cc|cs|cd|cg)\s*[-–/ ]\s*(ce|cb|cc|cs|cd|cg)\b",
+            r"\b(ce|cb|cc|cs|cd|cg)\b.{0,24}\b(ce|cb|cc|cs|cd|cg)\b",
+            r"\bcscd\b|\bcecc\b|\bcecb\b|\bcscg\b",
+        ]
+        if self._has_pattern(text, CIRCUIT_TYPE_KEYWORDS.get("multi_stage", [])) and self._has_pattern(text, stage_chain_patterns):
+            intent.topology = "multi_stage"
+            intent.circuit_type = "multi_stage"
+            return
+
         topology = self._detect_topology(text)
         intent.topology = topology
         intent.circuit_type = CIRCUIT_TYPE_MAP.get(topology, topology)
     
     def _parse_gain(self, text: str, intent: CircuitIntent) -> None:
         # Trích gain(độ khuếch đại) mục tiêu từ text.
+        range_match = re.search(
+            r"(?:gain|av|khuếch\s*đại|hệ\s*số\s*khuếch\s*đại)\s*(?:khoảng|tầm|xấp\s*xỉ|tu\s*|từ)?\s*"
+            r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:-|đến|to|~)\s*(-?[0-9]+(?:\.[0-9]+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if range_match:
+            try:
+                low = float(range_match.group(1))
+                high = float(range_match.group(2))
+                intent.gain_target = (low + high) / 2.0
+                return
+            except ValueError:
+                pass
+
         intent.gain_target = self._extract_number(text, [
+            r"gain\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"gain\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
+            r"khuếch\s*đại\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"khuếch\s*đại\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"av\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"hệ\s*số\s*khuếch\s*đại\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
@@ -1040,6 +1068,14 @@ class NLUService:
 
         # Số liệu: ưu tiên LLM, fallback rule
         merged.gain_target = llm.gain_target if llm.gain_target is not None else rule.gain_target
+        if (
+            rule.gain_target is not None
+            and llm.gain_target is not None
+            and abs(rule.gain_target) >= 5
+            and abs(llm.gain_target) < 5
+            and re.search(r"(?:gain|av|khuếch\s*đại)", rule.raw_text, re.IGNORECASE)
+        ):
+            merged.gain_target = rule.gain_target
         merged.vcc = llm.vcc if llm.vcc is not None else rule.vcc
         merged.frequency = llm.frequency if llm.frequency is not None else rule.frequency
         merged.input_channels = llm.input_channels if llm.input_channels > 1 else rule.input_channels
