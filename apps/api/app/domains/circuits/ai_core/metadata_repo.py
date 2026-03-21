@@ -43,6 +43,8 @@ class MetadataRepository:
         self._metadata: Dict[str, Dict] = {}        # template_id → metadata dict
         self._block_library: Dict[str, Dict] = {}   # block_type → block define
         self._grammar_rules: Dict[str, Any] = {}    # topology rules
+        self._coupling_rules: Dict[str, Dict[str, Any]] = {}
+        self._grammar_raw: Dict[str, Any] = {}
         self._loaded = False                        # cờ flag
 
     
@@ -113,7 +115,9 @@ class MetadataRepository:
         
         with open(gmar_path, "r", encoding="utf-8") as fil_path:
             data = json.load(fil_path)
+        self._grammar_raw = data
         self._grammar_rules = data.get("topology_rules", {})
+        self._coupling_rules = data.get("coupling_rules", {})
     
     def _mark_loaded(self) -> None:
         """ Đánh dấu đã load xong, tránh load lại nhiều lần. """
@@ -124,7 +128,8 @@ class MetadataRepository:
         logger.info(
             f"MetadataRepository loaded: {len(self._metadata)} metadata, "
                                        f"{len(self._block_library)} blocks, "
-                                       f"{len(self._grammar_rules)} grammar rules"
+                                       f"{len(self._grammar_rules)} grammar rules, "
+                                       f"{len(self._coupling_rules)} coupling rules"
         )
     
     def _ensure_loaded(self) -> None:
@@ -273,13 +278,19 @@ class MetadataRepository:
     def get_extension_rules(self) -> List[Dict[str, Any]]:
         """ Trả về danh sách extension rules. """
         self._ensure_loaded()
-        gr_path = Path(self._block_library_dir) / "grammar_rules.json"
-        
-        if gr_path.exists():
-            with open(gr_path, "r", encoding="utf-8") as fp:
-                data = json.load(fp)
-            return data.get("extension_rules", {}).get("allowed_extensions", [])
+        if self._grammar_raw:
+            return self._grammar_raw.get("extension_rules", {}).get("allowed_extensions", [])
         return []
+
+    def get_coupling_rule(self, coupling_mode: str) -> Optional[Dict[str, Any]]:
+        """Trả về định nghĩa coupling rule theo mode: capacitor|direct|transformer."""
+        self._ensure_loaded()
+        return self._coupling_rules.get(coupling_mode)
+
+    def list_coupling_modes(self) -> List[str]:
+        """Trả về danh sách mode nối tầng đang hỗ trợ."""
+        self._ensure_loaded()
+        return sorted(self._coupling_rules.keys())
 
     
     # ── Đóng gói hệ thống ──
