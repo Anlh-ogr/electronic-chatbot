@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .spec_parser import UserSpec
 from .metadata_repo import MetadataRepository
+from .ml_topology_selector import XGBoostTopologySelector
 
 """ lý do sử dụng thư viện
 _future__ annotations: tham chiếu đến biến/thamsố/giátrị trước khi tạo xong.
@@ -40,6 +41,9 @@ class TopologyPlan:
     matched_metadata: Optional[Dict[str, Any]] = None
     mode: str = "exact_template"  # exact_template | nearest_template | no_match
     suggested_extensions: List[Dict[str, Any]] = field(default_factory=list)
+    coupling_mode: str = "auto"
+    synthesis_plan: Dict[str, Any] = field(default_factory=dict)
+    lock_blocks: bool = False
     gain_formula: str = ""
     confidence: float = 0.0
 
@@ -50,6 +54,8 @@ class TopologyPlan:
             "matched_template_id": self.matched_template_id,
             "mode": self.mode,
             "suggested_extensions": self.suggested_extensions,
+            "coupling_mode": self.coupling_mode,
+            "synthesis_plan": self.synthesis_plan,
             "gain_formula": self.gain_formula,
             "confidence": round(self.confidence, 3),
         }
@@ -88,6 +94,10 @@ class TopologyPlanner:
      5. Chọn mạch đạt (max_score), suy ra mode và confidence
      6. Nếu có yêu cầu mở rộng (output_buffer, ...), thêm suggested_extensions (block)
     """
+    def __init__(self) -> None:
+        # ML advisor là optional: nếu model chưa có thì planner vẫn chạy rule-based.
+        self._ml_selector = XGBoostTopologySelector()
+
     def plan(self, spec: UserSpec, repo: MetadataRepository) -> TopologyPlan:
         """ pipeline: validate circuit type
                       grammar rule
@@ -111,7 +121,9 @@ class TopologyPlanner:
         if candidates:
             self._select_best_template(spec, plan, candidates, required_caps)
         else:
-            self._handle_no_candidates(plan)
+            self._handle_no_candidates(spec, plan)
+
+        self._build_synthesis_plan(spec, plan, repo)
         
         self._finalize_extensions(spec, plan, repo)
         self._log_plan(plan)
@@ -139,6 +151,18 @@ class TopologyPlanner:
             plan.rationale.append(f"Grammar rule '{grammar_key}' → blocks: {plan.blocks}")
         else:
             plan.rationale.append(f"No grammar rule for '{spec.circuit_type}', using family search")
+
+        if spec.circuit_type == "multi_stage" and len(spec.requested_stage_blocks) >= 2:
+            requested = spec.requested_stage_blocks
+            if self._is_valid_stage_chain(requested, repo):
+                plan.blocks = requested
+                plan.lock_blocks = True
+                plan.mode = "composed_topology"
+                plan.rationale.append(f"Use requested multi-stage chain: {requested}")
+            else:
+                plan.rationale.append(
+                    f"Requested chain {requested} is not compatible by block successor rules; fallback to grammar/template"
+                )
     
     
     # 4. Thu thập mẫu từ (family, pattern) -> merge theo id (family -> pattern)
@@ -165,8 +189,10 @@ class TopologyPlanner:
     
     # 5. tìm template tốt nhất theo hàm điểm tuyến tính, cập nhật plan với template_id, mode, confidence, rationale chi tiết
     def _select_best_template(self, spec: UserSpec, plan: TopologyPlan, candidates: List[Dict[str, Any]], required_caps: Dict[str, Any]) -> None:
+        ml_context = self._ml_selector.predict_context(spec)
+
         scored: List[Tuple[float, Dict[str, Any], Dict[str, float]]] = [
-            self._score_candidate(meta, spec, plan.blocks, required_caps)
+            self._score_candidate(meta, spec, plan.blocks, required_caps, ml_context)
             for meta in candidates
         ]
         
@@ -187,8 +213,13 @@ class TopologyPlanner:
         # Cập nhật block từ metadata thực tế
         fs = best.get("functional_structure", {})
         actual_blocks = [b["type"] for b in fs.get("blocks", []) if isinstance(b, dict) and "type" in b]
-        if actual_blocks:
+        if actual_blocks and not plan.lock_blocks:
             plan.blocks = actual_blocks
+        elif actual_blocks and plan.lock_blocks and actual_blocks != plan.blocks:
+            plan.mode = "composed_topology"
+            plan.rationale.append(
+                f"Template blocks {actual_blocks} differ from requested chain {plan.blocks}; keep composed chain"
+            )
 
         # Cập nhật gain formula nếu có trong metadata
         plan.gain_formula = fs.get("total_gain_formula", plan.gain_formula)
@@ -196,20 +227,113 @@ class TopologyPlanner:
             "Best candidate by weighted score "
             f"{best_score:.3f} (family={breakdown['family']:.2f}, "
             f"supply={breakdown['supply']:.2f}, cap={breakdown['capability']:.2f}, "
-            f"pattern={breakdown['pattern']:.2f}, priority={breakdown['priority']:.2f})"
+            f"pattern={breakdown['pattern']:.2f}, priority={breakdown['priority']:.2f}, "
+            f"ml={breakdown['ml']:.2f})"
         )
         # match template id và family để giải thích lý do chọn template đó
         plan.rationale.append(f"Matched template: {plan.matched_template_id} (family={best_family})")
         
     # 6. xử lý khi không tìm được mẫu phù hợp
-    def _handle_no_candidates(self, plan: TopologyPlan) -> None:
+    def _handle_no_candidates(self, spec: UserSpec, plan: TopologyPlan) -> None:
+        if spec.circuit_type == "multi_stage" and plan.blocks:
+            plan.mode = "composed_topology"
+            plan.confidence = 0.55
+            plan.rationale.append(
+                "No fixed template found; fallback to composed multi-stage synthesis from block grammar"
+            )
+            return
+
         plan.mode = "no_match"
         plan.confidence = 0.0
-        
         if plan.blocks:
             plan.rationale.append("No matching template found from family/pattern candidates")
         else:
             plan.rationale.append("No blocks resolved and no pattern available")
+
+    def _build_synthesis_plan(self, spec: UserSpec, plan: TopologyPlan, repo: MetadataRepository) -> None:
+        if len(plan.blocks) < 2:
+            return
+
+        is_multi_stage = spec.circuit_type == "multi_stage" or len(plan.blocks) > 1
+        if not is_multi_stage:
+            return
+
+        coupling_mode = self._select_coupling_mode(spec, plan, repo)
+        coupling_rule = repo.get_coupling_rule(coupling_mode)
+        if not coupling_rule:
+            coupling_mode = "capacitor"
+            coupling_rule = repo.get_coupling_rule(coupling_mode)
+
+        if not coupling_rule:
+            plan.rationale.append("Coupling rules unavailable; skipped synthesis plan")
+            return
+
+        stages = [
+            {"stage_id": f"stage{idx + 1}", "block": block}
+            for idx, block in enumerate(plan.blocks)
+        ]
+
+        interstage_links: List[Dict[str, Any]] = []
+        coupling_block = coupling_rule.get("intermediary_block", "ac_coupling_block")
+        prefix = coupling_rule.get("default_component_prefix", "CP")
+        default_params = coupling_rule.get("default_parameters", {})
+
+        for idx in range(len(stages) - 1):
+            src = stages[idx]
+            dst = stages[idx + 1]
+            interstage_links.append(
+                {
+                    "link_id": f"{src['stage_id']}_to_{dst['stage_id']}",
+                    "from_stage": src["stage_id"],
+                    "to_stage": dst["stage_id"],
+                    "from_block": src["block"],
+                    "to_block": dst["block"],
+                    "coupling_mode": coupling_mode,
+                    "coupling_block": coupling_block,
+                    "coupling_component_ref": f"{prefix}{idx + 1}",
+                    "parameters": default_params,
+                }
+            )
+
+        required_blocks = list(plan.blocks)
+        required_blocks.extend([link["coupling_block"] for link in interstage_links])
+
+        plan.coupling_mode = coupling_mode
+        plan.synthesis_plan = {
+            "family": spec.circuit_type,
+            "composition_type": "multi_stage",
+            "target_gain": spec.gain,
+            "stages": stages,
+            "interstage_links": interstage_links,
+            "required_blocks": required_blocks,
+            "constraints": coupling_rule.get("constraints", []),
+        }
+        plan.rationale.append(
+            f"Synthesis plan generated with coupling='{coupling_mode}' for {len(stages)} stages"
+        )
+
+    def _select_coupling_mode(self, spec: UserSpec, plan: TopologyPlan, repo: MetadataRepository) -> str:
+        supported_modes = set(repo.list_coupling_modes())
+        if not supported_modes:
+            return "capacitor"
+
+        preferred = (spec.coupling_preference or "auto").strip().lower()
+        if preferred != "auto" and preferred in supported_modes:
+            return preferred
+
+        if "ac_coupled" in set(spec.extra_requirements) and "capacitor" in supported_modes:
+            return "capacitor"
+
+        if preferred == "auto" and plan.matched_metadata:
+            hints = plan.matched_metadata.get("planner_hints", {})
+            supported_hint = hints.get("coupling_modes_supported", [])
+            if isinstance(supported_hint, list):
+                for mode in supported_hint:
+                    mode_text = str(mode).strip().lower()
+                    if mode_text in supported_modes:
+                        return mode_text
+
+        return "capacitor" if "capacitor" in supported_modes else sorted(supported_modes)[0]
     
     # 7. cần extension block không? (dựa trên spec + rules), thêm vào plan nếu có
     def _finalize_extensions(self, spec: UserSpec, plan: TopologyPlan, repo: MetadataRepository) -> None:
@@ -247,7 +371,14 @@ class TopologyPlanner:
     Thành phần: family match, supply compatibility, capability coverage, pattern similarity, priority hint.
     Trả về tổng điểm, metadata gốc, và breakdown chi tiết để giải thích.
     """
-    def _score_candidate(self, meta: Dict[str, Any], spec: UserSpec, planned_blocks: List[str], required_caps: List[str]) -> Tuple[float, Dict[str, Any], Dict[str, float]]:
+    def _score_candidate(
+        self,
+        meta: Dict[str, Any],
+        spec: UserSpec,
+        planned_blocks: List[str],
+        required_caps: List[str],
+        ml_context: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> Tuple[float, Dict[str, Any], Dict[str, float]]:
         domain = meta.get("domain", {})
         hints = meta.get("planner_hints", {})
         fs = meta.get("functional_structure", {})
@@ -257,13 +388,15 @@ class TopologyPlanner:
         capability_score = self._compute_capability_score(hints, required_caps)
         pattern_score = self._compute_pattern_score(fs, planned_blocks)
         priority_score = self._compute_priority_score(hints)
+        ml_score = self._ml_selector.score_candidate(meta, ml_context)
 
         total_score = self._combine_weighted_score(
             family=family_score,
             supply=supply_score,
             capability=capability_score,
             pattern=pattern_score,
-            priority=priority_score
+            priority=priority_score,
+            ml=ml_score,
         )
 
         breakdown = {
@@ -272,6 +405,7 @@ class TopologyPlanner:
             "capability": capability_score,
             "pattern": pattern_score,
             "priority": priority_score,
+            "ml": ml_score,
         }
         return total_score, meta, breakdown
     
@@ -321,13 +455,22 @@ class TopologyPlanner:
         return max(0.0, min(priority_score, 1.0))
     
     # Kết hợp các thành phần điểm với trọng số để tính tổng điểm cuối cùng
-    def _combine_weighted_score(self, family: float, supply: float, capability: float, pattern: float, priority: float) -> float:
+    def _combine_weighted_score(
+        self,
+        family: float,
+        supply: float,
+        capability: float,
+        pattern: float,
+        priority: float,
+        ml: float,
+    ) -> float:
         return (
-            0.35 * family
-            + 0.20 * supply
-            + 0.20 * capability
-            + 0.15 * pattern
+            0.30 * family
+            + 0.18 * supply
+            + 0.17 * capability
+            + 0.10 * pattern
             + 0.10 * priority
+            + 0.15 * ml
         )
 
 
@@ -338,6 +481,21 @@ class TopologyPlanner:
         """ Chuyển đổi score [0 1] sang confidence [0.3 0.98] - tránh confidence quá thấp (0.0) hoặc quá cao (1.0). Đảm bảo kết quả luôn nằm trong khoảng hợp lý."""
         s = max(0.0, min(score, 1.0))
         return 0.3 + 0.68 * s
+
+    def _is_valid_stage_chain(self, blocks: List[str], repo: MetadataRepository) -> bool:
+        if len(blocks) < 2:
+            return False
+
+        for idx in range(len(blocks) - 1):
+            current_block = blocks[idx]
+            next_block = blocks[idx + 1]
+            block_def = repo.get_block_definition(current_block) or {}
+            successors = block_def.get("compatible_successors", [])
+            if "any" in successors:
+                continue
+            if next_block not in successors:
+                return False
+        return True
 
     @staticmethod
     def _list_overlap_score(list_a: List[str], list_b: List[str]) -> float:
