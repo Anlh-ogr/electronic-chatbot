@@ -1,35 +1,46 @@
-""" Thiết lập kết nối bất đồng bộ với cơ sở dữ liệu (Database) sử dụng SQLAlchemy.
-Sử dụng engine cho cả app và session tạo mới theo từng request rồi đóng lại bằng 
-dependency `yield/finally` theo chuẩn """
+# .\\thesis\\electronic-chatbot\\apps\\api\\app\\db\\session.py
+"""Thiết lập Async Database Sessions using SQLAlchemy AsyncSession.
 
-# Gọi cấu hình config để lấy DATABASE_URL
+Module này cấu hình bất đồng bộ (async) connections tới PostgreSQL database
+sử dụng SQLAlchemy AsyncSession. Mỗi HTTP request sẽ mượn một phiên làm việc
+(session) riêng từ sessionmaker factory.
+
+Vietnamese:
+- Trách nhiệm: Tạo async engine, sessionmaker, session generator
+- Mô hình: Async SQLAlchemy 2.0+ style
+- Dependency: Dùng get_session() generator cho FastAPI Depends
+
+English:
+- Responsibility: Create async engine, sessionmaker, session generator
+- Pattern: Async SQLAlchemy 2.0+ style
+- Dependency: Use get_session() generator for FastAPI Depends
+"""
+
+# ====== Lý do sử dụng thư viện ======
+# sqlalchemy.ext.asyncio: Async database connections
+# config: Load DATABASE_URL từ environment
 from app.core.config import settings
-
-# Thiết lập kết nối với bất đồng bộ - khởi tạo engine, sessionmaker, transaction để tạo session gọi DB
-""" Đầu tiên, cần tạo một engine để kết nối đến DB_URL, chịu trách nhiệm quản lý pool kết nối.
-    Tiếp theo, viết một factory thiết lập cấu hình engine tạo session. 
-    Cuối cùng, viết transaction để thêm, sửa, xóa truy vấn trong DB và trả về phiên làm việc (session). """
-from sqlalchemy.ext.asyncio import  create_async_engine, AsyncSession, async_sessionmaker
-
-# Thiết lập cấu trúc bất đồng bộ với sqlalchemy để kết nối DB
-""" Sử dụng async def để định nghĩa hàm và generator() lấy `yield` để trả về giá trị.
-    Mỗi request (lần gọi API) sẽ mượn một phiên làm việc (session) riêng. """
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from collections.abc import AsyncGenerator
 
-""" Engine kết nối DB URL
- * Default Future = True để sử dụng các tính năng mới của SQLAlchemy 2.0
- * Echo = True để in các câu lệnh SQL ra console khi thực thi (DEBUG)
-"""
-engine = create_async_engine(settings.db_url, future=True, echo=False)
+
+# ====== Async Engine Configuration ======
+# Thiết lập bất đồng bộ (async) engine cho kết nối DB
+# Echo = True để in các câu lệnh SQL ra console khi thực thi (DEBUG)
+engine = create_async_engine(
+    settings.database_url.get_secret_value() if hasattr(settings, 'database_url') else "postgresql+asyncpg://localhost/db",
+    future=True,
+    echo=False
+)
 
 
-""" Tạo sessionmaker bất đồng bộ để tạo các phiên làm việc (session) với DB
-* Bind liên kết với engine
-* Class_ chỉ định lớp session bất đồng bộ
-* Autoflush = False để tắt tự động flush (gửi thay đổi đến DB) sau mỗi lệnh
-* Expire_on_commit = False để tắt tự động hết hạn đối tượng sau khi commit
-"""
-SessionLocal = async_sessionmaker(
+# ====== Session Factory Configuration ======
+# Tạo sessionmaker bất đồng bộ để tạo các phiên làm việc (session) với DB
+# - Bind: Liên kết với engine
+# - Class_: Chỉ định lớp session bất đồng bộ
+# - Autoflush = False: Tắt tự động flush (gửi thay đổi đến DB) sau mỗi lệnh
+# - Expire_on_commit = False: Tắt tự động hết hạn đối tượng sau khi commit
+async_session = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     autoflush=False,
@@ -37,12 +48,19 @@ SessionLocal = async_sessionmaker(
 )
 
 
-""" Dependency tạo session bất đồng bộ cho từng request API
- * yield kết quả phiên - trong route
- * finally đóng session sau khi xong request
-"""
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with SessionLocal() as session:
+# ====== Session Dependency Generator ======
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency tạo session bất đồng bộ cho từng request API.
+    
+    Sử dụng yield để trả lại session cho route handler.
+    Sau khi request kết thúc, finally block đóng session.
+    
+    Usage trong FastAPI route:
+        @app.get("/")
+        async def route(session: AsyncSession = Depends(get_session)):
+            ...
+    """
+    async with async_session() as session:
         try:
             yield session
         finally:
