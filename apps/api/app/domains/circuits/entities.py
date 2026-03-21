@@ -67,6 +67,7 @@ class ComponentType(Enum):
     DIODE = "diode"
     CONNECTOR = "connector"
     PORT = "port"
+    SUBCIRCUIT = "subcircuit"
 
     # ====== helpers ======
     """ Xây dựng bảng ánh xạ alias (tên thay thế) sang ComponentType.
@@ -97,6 +98,11 @@ class ComponentType(Enum):
         aliases["pmos"] = cls.MOSFET_P
         aliases["npn"] = cls.BJT_NPN
         aliases["pnp"] = cls.BJT_PNP
+        aliases["block"] = cls.SUBCIRCUIT
+        aliases["stage"] = cls.SUBCIRCUIT
+        aliases["jumper"] = cls.CONNECTOR
+        aliases["coupling"] = cls.CONNECTOR
+        aliases["transformer"] = cls.INDUCTOR
         return aliases
 
     """Chuyển đổi chuỗi bất kỳ (tên component, alias, hoa/thường) -> ComponentType chuẩn.
