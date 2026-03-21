@@ -78,7 +78,9 @@ class PipelineResult:
                 "output_buffer": self.spec.output_buffer,
                 "power_output": self.spec.power_output,
                 "supply_mode": self.spec.supply_mode,
+                "coupling_preference": self.spec.coupling_preference,
                 "device_preference": self.spec.device_preference,
+                "requested_stage_blocks": self.spec.requested_stage_blocks,
                 "extra_requirements": self.spec.extra_requirements,
             }
             
@@ -89,6 +91,8 @@ class PipelineResult:
                 "mode": self.plan.mode,
                 "confidence": self.plan.confidence,
                 "blocks": self.plan.blocks,
+                "coupling_mode": self.plan.coupling_mode,
+                "synthesis_plan": self.plan.synthesis_plan,
                 "gain_formula": self.plan.gain_formula,
                 "rationale": self.plan.rationale,
                 "suggested_extensions": self.plan.suggested_extensions,
@@ -204,15 +208,38 @@ class AICore:
         try:
             # Xác định family từ plan metadata
             family = ""
+            solve_metadata = plan.matched_metadata
             if plan.matched_metadata:
                 family = plan.matched_metadata.get("domain", {}).get("family", "")
             if not family:
                 family = spec.circuit_type
 
+            if family == "multi_stage" and plan.synthesis_plan:
+                stages = plan.synthesis_plan.get("stages", [])
+                topology_tokens = []
+                block_to_token = {
+                    "ce_block": "CE",
+                    "cb_block": "CB",
+                    "cc_block": "CC",
+                    "cs_block": "CS",
+                    "cd_block": "CD",
+                    "cg_block": "CG",
+                }
+                for stage in stages:
+                    block = str(stage.get("block", "")).strip().lower()
+                    topology_tokens.append(block_to_token.get(block, "CE"))
+
+                if topology_tokens:
+                    solve_metadata = dict(plan.matched_metadata or {})
+                    solver_hints = dict(solve_metadata.get("solver_hints", {}))
+                    solver_hints["num_stages"] = len(topology_tokens)
+                    solver_hints["topology"] = "+".join(topology_tokens)
+                    solve_metadata["solver_hints"] = solver_hints
+
             solved = self._solver.solve(
                 target_gain=spec.gain,
                 family=family,
-                metadata=plan.matched_metadata,
+                metadata=solve_metadata,
             )
             result.solved = solved
             result.stage_reached = "solve"
@@ -230,24 +257,47 @@ class AICore:
         # ── Step 4: Generate: Params -> GeneratedCircuit ──
         try:
             # Lấy template file từ metadata
-            template_file = self._resolve_template_file(plan.matched_template_id)
-            if not template_file:
+            template_file = self._resolve_template_file(plan.matched_template_id or "")
+            force_composed = plan.mode == "composed_topology" and bool(plan.synthesis_plan)
+
+            if force_composed:
+                circuit = self._generator.generate_from_composition(
+                    template_id=plan.matched_template_id or f"COMPOSED-{spec.circuit_type}",
+                    composition_plan=plan.synthesis_plan,
+                    solved_values=solved.values,
+                    gain_formula=plan.gain_formula,
+                    actual_gain=solved.actual_gain,
+                    suggested_extensions=plan.suggested_extensions,
+                    rationale=plan.rationale,
+                )
+            elif template_file:
+                circuit = self._generator.generate(
+                    template_id=plan.matched_template_id or "",
+                    template_file=template_file,
+                    solved_values=solved.values,
+                    gain_formula=plan.gain_formula,
+                    actual_gain=solved.actual_gain,
+                    suggested_extensions=plan.suggested_extensions,
+                    rationale=plan.rationale,
+                    composition_plan=plan.synthesis_plan,
+                )
+            elif plan.synthesis_plan:
+                circuit = self._generator.generate_from_composition(
+                    template_id=plan.matched_template_id or f"COMPOSED-{spec.circuit_type}",
+                    composition_plan=plan.synthesis_plan,
+                    solved_values=solved.values,
+                    gain_formula=plan.gain_formula,
+                    actual_gain=solved.actual_gain,
+                    suggested_extensions=plan.suggested_extensions,
+                    rationale=plan.rationale,
+                )
+            else:
                 result.success = False
                 result.stage_reached = "generate"
                 result.error = (
                     f"Cannot resolve template file for {plan.matched_template_id}"
                 )
                 return result
-
-            circuit = self._generator.generate(
-                template_id=plan.matched_template_id,
-                template_file=template_file,
-                solved_values=solved.values,
-                gain_formula=plan.gain_formula,
-                actual_gain=solved.actual_gain,
-                suggested_extensions=plan.suggested_extensions,
-                rationale=plan.rationale,
-            )
             result.circuit = circuit
             result.stage_reached = "generate"
             result.success = circuit.success
