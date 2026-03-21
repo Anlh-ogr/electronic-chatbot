@@ -388,7 +388,8 @@ class NgSpiceSimulationService:
             for port in ports:
                 if not isinstance(port, dict):
                     continue
-                if str(port.get("direction", "")).lower() != "input":
+                direction = str(port.get("direction") or port.get("type") or "").lower()
+                if direction != "input":
                     continue
                 net = str(port.get("net") or port.get("net_name") or "").strip().lower()
                 if net:
@@ -724,6 +725,14 @@ class NgSpiceSimulationService:
                 normalized.append(p0.replace("vin", "vout"))
             elif "vout" in p0 and "vin" not in p0:
                 normalized.append(p0.replace("vout", "vin"))
+            elif "net_in" in p0 and "net_out" not in p0:
+                normalized.append(p0.replace("net_in", "net_out"))
+            elif "net_out" in p0 and "net_in" not in p0:
+                normalized.append(p0.replace("net_out", "net_in"))
+            elif "input" in p0 and "output" not in p0:
+                normalized.append(p0.replace("input", "output"))
+            elif "output" in p0 and "input" not in p0:
+                normalized.append(p0.replace("output", "input"))
 
         if not normalized:
             normalized = ["v(in)", "v(out)"]
