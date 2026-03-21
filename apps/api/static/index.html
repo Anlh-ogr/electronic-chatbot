@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electronic Circuit Chatbot</title>
+    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260218">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <!-- Logo chính thức: ..\apps\api\static\logo -->
+                <!-- <img src="/static/logo/System-logo1.png" alt="Official System Logo" class="system-logo"> -->
+                <img src="/static/logo/System-logo2.png" alt="Official System Logo" class="system-logo" style="max-height:55px; max-width:120px; width:auto; height:auto; object-fit:contain; margin:0 auto;">
+                <!-- <i class="fas fa-microchip"></i> -->
+                <h1 style="margin-top: 2px; margin-left: -25px; font-size: 1.45rem; display: inline-block;">Elpis</h1>
+                <span class="version-badge" style="font-size: 1.1rem; vertical-align: middle;">v3.0</span>
+            </div>
+            <div class="header-right">
+                <span class="status-dot" id="statusDot"></span>
+                <span class="status-text" id="statusText">Connecting...</span>
+                <button class="btn-icon" id="btnInfo" title="System Info">
+                    <i class="fas fa-info-circle"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel: Chat -->
+            <div class="chat-panel">
+                <div class="chat-messages" id="chatMessages">
+                    <!-- Welcome message -->
+                    <div class="message bot-message">
+                        <div class="message-avatar">
+                            <img src="/static/logo/System-icon.png" alt="Bot Avatar" style="width: 40px; height: 40px; object-fit: contain;">
+                        </div>
+                        <div class="message-content">
+                            <div class="message-text">
+                                <p>👋 Xin chào! Tôi là AI thiết kế mạch điện.</p>
+                                <p>Tôi có thể giúp:</p>
+                                <ul>
+                                    <li>Thiết kế mạch khuếch đại (CE, CB, CC, OpAmp...)</li>
+                                    <li>Tính toán linh kiện (R, C values)</li>
+                                    <li>Hiển thị schematic</li>
+                                </ul>
+                                <p><strong>Thử:</strong> "Thiết kế mạch CE gain 50 dùng 12V"</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Suggestions -->
+                <div class="suggestions" id="suggestions">
+                    <button class="suggestion-chip" onclick="sendSuggestion('Thiết kế mạch CE gain 50 dùng 12V')">
+                        <i class="fas fa-bolt"></i> Mạch CE gain 50
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('OpAmp inverting gain 10')">
+                        <i class="fas fa-bolt"></i> OpAmp inverting gain 10
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('Common collector emitter follower 12V')">
+                        <i class="fas fa-bolt"></i> CC emitter follower
+                    </button>
+                    <button class="suggestion-chip" onclick="sendSuggestion('Mạch class AB push-pull 12V')">
+                        <i class="fas fa-bolt"></i> Class AB push-pull
+                    </button>
+                </div>
+
+                <!-- Input area -->
+                <div class="chat-input-area">
+                    <div class="input-wrapper">
+                        <textarea
+                            id="chatInput"
+                            placeholder="Nhập yêu cầu thiết kế mạch ... (Enter để gửi)"
+                            rows="1"
+                        ></textarea>
+                        <button class="btn-send" id="btnSend" title="Gửi">
+                            <i class="fas fa-paper-plane"></i>
+                        </button>
+                    </div>
+                    <div class="input-footer">
+                        <span class="powered-by">A Anlh Production &bull; © 2026</span>
+                        <span class="processing-time" id="processingTime"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-resizer" id="panelResizer" title="Kéo để đổi kích thước khung chat/render"></div>
+
+            <!-- Right Panel: Schematic + Details -->
+            <div class="detail-panel" id="detailPanel">
+                <!-- Tab bar -->
+                <div class="tab-bar">
+                    <button class="tab active" data-tab="schematic" onclick="switchTab('schematic')">
+                        <i class="fas fa-project-diagram"></i> Schematic
+                    </button>
+                    <button class="tab" data-tab="pcb" onclick="switchTab('pcb')">
+                        <i class="fas fa-th"></i> PCB
+                    </button>
+                    <button class="tab" data-tab="params" onclick="switchTab('params')">
+                        <i class="fas fa-table"></i> Thông số
+                    </button>
+                    <button class="tab" data-tab="analysis" onclick="switchTab('analysis')">
+                        <i class="fas fa-search-plus"></i> Phân tích
+                    </button>
+                    <button class="tab" data-tab="waveform" onclick="switchTab('waveform')">
+                        <i class="fas fa-wave-square"></i> Waveform
+                    </button>
+                </div>
+
+                <!-- Schematic tab -->
+                <div class="tab-content active" id="tab-schematic">
+                    <div class="schematic-toolbar" id="schematicToolbar" style="display:none">
+                        <span class="toolbar-title" id="schematicTitle">Schematic</span>
+                        <div class="toolbar-actions">
+                            <button class="btn-toolbar" id="btnRunSim" title="Run simulation" style="display:none">
+                                <i class="fas fa-play"></i> Run Simulation
+                            </button>
+                            <button class="btn-toolbar" id="btnDownloadSch" title="Download .kicad_sch">
+                                <i class="fas fa-download"></i> SCH
+                            </button>
+                            <button class="btn-toolbar" id="btnShowComponents" title="Danh sách linh kiện">
+                                <i class="fas fa-list"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="schematic-placeholder" id="schematicArea">
+                        <div class="placeholder-content" id="schematicPlaceholder">
+                            <i class="fas fa-microchip fa-3x"></i>
+                            <p>Schematic sẽ hiển thị ở đây</p>
+                            <p class="sub-text">Gửi yêu cầu thiết kế để bắt đầu</p>
+                        </div>
+                        <!-- KiCanvas rendered here dynamically -->
+                    </div>
+                    <!-- Component list (collapsible) -->
+                    <div class="component-list-panel" id="componentListPanel" style="display:none">
+                    </div>
+                </div>
+
+                <!-- PCB tab -->
+                <div class="tab-content" id="tab-pcb">
+                    <div class="schematic-toolbar" id="pcbToolbar" style="display:none">
+                        <span class="toolbar-title" id="pcbTitle">PCB Layout</span>
+                        <div class="toolbar-actions">
+                            <button class="btn-toolbar" id="btnDownloadPCB" title="Download .kicad_pcb">
+                                <i class="fas fa-download"></i> Tải PCB
+                            </button>
+                        </div>
+                    </div>
+                    <div class="schematic-placeholder" id="pcbArea">
+                        <div class="placeholder-content" id="pcbPlaceholder">
+                            <i class="fas fa-th fa-3x"></i>
+                            <p>PCB Layout sẽ hiển thị ở đây</p>
+                            <p class="sub-text">Tạo mạch và chuyển sang tab PCB để xem</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Params tab -->
+                <div class="tab-content" id="tab-params">
+                    <div class="params-content" id="paramsContent">
+                        <div class="placeholder-content">
+                            <i class="fas fa-table fa-3x"></i>
+                            <p>Chưa có thông số</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analysis tab -->
+                <div class="tab-content" id="tab-analysis">
+                    <div class="analysis-content" id="analysisContent">
+                        <div class="placeholder-content">
+                            <i class="fas fa-search-plus fa-3x"></i>
+                            <p>Chưa có phân tích</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Waveform tab -->
+                <div class="tab-content" id="tab-waveform">
+                    <div class="waveform-panel">
+                        <div class="placeholder-content" id="waveformEmpty">
+                            <i class="fas fa-wave-square fa-3x"></i>
+                            <p>Chưa có dữ liệu waveform</p>
+                            <p class="sub-text">Dùng lệnh /simulate để chạy ngspice trực tiếp trong chatbot</p>
+                        </div>
+                        <div class="waveform-canvas-wrap">
+                            <canvas id="waveformCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Info Modal -->
+    <div class="modal-overlay" id="infoModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2><i class="fas fa-info-circle"></i> System Information</h2>
+                <button class="btn-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="infoModalBody">
+                <p>Loading...</p>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/static/kicanvas/kicanvas.js?v=20260213"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="/static/js/markdown.js?v=20260318"></script>
+    <script src="/static/js/chatbot.js?v=20260320a"></script>
+</body>
+</html>
