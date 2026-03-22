@@ -280,118 +280,145 @@ class ParameterSolver:
         )
         return result
 
+    def _bjt_voltage_divider_bias(self, vcc: float, ic_ma: float, rc: float = 0.0, re: float = 0.0) -> tuple[float, float]:
+        rc_dc = max(rc, 1.0)
+        re_dc = max(re, 0.1 * vcc / (ic_ma / 1000.0))
+        ve = ic_ma / 1000.0 * re_dc
+        vb = ve + 0.7
+        # I_divider ≈ 10 * Ib
+        beta = 100
+        ib = (ic_ma / 1000.0) / beta
+        i_div = 10 * ib
+        R2 = vb / i_div
+        R1 = (vcc - vb) / (i_div + ib)
+        return self._snap(R1), self._snap(R2)
+
+    def _fet_voltage_divider_bias(self, vcc: float, id_ma: float, rd: float = 0.0, rs: float = 0.0) -> tuple[float, float]:
+        rs_dc = max(rs, 0.1 * vcc / (id_ma / 1000.0))
+        vs = id_ma / 1000.0 * rs_dc
+        vgs = -2.0  # approximate
+        vg = vs + vgs
+        if vg <= 0:
+            vg = 1.0 
+        R2 = 1_000_000  # 1M
+        i_div = vg / R2
+        R1 = (vcc - vg) / i_div
+        return self._snap(R1), self._snap(R2)
+
     def _solve_ce(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ Gain ≈ RC / re (bypassed) hoặc RC / (re + RE) (unbypassed).
-        meta solver_hints:
-          ic_ma (mA)  : collector current → re = 26 / ic_ma  (default 2 mA → re≈13Ω)
-          bypassed    : True/False bỏ qua tụ CE (default True)
-        """
         result = SolvedParams()
         hints = (meta or {}).get("solver_hints", {})
-        ic_ma = hints.get("ic_ma", 2.0)
-        bypassed = hints.get("bypassed", True)
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        ic_ma = float(hints.get("ic_ma") or 1.0)
+        rc_dc = (0.45 * vcc) / (ic_ma / 1000.0)
+        re_ac = 26.0 / ic_ma 
+        rc = self._snap(rc_dc)
+        re = self._snap(rc / gain) if gain > 0 else 0
+        r1, r2 = self._bjt_voltage_divider_bias(vcc, ic_ma, rc, max(re_ac, re))
 
-        re = 26.0 / ic_ma  # emitter resistance ≈ VT / IC
-
-        if bypassed:
-            rc = self._snap(gain * re)
-            re_ext = self._snap(rc / 10)  # RE ≈ RC/10 cho DC stability
-            actual_gain = rc / re
-            formula = "Av ≈ -RC / re (CE bypassed)"
-            gain_formula = "Av ≈ -RC / re"
-        else:
-            # Av = RC / (re + RE), chọn RE cố định rồi tính RC
-            re_ext = self._snap(max(re * 5, 100))          # RE ≥ 5·re
-            rc = self._snap(gain * (re + re_ext))
-            actual_gain = rc / (re + re_ext)
-            formula = "Av ≈ -RC / (re + RE) (CE unbypassed)"
-            gain_formula = "Av ≈ -RC / (re + RE)"
-
-        result.values = {"RC": rc, "RE": re_ext}
-        result.actual_gain = actual_gain
-        result.gain_error_percent = abs(actual_gain - gain) / gain * 100
-        result.equations_used = [formula, f"re = 26mV/{ic_ma}mA = {re:.1f}Ω"]
-        result.gain_formula = gain_formula
-        result.message = f"CE: RC={rc}Ω, RE={re_ext}Ω → |Av|≈{actual_gain:.1f} (IC={ic_ma}mA, {'bypassed' if bypassed else 'unbypassed'})"
+        result.values = {"RC": rc, "RE": max(self._snap(re_ac), re), "R1": r1, "R2": r2}
+        result.actual_gain = rc / max(re_ac, re)
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100 if gain > 0 else 0
+        result.equations_used = ["Av ≈ RC / (re' + RE)", "re' = 26mV / Ic"]
+        result.gain_formula = "Av ≈ RC / (RE + re')"
+        result.message = f"CE: RC={rc}Ω, RE={max(self._snap(re_ac), re)}Ω, R1={r1}, R2={r2} → Av={result.actual_gain:.1f}"
         return result
 
     def _solve_cb(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ Gain ≈ RC / re.
-        meta solver_hints:
-          ic_ma (mA): collector current → re = 26 / ic_ma  (default 2 mA)
-        """
         result = SolvedParams()
         hints = (meta or {}).get("solver_hints", {})
-        ic_ma = hints.get("ic_ma", 2.0)
-        re = 26.0 / ic_ma
-        rc = self._snap(gain * re)
-
-        result.values = {"RC": rc}
-        result.actual_gain = rc / re
-        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
-        result.equations_used = ["Av ≈ RC / re", f"re = 26mV/{ic_ma}mA = {re:.1f}Ω"]
-        result.gain_formula = "Av ≈ RC / re"
-        result.message = f"CB: RC={rc}Ω → Av≈{result.actual_gain:.1f} (IC={ic_ma}mA)"
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        ic_ma = float(hints.get("ic_ma") or 1.0)
+        re_ac = 26.0 / ic_ma
+        rc_dc = (0.45 * vcc) / (ic_ma / 1000.0)
+        re_dc = (0.10 * vcc) / (ic_ma / 1000.0)
+        rc = self._snap(rc_dc)
+        re = self._snap(re_dc)
+        r1, r2 = self._bjt_voltage_divider_bias(vcc, ic_ma, rc, re)
+        
+        result.values = {"RC": rc, "RE": re, "R1": r1, "R2": r2}
+        result.actual_gain = rc / re_ac
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100 if gain > 0 else 0
+        result.equations_used = ["Av ≈ RC / re'", "re' = 26mV / Ic(mA)"]
+        result.gain_formula = "Av ≈ RC / re'"
+        result.message = f"CB: RC={rc}Ω, RE={re}Ω, R1={r1}, R2={r2} → Av={result.actual_gain:.1f}"
         return result
 
     def _solve_cc(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ CC: gain ≈ 1, chỉ tính RE.
-        meta solver_hints:
-          re_base (Ω): giá trị RE cơ sở (default 1 000)
-        """
         result = SolvedParams()
         hints = (meta or {}).get("solver_hints", {})
-        re_base = hints.get("re_base", 1_000)
-        re_ext = self._snap(re_base)
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        ic_ma = float(hints.get("ic_ma") or 1.0)
+        re_dc = (0.50 * vcc) / (ic_ma / 1000.0)
+        re = self._snap(re_dc)
+        r1, r2 = self._bjt_voltage_divider_bias(vcc, ic_ma, 0.0, re)
 
-        result.values = {"RE": re_ext}
-        result.actual_gain = 1.0
-        result.gain_error_percent = 0
-        result.equations_used = ["Av ≈ 1 (emitter follower)"]
+        result.values = {"RE": re, "R1": r1, "R2": r2}
+        result.actual_gain = 0.99
+        result.gain_error_percent = 0.0
+        result.equations_used = ["Av ≈ 1 (Emitter Follower)"]
         result.gain_formula = "Av ≈ 1"
-        result.message = f"CC: RE={re_ext}Ω, Av≈1"
+        result.message = f"CC: RE={re}Ω, R1={r1}, R2={r2} → Av=0.99"
         return result
 
     def _solve_cs(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ Gain ≈ gm * RD.
-        meta solver_hints:
-          gm_ma (mA/V): transconductance (default 5 mA/V)
-        """
         result = SolvedParams()
         hints = (meta or {}).get("solver_hints", {})
+        vcc = float((meta or {}).get("vcc") or 12.0)
         gm_ma = hints.get("gm_ma", 5.0)
-        gm = gm_ma / 1000  # convert mA/V → A/V
-        rd = self._snap(gain / gm)
+        gm = gm_ma / 1000.0
+        id_ma = float(hints.get("id_ma") or 2.0)
+        rd_dc = (0.45 * vcc) / (id_ma / 1000.0)
+        rs_dc = (0.10 * vcc) / (id_ma / 1000.0)
+        rd = self._snap(rd_dc)
+        rs = self._snap(rs_dc)
+        rg1, rg2 = self._fet_voltage_divider_bias(vcc, id_ma, rd, rs)
 
-        result.values = {"RD": rd}
+        result.values = {"RD": rd, "RS": rs, "R1": rg1, "R2": rg2}
         result.actual_gain = gm * rd
-        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100
-        result.equations_used = [f"Av ≈ gm × RD (CS), gm={gm_ma}mA/V"]
-        result.gain_formula = "Av ≈ gm × RD"
-        result.message = f"CS: RD={rd}Ω → Av≈{result.actual_gain:.1f} (gm={gm_ma}mA/V)"
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100 if gain > 0 else 0
+        result.equations_used = ["Av ≈ gm * RD"]
+        result.gain_formula = "Av ≈ gm * RD"
+        result.message = f"CS: RD={rd}Ω, RS={rs}Ω, R1={rg1}, R2={rg2} → Av={result.actual_gain:.1f}"
         return result
 
     def _solve_cd(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ CD: gain ≈ 1.
-        meta solver_hints:
-          rs_base (Ω): giá trị RS cơ sở (default 1 000)
-        """
         result = SolvedParams()
         hints = (meta or {}).get("solver_hints", {})
-        rs_base = hints.get("rs_base", 1_000)
-        rs = self._snap(rs_base)
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        id_ma = float(hints.get("id_ma") or 2.0)
+        rs_dc = (0.50 * vcc) / (id_ma / 1000.0)
+        rs = self._snap(rs_dc)
+        rg1, rg2 = self._fet_voltage_divider_bias(vcc, id_ma, 0.0, rs)
 
-        result.values = {"RS": rs}
-        result.actual_gain = 1.0
-        result.gain_error_percent = 0
-        result.equations_used = ["Av ≈ 1 (source follower)"]
+        result.values = {"RS": rs, "R1": rg1, "R2": rg2}
+        result.actual_gain = 0.95
+        result.gain_error_percent = 0.0
+        result.equations_used = ["Av ≈ 1 (Source Follower)"]
         result.gain_formula = "Av ≈ 1"
-        result.message = f"CD: RS={rs}Ω, Av≈1"
+        result.message = f"CD: RS={rs}Ω, R1={rg1}, R2={rg2} → Av=0.95"
         return result
 
     def _solve_cg(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
-        """ Gain ≈ gm * RD. """
-        return self._solve_cs(gain, meta)  # Same formula
+        result = SolvedParams()
+        hints = (meta or {}).get("solver_hints", {})
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        gm_ma = hints.get("gm_ma", 5.0)
+        gm = gm_ma / 1000.0
+        id_ma = float(hints.get("id_ma") or 2.0)
+        rd_dc = (0.45 * vcc) / (id_ma / 1000.0)
+        rs_dc = (0.10 * vcc) / (id_ma / 1000.0)
+        rd = self._snap(rd_dc)
+        rs = self._snap(rs_dc)
+        rg1, rg2 = self._fet_voltage_divider_bias(vcc, id_ma, rd, rs)
+
+        result.values = {"RD": rd, "RS": rs, "R1": rg1, "R2": rg2}
+        result.actual_gain = gm * rd
+        result.gain_error_percent = abs(result.actual_gain - gain) / gain * 100 if gain > 0 else 0
+        result.equations_used = ["Av ≈ gm * RD"]
+        result.gain_formula = "Av ≈ gm * RD"
+        result.message = f"CG: RD={rd}Ω, RS={rs}Ω, R1={rg1}, R2={rg2} → Av={result.actual_gain:.1f}"
+        return result
 
     def _solve_darlington(self, gain: float, meta: Optional[Dict]) -> SolvedParams:
         """ Current gain = β1 * β2. Chọn β phù hợp.
