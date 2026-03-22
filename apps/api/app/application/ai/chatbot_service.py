@@ -20,6 +20,7 @@ Nguyên tắc:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -372,10 +373,20 @@ class ChatbotService:
 
             circuit_data = circuit.circuit_data
             solved_values = solved.values if solved else {}
+            gain_for_validation = self._resolve_gain_for_validation(
+                solved_values=solved_values,
+                fallback_gain=(solved.actual_gain if solved else None),
+            )
+            solved_for_validation = self._prepare_validation_metrics(
+                intent=intent,
+                solved_values=solved_values,
+                gain_actual=gain_for_validation,
+                stage_analysis=(solved.stage_analysis if solved else None),
+            )
 
             # Validate
             val_report = self._validator.validate(
-                circuit_data, intent.to_dict(), solved_values,
+                circuit_data, intent.to_dict(), solved_for_validation,
             )
             response.validation = val_report.to_dict()
 
@@ -391,6 +402,60 @@ class ChatbotService:
                     solved_values = repair_result.solved_params
                     response.validation = repair_result.final_report.to_dict() if repair_result.final_report else response.validation
                     logger.info(f"Repair successful: {len(repair_result.actions)} actions")
+
+            # Final validation pass with latest solved/circuit state.
+            gain_for_validation = self._resolve_gain_for_validation(
+                solved_values=solved_values,
+                fallback_gain=(solved.actual_gain if solved else None),
+            )
+            solved_for_validation = self._prepare_validation_metrics(
+                intent=intent,
+                solved_values=solved_values,
+                gain_actual=gain_for_validation,
+                stage_analysis=(solved.stage_analysis if solved else None),
+            )
+            val_report = self._validator.validate(
+                circuit_data, intent.to_dict(), solved_for_validation,
+            )
+            response.validation = val_report.to_dict()
+
+            # Fail-fast gate: if hard constraints fail, retry pipeline with stricter strategy before returning.
+            if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                failed_codes = self._extract_validation_error_codes(val_report)
+                retry_bundle = self._retry_pipeline_for_hard_constraints(
+                    intent=intent,
+                    failed_codes=failed_codes,
+                    max_attempts=2,
+                )
+                if retry_bundle:
+                    pipeline_result = retry_bundle["pipeline_result"]
+                    circuit = pipeline_result.circuit
+                    solved = pipeline_result.solved
+                    circuit_data = circuit.circuit_data if circuit else circuit_data
+                    solved_values = solved.values if solved else {}
+                    val_report = retry_bundle["validation_report"]
+
+                    response.pipeline = pipeline_result.to_dict()
+                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
+                    response.validation = val_report.to_dict()
+                    logger.info(
+                        "Hard-constraint regeneration succeeded with template=%s",
+                        response.template_id,
+                    )
+
+            if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                failed_codes = self._extract_validation_error_codes(val_report)
+                response.success = False
+                response.message = self._nlg.generate_error_response(
+                    error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
+                    stage="validate",
+                    circuit_type=intent.circuit_type,
+                    gain_target=intent.gain_target,
+                    vcc=intent.vcc,
+                    mode=mode,
+                )
+                response.processing_time_ms = (time.time() - start) * 1000
+                return response
 
             # Enrich circuit_data with simulation schema extracted from user prompt.
             self._apply_simulation_requirements(intent, circuit_data)
@@ -481,15 +546,25 @@ class ChatbotService:
             pipeline_result = self._ai_core.handle_spec(spec)
 
             if pipeline_result.success and pipeline_result.circuit:
-                import copy
                 circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data)
                 solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
 
                 # Apply edit operations
                 edit_log = self._apply_edits(circuit_data, intent.edit_operations)
 
+                gain_for_validation = self._resolve_gain_for_validation(
+                    solved_values=solved,
+                    fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                )
+                solved_for_validation = self._prepare_validation_metrics(
+                    intent=intent,
+                    solved_values=solved,
+                    gain_actual=gain_for_validation,
+                    stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                )
+
                 # Validate
-                val_report = self._validator.validate(circuit_data, intent.to_dict(), solved)
+                val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
                 response.validation = val_report.to_dict()
 
                 if not val_report.passed:
@@ -498,6 +573,62 @@ class ChatbotService:
                     if repair_result.repaired:
                         circuit_data = repair_result.circuit_data
                         solved = repair_result.solved_params
+
+                gain_for_validation = self._resolve_gain_for_validation(
+                    solved_values=solved,
+                    fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                )
+                solved_for_validation = self._prepare_validation_metrics(
+                    intent=intent,
+                    solved_values=solved,
+                    gain_actual=gain_for_validation,
+                    stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                )
+                val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                response.validation = val_report.to_dict()
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    retry_bundle = self._retry_pipeline_for_hard_constraints(
+                        intent=intent,
+                        failed_codes=failed_codes,
+                        max_attempts=2,
+                    )
+
+                    if retry_bundle:
+                        pipeline_result = retry_bundle["pipeline_result"]
+                        circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
+                        solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
+                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
+
+                        gain_for_validation = self._resolve_gain_for_validation(
+                            solved_values=solved,
+                            fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                        )
+                        solved_for_validation = self._prepare_validation_metrics(
+                            intent=intent,
+                            solved_values=solved,
+                            gain_actual=gain_for_validation,
+                            stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                        )
+                        val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                        response.validation = val_report.to_dict()
+                        response.pipeline = pipeline_result.to_dict()
+                        response.template_id = pipeline_result.plan.matched_template_id if pipeline_result.plan else response.template_id
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    response.success = False
+                    response.message = self._nlg.generate_error_response(
+                        error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
+                        stage="validate",
+                        circuit_type=intent.circuit_type,
+                        gain_target=intent.gain_target,
+                        vcc=intent.vcc,
+                        mode=mode,
+                    )
+                    response.processing_time_ms = (time.time() - start) * 1000
+                    return response
 
                 # Keep simulation schema consistent after edits.
                 self._apply_simulation_requirements(intent, circuit_data)
@@ -550,9 +681,48 @@ class ChatbotService:
 
             if pipeline_result.success and pipeline_result.circuit:
                 solved = pipeline_result.solved.values if pipeline_result.solved else {}
-                val_report = self._validator.validate(
-                    pipeline_result.circuit.circuit_data, intent.to_dict(), solved,
+                gain_for_validation = self._resolve_gain_for_validation(
+                    solved_values=solved,
+                    fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
                 )
+                solved_for_validation = self._prepare_validation_metrics(
+                    intent=intent,
+                    solved_values=solved,
+                    gain_actual=gain_for_validation,
+                    stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                )
+                val_report = self._validator.validate(
+                    pipeline_result.circuit.circuit_data, intent.to_dict(), solved_for_validation,
+                )
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    retry_bundle = self._retry_pipeline_for_hard_constraints(
+                        intent=intent,
+                        failed_codes=failed_codes,
+                        max_attempts=2,
+                    )
+                    if retry_bundle:
+                        pipeline_result = retry_bundle["pipeline_result"]
+                        solved = pipeline_result.solved.values if pipeline_result.solved else {}
+                        val_report = retry_bundle["validation_report"]
+                        response.pipeline = pipeline_result.to_dict()
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    response.success = False
+                    response.validation = val_report.to_dict()
+                    response.message = self._nlg.generate_error_response(
+                        error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
+                        stage="validate",
+                        circuit_type=intent.circuit_type,
+                        gain_target=intent.gain_target,
+                        vcc=intent.vcc,
+                        mode=mode,
+                    )
+                    response.processing_time_ms = (time.time() - start) * 1000
+                    return response
+
                 response.validation = val_report.to_dict()
                 response.success = True
                 response.circuit_data = pipeline_result.circuit.circuit_data
@@ -709,8 +879,8 @@ class ChatbotService:
         )
         if result and result.get("is_electronics") is False:
             return (
-                "⚠️ Xin lỗi, tôi chỉ hỗ trợ các câu hỏi về **thiết kế mạch điện tử** "
-                "(khuếch đại, nguồn, lọc, dao động, ...). "
+                "⚠️ Xin lỗi, tôi chỉ hỗ trợ các câu hỏi về **thiết kế mạch** "
+                "(khuếch đại,BJT,mosfet, op-amp, ...). "
                 "Vui lòng đặt câu hỏi liên quan đến mạch điện!"
             )
         return None
@@ -751,14 +921,20 @@ class ChatbotService:
         system = (
             "Bạn là kỹ sư thiết kế mạch điện tử. "
             "Hệ thống rule-based không tìm được template phù hợp. "
-            "Hãy thiết kế mạch dựa trên yêu cầu, trình bày theo 6 phần:\n"
-            "1. **Bảng linh kiện** (tên, giá trị, công dụng)\n"
-            "2. **Giải pháp** (topology, lý do chọn)\n"
-            "3. **Chức năng mạch** (mô tả hoạt động)\n"
-            "4. **Bước tính toán** (công thức, thay số, kết quả)\n"
-            "5. **Thông số kỹ thuật** (bảng tóm tắt)\n"
-            "6. **Kết quả kiểm tra** (nhận xét, cảnh báo)\n\n"
-            "Dùng Markdown, tiếng Việt. Nếu không đủ thông tin, nêu giả định rõ ràng."
+            "Hãy thiết kế mạch dựa trên yêu cầu, trình bày ĐÚNG 6 phần, đúng thứ tự, không thêm mục khác:\n"
+            "1. **Hệ phương trình khuếch đại**\n"
+            "   - Phương trình khuếch đại chính:\n"
+            "   - Hệ số khuếch đại điện áp: Av≈−gm×(RD∣∣RL)\n"
+            "2. **Chức năng**\n"
+            "3. **Giải pháp**\n"
+            "4. **Tính toán**\n"
+            "5. **Thông số kỹ thuật**\n"
+            "6. **Kết quả**\n\n"
+            "Ràng buộc bắt buộc:\n"
+            "- Không dùng emoji/ký hiệu như ✅, ❌.\n"
+            "- Không dùng cụm: 'Av là chìa khóa'.\n"
+            "- Không đổi tiêu đề các mục.\n"
+            "- Dùng Markdown, tiếng Việt. Nếu không đủ thông tin, nêu giả định rõ ràng."
         )
         params_desc = []
         if intent.circuit_type:
@@ -847,11 +1023,24 @@ class ChatbotService:
     def _intent_to_spec(self, intent: CircuitIntent) -> UserSpec:
         """Chuyển CircuitIntent → UserSpec cho AI Core (không qua text)."""
         requested_blocks = self._infer_stage_blocks_from_text(intent.raw_text)
-        coupling_pref = self._infer_coupling_preference_from_text(intent.raw_text)
+        hard_constraints = intent.hard_constraints or {}
+        coupling_pref = (
+            "direct"
+            if hard_constraints.get("direct_coupling_required")
+            else self._infer_coupling_preference_from_text(intent.raw_text)
+        )
+
+        resolved_gain = intent.gain_target
+        gain_min = hard_constraints.get("gain_min")
+        gain_max = hard_constraints.get("gain_max")
+        if not isinstance(resolved_gain, (int, float)) and isinstance(gain_min, (int, float)) and isinstance(gain_max, (int, float)):
+            resolved_gain = (float(gain_min) + float(gain_max)) / 2.0
+        elif not isinstance(resolved_gain, (int, float)) and isinstance(gain_min, (int, float)):
+            resolved_gain = float(gain_min)
 
         return UserSpec(
             circuit_type=intent.circuit_type,
-            gain=intent.gain_target,
+            gain=resolved_gain,
             vcc=intent.vcc,
             frequency=intent.frequency,
             input_channels=intent.input_channels,
@@ -934,7 +1123,7 @@ class ChatbotService:
         composition_plan = circuit_data.get("composition_plan") if isinstance(circuit_data, dict) else None
         if isinstance(composition_plan, dict):
             target_gain = composition_plan.get("target_gain")
-            if isinstance(target_gain, (int, float)) and abs(float(target_gain)) > 1.0:
+            if reported_gain is None and isinstance(target_gain, (int, float)) and abs(float(target_gain)) > 1.0:
                 reported_gain = float(target_gain)
 
             stages = composition_plan.get("stages")
@@ -1028,6 +1217,139 @@ class ChatbotService:
             },
             "simulation": simulation,
         }
+
+    def _prepare_validation_metrics(
+        self,
+        intent: CircuitIntent,
+        solved_values: Dict[str, float],
+        gain_actual: Optional[float],
+        stage_analysis: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, float]:
+        """Build enriched metrics dict so validator can check hard constraints reliably."""
+        enriched = dict(solved_values or {})
+        if isinstance(gain_actual, (int, float)):
+            enriched["actual_gain"] = float(gain_actual)
+
+        topology_metrics = ParameterSolver().analyze_topology(
+            family=intent.circuit_type,
+            solved_values=enriched,
+            gain_actual=(float(gain_actual) if isinstance(gain_actual, (int, float)) else None),
+            frequency_hz=intent.frequency,
+            supply_mode=intent.supply_mode,
+            vcc=intent.vcc,
+            stage_analysis=stage_analysis,
+        )
+        z_out = topology_metrics.get("output_impedance_ohm")
+        if isinstance(z_out, (int, float)):
+            enriched["output_impedance_ohm"] = float(z_out)
+        return enriched
+
+    @staticmethod
+    def _resolve_gain_for_validation(
+        solved_values: Dict[str, float],
+        fallback_gain: Optional[float],
+    ) -> Optional[float]:
+        val = solved_values.get("actual_gain") if isinstance(solved_values, dict) else None
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(fallback_gain, (int, float)):
+            return float(fallback_gain)
+        return None
+
+    @staticmethod
+    def _extract_validation_error_codes(validation_report: Any) -> List[str]:
+        codes: List[str] = []
+        for violation in getattr(validation_report, "errors", []) or []:
+            code = str(getattr(violation, "code", "")).strip()
+            if code:
+                codes.append(code)
+        return codes
+
+    def _has_hard_constraint_errors(self, validation_report: Any) -> bool:
+        return any(code.startswith("HARD_") for code in self._extract_validation_error_codes(validation_report))
+
+    def _build_regeneration_candidates(self, intent: CircuitIntent, failed_codes: List[str]) -> List[CircuitIntent]:
+        hard_constraints = dict(intent.hard_constraints or {})
+
+        primary = copy.deepcopy(intent)
+        hints: List[str] = []
+
+        if "HARD_DIRECT_COUPLING" in failed_codes or hard_constraints.get("direct_coupling_required"):
+            hard_constraints["direct_coupling_required"] = True
+            hints.append("ghép trực tiếp giữa các tầng, không dùng tụ coupling")
+
+        if "HARD_ZOUT_MAX" in failed_codes:
+            primary.output_buffer = True
+            if "low_output_impedance" not in primary.extra_requirements:
+                primary.extra_requirements.append("low_output_impedance")
+            hints.append("tầng ra phải là follower để đạt trở kháng ra thấp")
+
+        gain_min = hard_constraints.get("gain_min")
+        gain_max = hard_constraints.get("gain_max")
+        if isinstance(gain_min, (int, float)) and isinstance(gain_max, (int, float)):
+            primary.gain_target = (float(gain_min) + float(gain_max)) / 2.0
+            hints.append(f"tổng gain trong khoảng {gain_min} đến {gain_max}")
+        elif isinstance(gain_min, (int, float)):
+            primary.gain_target = max(float(primary.gain_target or gain_min), float(gain_min))
+
+        primary.hard_constraints = hard_constraints
+        if hints:
+            primary.raw_text = f"{primary.raw_text}. Ràng buộc bắt buộc: {'; '.join(hints)}."
+
+        candidates = [primary]
+
+        secondary = copy.deepcopy(primary)
+        if secondary.circuit_type == "multi_stage":
+            text_lower = (secondary.raw_text or "").lower()
+            mosfet_chain = (secondary.device_preference == "mosfet") or ("mosfet" in text_lower) or ("cs" in text_lower and "cd" in text_lower)
+            chain_hint = "CS-CD" if mosfet_chain else "CE-CC"
+            secondary.raw_text = (
+                f"{secondary.raw_text}. Ưu tiên topo 2 tầng {chain_hint}, tầng cuối follower, "
+                "liên tầng direct coupling."
+            )
+            candidates.append(secondary)
+
+        return candidates
+
+    def _retry_pipeline_for_hard_constraints(
+        self,
+        intent: CircuitIntent,
+        failed_codes: List[str],
+        max_attempts: int = 2,
+    ) -> Optional[Dict[str, Any]]:
+        candidates = self._build_regeneration_candidates(intent, failed_codes)
+
+        for candidate in candidates[:max_attempts]:
+            spec = self._intent_to_spec(candidate)
+            retry_result = self._ai_core.handle_spec(spec)
+            if not retry_result.success or not retry_result.circuit:
+                continue
+
+            retry_solved_values = retry_result.solved.values if retry_result.solved else {}
+            retry_gain = self._resolve_gain_for_validation(
+                solved_values=retry_solved_values,
+                fallback_gain=(retry_result.solved.actual_gain if retry_result.solved else None),
+            )
+            retry_metrics = self._prepare_validation_metrics(
+                intent=candidate,
+                solved_values=retry_solved_values,
+                gain_actual=retry_gain,
+                stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
+            )
+            retry_report = self._validator.validate(
+                retry_result.circuit.circuit_data,
+                candidate.to_dict(),
+                retry_metrics,
+            )
+
+            if retry_report.passed or not self._has_hard_constraint_errors(retry_report):
+                return {
+                    "pipeline_result": retry_result,
+                    "validation_report": retry_report,
+                    "intent": candidate,
+                }
+
+        return None
 
     def _maybe_auto_simulation(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> Dict[str, Any]:
         """Try transient simulation when explicitly requested or enabled by env flag."""
