@@ -107,7 +107,7 @@ class ConstraintValidator:
         self._check_structural(circuit_data, report)
         self._check_param_ranges(circuit_data, report)
         self._check_intent_match(circuit_data, intent_dict, solved_params, report)
-        self._check_hard_constraints(intent_dict, solved_params, report)
+        self._check_hard_constraints(circuit_data, intent_dict, solved_params, report)
 
         report.passed = len(report.errors) == 0
         return report
@@ -245,6 +245,7 @@ class ConstraintValidator:
 
     def _check_hard_constraints(
         self,
+        circuit: Dict[str, Any],
         intent: Dict[str, Any],
         solved: Dict[str, float],
         report: ValidationReport,
@@ -293,3 +294,48 @@ class ConstraintValidator:
                         expected=f"<= {vcc_max}",
                         actual=vcc_val,
                     ))
+
+        zout_max = constraints.get("output_impedance_max_ohm")
+        if zout_max is not None:
+            z_out = solved.get("output_impedance_ohm")
+            if z_out is not None:
+                report.checked_rules += 1
+                if z_out > zout_max:
+                    report.violations.append(Violation(
+                        code="HARD_ZOUT_MAX", severity="error",
+                        message=f"Zout {z_out:.2f}Ω > giới hạn {zout_max}Ω",
+                        field="output_impedance_ohm",
+                        expected=f"<= {zout_max}",
+                        actual=z_out,
+                    ))
+
+        if constraints.get("direct_coupling_required"):
+            report.checked_rules += 1
+            composition = circuit.get("composition_plan") if isinstance(circuit, dict) else None
+            links = (composition or {}).get("interstage_links", []) if isinstance(composition, dict) else []
+
+            has_non_direct = False
+            has_any_link = False
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                has_any_link = True
+                mode = str(link.get("coupling_mode", "")).strip().lower()
+                if mode not in {"direct", "dc", "direct_coupling"}:
+                    has_non_direct = True
+                    break
+
+            if has_non_direct:
+                report.violations.append(Violation(
+                    code="HARD_DIRECT_COUPLING", severity="error",
+                    message="Yêu cầu ghép trực tiếp nhưng interstage link không ở direct coupling",
+                    field="composition_plan.interstage_links",
+                    expected="direct coupling",
+                    actual="non-direct coupling",
+                ))
+            elif not has_any_link and circuit.get("topology_type") == "composed_multi_stage":
+                report.violations.append(Violation(
+                    code="HARD_DIRECT_COUPLING_UNVERIFIED", severity="warning",
+                    message="Không đủ dữ liệu interstage links để xác minh direct coupling",
+                    field="composition_plan.interstage_links",
+                ))
