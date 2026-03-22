@@ -697,7 +697,7 @@ class CircuitGenerator:
             value = self._param_value(params, ["resistance", "value"], 1e3)
             return f"R{comp_id} {n1} {n2} {value:g}"
 
-        if comp_type in {"CAPACITOR", "C"}:
+        if comp_type in {"CAPACITOR", "C", "CAPACITOR_POLARIZED"}:
             value = self._param_value(params, ["capacitance", "value"], 1e-6)
             return f"C{comp_id} {n1} {n2} {value:g}"
 
