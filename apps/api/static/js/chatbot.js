@@ -807,7 +807,7 @@ function addMessage(text, type) {
     const avatar = document.createElement('div');
     avatar.className = 'message-avatar';
     avatar.innerHTML = type === 'bot'
-        ? '<i class="fas fa-robot"></i>'
+        ? '<img src="/static/logo/System-icon.png" alt="Bot Avatar">'
         : '<i class="fas fa-user"></i>';
 
     const content = document.createElement('div');
@@ -839,7 +839,7 @@ function showTyping() {
     div.id = id;
     div.className = 'message bot-message';
     div.innerHTML = `
-        <div class="message-avatar"><i class="fas fa-robot"></i></div>
+        <div class="message-avatar"><img src="/static/logo/System-icon.png" alt="Bot Avatar"></div>
         <div class="message-content">
             <div class="message-text">
                 <div class="typing-indicator">
