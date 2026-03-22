@@ -1,0 +1,57 @@
+name: topology-matrix
+
+on:
+  pull_request:
+    paths:
+      - "apps/api/**"
+      - ".github/workflows/topology-matrix.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/api/**"
+      - ".github/workflows/topology-matrix.yml"
+
+jobs:
+  topology-matrix:
+    name: topology-matrix
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run mandatory topology matrix tests
+        run: |
+          python -m pytest \
+            tests/domain/test_topology_matrix_pipeline.py \
+            tests/domain/test_fail_fast_regeneration_gate.py \
+            tests/domain/test_backend_constraint_enforcement.py \
+            -q
+
+      - name: Generate family/topology coverage report
+        run: |
+          python tests/domain/generate_topology_coverage_report.py
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: topology-coverage-report
+          path: |
+            apps/api/artifacts/coverage/topology_coverage.json
+            apps/api/artifacts/coverage/topology_coverage.md
+          if-no-files-found: error
