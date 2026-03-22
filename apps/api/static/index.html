@@ -17,10 +17,10 @@
             <div class="header-left">
                 <!-- Logo chính thức: ..\apps\api\static\logo -->
                 <!-- <img src="/static/logo/System-logo1.png" alt="Official System Logo" class="system-logo"> -->
-                <img src="/static/logo/System-logo2.png" alt="Official System Logo" class="system-logo" style="max-height:55px; max-width:120px; width:auto; height:auto; object-fit:contain; margin:0 auto;">
+                <img src="/static/logo/System-logo2.png" alt="Official System Logo" class="system-logo">
                 <!-- <i class="fas fa-microchip"></i> -->
-                <h1 style="margin-top: 2px; margin-left: -25px; font-size: 1.45rem; display: inline-block;">Elpis</h1>
-                <span class="version-badge" style="font-size: 1.1rem; vertical-align: middle;">v3.0</span>
+                <h1>Elpis</h1>
+                <span class="version-badge">3.0.1</span>
             </div>
             <div class="header-right">
                 <span class="status-dot" id="statusDot"></span>
@@ -39,16 +39,16 @@
                     <!-- Welcome message -->
                     <div class="message bot-message">
                         <div class="message-avatar">
-                            <img src="/static/logo/System-icon.png" alt="Bot Avatar" style="width: 40px; height: 40px; object-fit: contain;">
+                            <img src="/static/logo/System-icon.png" alt="Bot Avatar">
                         </div>
                         <div class="message-content">
                             <div class="message-text">
-                                <p>👋 Xin chào! Tôi là AI thiết kế mạch điện.</p>
+                                <p>👋 Xin chào! Tôi là AI thiết kế mạch.</p>
                                 <p>Tôi có thể giúp:</p>
                                 <ul>
-                                    <li>Thiết kế mạch khuếch đại (CE, CB, CC, OpAmp...)</li>
-                                    <li>Tính toán linh kiện (R, C values)</li>
-                                    <li>Hiển thị schematic</li>
+                                    <li>Thiết kế mạch khuếch đại (BJT, OpAmp, Mosfet ...)</li>
+                                    <li>Tính toán giá trị linh kiện</li>
+                                    <li>Hiển thị schematic/PCB</li>
                                 </ul>
                                 <p><strong>Thử:</strong> "Thiết kế mạch CE gain 50 dùng 12V"</p>
                             </div>
@@ -85,7 +85,7 @@
                         </button>
                     </div>
                     <div class="input-footer">
-                        <span class="powered-by">A Anlh Production &bull; © 2026</span>
+                        <span class="powered-by">a Anlh production &bull; © 2026</span>
                         <span class="processing-time" id="processingTime"></span>
                     </div>
                 </div>
@@ -116,10 +116,10 @@
 
                 <!-- Schematic tab -->
                 <div class="tab-content active" id="tab-schematic">
-                    <div class="schematic-toolbar" id="schematicToolbar" style="display:none">
+                    <div class="schematic-toolbar" id="schematicToolbar">
                         <span class="toolbar-title" id="schematicTitle">Schematic</span>
                         <div class="toolbar-actions">
-                            <button class="btn-toolbar" id="btnRunSim" title="Run simulation" style="display:none">
+                            <button class="btn-toolbar" id="btnRunSim" title="Run simulation">
                                 <i class="fas fa-play"></i> Run Simulation
                             </button>
                             <button class="btn-toolbar" id="btnDownloadSch" title="Download .kicad_sch">
@@ -139,13 +139,13 @@
                         <!-- KiCanvas rendered here dynamically -->
                     </div>
                     <!-- Component list (collapsible) -->
-                    <div class="component-list-panel" id="componentListPanel" style="display:none">
+                    <div class="component-list-panel" id="componentListPanel">
                     </div>
                 </div>
 
                 <!-- PCB tab -->
                 <div class="tab-content" id="tab-pcb">
-                    <div class="schematic-toolbar" id="pcbToolbar" style="display:none">
+                    <div class="schematic-toolbar" id="pcbToolbar">
                         <span class="toolbar-title" id="pcbTitle">PCB Layout</span>
                         <div class="toolbar-actions">
                             <button class="btn-toolbar" id="btnDownloadPCB" title="Download .kicad_pcb">
@@ -217,6 +217,6 @@
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="/static/js/markdown.js?v=20260318"></script>
-    <script src="/static/js/chatbot.js?v=20260320a"></script>
+    <script src="/static/js/chatbot.js?v=20260322a"></script>
 </body>
 </html>
