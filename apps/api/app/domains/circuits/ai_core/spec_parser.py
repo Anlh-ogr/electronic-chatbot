@@ -526,6 +526,15 @@ class NLPSpecParser:
     # Lõi regex
     def _detect_circuit_type(self, text: str) -> str:
         """Detect circuit type từ text bằng regex matching."""
+        # Phân tích mạch khuếch đại ngẫu nhiên
+        if re.search(r"ngẫu\s*nhiên|random\s*amplifier|random\s*amp", text, re.IGNORECASE):
+            import random
+            return random.choice([
+                "common_emitter", "common_source", "non_inverting", "inverting",
+                "common_base", "common_gate", "differential", "instrumentation",
+                "common_collector", "common_drain", "darlington"
+            ])
+            
         # Ưu tiên match dài hơn trước (instrumentation trước inverting)
         priority_order = [
             "multi_stage",
