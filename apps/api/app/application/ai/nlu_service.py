@@ -613,6 +613,7 @@ class NLUService:
         intent.output_buffer = self._has_pattern(text, [
             r"\boutput\s*buffer\b", r"\bbuffer\s*output\b", r"\bbuffer\s*stage\b",
             r"\bbuffered\s*output\b", r"\bemitter\s*follower\b", r"\bsource\s*follower\b",
+            r"trở\s*kháng\s*ra\s*(?:rất\s*)?thấp", r"low\s*output\s*impedance", r"\bzout\s*(?:thấp|low)\b",
         ])
         
         intent.power_output = self._has_pattern(text, [
@@ -815,6 +816,22 @@ class NLUService:
     def _parse_hard_constraints(self, text: str, intent: CircuitIntent) -> None:
         # Trích xuất hard constraints từ text.
         constraints: Dict[str, Any] = {}
+
+        # gain range: "gain 20-30", "Av khoảng 20 đến 30"
+        gain_range = re.search(
+            r"(?:gain|av|khuếch\s*đại|hệ\s*số\s*khuếch\s*đại)\s*(?:khoảng|tầm|xấp\s*xỉ|tu\s*|từ)?\s*"
+            r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:-|đến|to|~)\s*(-?[0-9]+(?:\.[0-9]+)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if gain_range:
+            try:
+                g1 = float(gain_range.group(1))
+                g2 = float(gain_range.group(2))
+                constraints["gain_min"] = min(g1, g2)
+                constraints["gain_max"] = max(g1, g2)
+            except ValueError:
+                pass
         
         # gain min/max
         m = re.search(r"gain\s*(?:>=?|tối\s*thiểu|min(?:imum)?)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
@@ -828,6 +845,27 @@ class NLUService:
         m = re.search(r"vcc\s*(?:<=?|max|tối\s*đa)\s*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
         if m:
             constraints["vcc_max"] = float(m.group(1))
+
+        # output impedance max: "< 50 ohm", "zout <= 50"
+        m = re.search(
+            r"(?:zout|output\s*impedance|trở\s*kháng\s*ra)\s*(?:<=?|<|tối\s*đa|max)?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:ohm|Ω)?",
+            text,
+            re.IGNORECASE,
+        )
+        if not m:
+            m = re.search(
+                r"(?:zout|output\s*impedance|trở\s*kháng\s*ra).*?\(\s*<?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:ohm|Ω)\s*\)",
+                text,
+                re.IGNORECASE,
+            )
+        if m:
+            constraints["output_impedance_max_ohm"] = float(m.group(1))
+
+        # direct coupling hard requirement.
+        if self._has_pattern(text, [
+            r"direct\s*coupl", r"gh[ée]p\s*tr[ựu]c\s*ti[ếe]p", r"kh[ôo]ng\s*(?:d[ùu]ng\s*)?t[ụu]\s*coupling", r"kh[ôo]ng\s*(?:d[ùu]ng\s*)?t[ụu]\s*gh[ée]p",
+        ]):
+            constraints["direct_coupling_required"] = True
         
         # Không lưu trùng intent.vcc/gain_target vào hard_constraints (chỉ lưu constraint thực sự)
         intent.hard_constraints = constraints
