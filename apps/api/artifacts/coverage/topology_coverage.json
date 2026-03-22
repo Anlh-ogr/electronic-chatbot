@@ -1,0 +1,152 @@
+{
+  "summary": {
+    "total_families": 17,
+    "covered_families": 17,
+    "family_coverage_pct": 100.0,
+    "total_metadata_blocks": 15,
+    "covered_metadata_blocks": 15,
+    "topology_coverage_pct": 100.0
+  },
+  "uncovered": {
+    "families": [],
+    "metadata_blocks": []
+  },
+  "families": [
+    {
+      "family": "class_a",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "CLASS-A-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "class_ab",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "CLASS-AB-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "class_b",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "CLASS-B-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "class_c",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "CLASS-C-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "class_d",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "CLASS-D-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_base",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "BJT-CB-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_collector",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "BJT-CC-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_drain",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "FET-CD-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_emitter",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "BJT-CE-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_gate",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "FET-CG-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "common_source",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "FET-CS-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "darlington",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "SPECIAL-DAR-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "differential",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "OP-09",
+      "mode": "exact_template"
+    },
+    {
+      "family": "instrumentation",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "OP-11",
+      "mode": "exact_template"
+    },
+    {
+      "family": "inverting",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "OP-01",
+      "mode": "exact_template"
+    },
+    {
+      "family": "multi_stage",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "SPECIAL-MS-01",
+      "mode": "composed_topology"
+    },
+    {
+      "family": "non_inverting",
+      "success": true,
+      "stage_reached": "generate",
+      "error": "",
+      "template_id": "OP-05",
+      "mode": "exact_template"
+    }
+  ]
+}
