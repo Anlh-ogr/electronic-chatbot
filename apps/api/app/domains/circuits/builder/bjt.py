@@ -407,20 +407,14 @@ class BJTAmplifierBuilder:
         ))
 
         # VBIAS net: R1 dưới + R2 trên + input coupling
-        vbias_pins = [PinRef("R1", "2"), PinRef("R2", "1")]
+        vbias_pins = [PinRef("R1", "2"), PinRef("R2", "1"), PinRef("Q1", "B")]
         if has_cin:
             vbias_pins.append(PinRef("CIN", "2"))
-        else:
-            vbias_pins.append(PinRef("Q1", "B"))
         self.nets["VBIAS"] = Net("VBIAS", tuple(vbias_pins))
 
         # VIN net (nếu có CIN)
         if has_cin:
             self.nets["VIN"] = Net("VIN", (PinRef("CIN", "1"),))
-            self.nets["_VIN_INTERNAL"] = Net("_VIN_INTERNAL", (
-                PinRef("CIN", "2"),
-                PinRef("Q1", "B")
-            ))
 
         # VCOLLECTOR net: RC dưới + Q1.C + output coupling
         vcoll_pins = [PinRef("RC", "2"), PinRef("Q1", "C")]
@@ -460,20 +454,14 @@ class BJTAmplifierBuilder:
         ))
 
         # VBIAS net: giống CE
-        vbias_pins = [PinRef("R1", "2"), PinRef("R2", "1")]
+        vbias_pins = [PinRef("R1", "2"), PinRef("R2", "1"), PinRef("Q1", "B")]
         if has_cin:
             vbias_pins.append(PinRef("CIN", "2"))
-        else:
-            vbias_pins.append(PinRef("Q1", "B"))
         self.nets["VBIAS"] = Net("VBIAS", tuple(vbias_pins))
 
         # VIN net (nếu có CIN)
         if has_cin:
             self.nets["VIN"] = Net("VIN", (PinRef("CIN", "1"),))
-            self.nets["_VIN_INTERNAL"] = Net("_VIN_INTERNAL", (
-                PinRef("CIN", "2"),
-                PinRef("Q1", "B")
-            ))
 
         # VEMITTER net: Q1.E + RE trên + output coupling (output lấy từ emitter)
         vemit_pins = [PinRef("Q1", "E"), PinRef("RE", "1")]
@@ -581,8 +569,8 @@ class BJTAmplifierBuilder:
 
     # Gắn constraints nghiệp vụ: gain, IC, VCC, topology, bypass, coupling
     def _create_constraints(self) -> None:
-        self.constraints["gain"] = Constraint("gain_target", self.config.gain_target)
-        self.constraints["ic"] = Constraint("ic_target", self.config.ic_target, "A")
+        self.constraints["gain_target"] = Constraint("gain_target", self.config.gain_target)
+        self.constraints["ic_target"] = Constraint("ic_target", self.config.ic_target, "A")
         self.constraints["vcc"] = Constraint("vcc", self.config.vcc, "V")
         self.constraints["topology"] = Constraint("topology", self.config.topology)
         self.constraints["has_bypass"] = Constraint("has_bypass", self._has("CE"))
