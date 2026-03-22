@@ -222,17 +222,6 @@ class NLGService:
         lines.append("- Khuyến nghị kiểm tra lại bằng mô phỏng AC/Transient để xác nhận Av, Zi, Zo theo băng thông thực tế.")
         lines.append("")
 
-        if params:
-            lines.append("## 7. Bảng linh kiện dự tính")
-            lines.append("| Linh kiện | Giá trị |")
-            lines.append("|-----------|---------|")
-            for name, val in params.items():
-                lines.append(f"| {name} | {self._format_component_value(name, val)} |")
-            lines.append("")
-        else:
-            lines.append("## 7. Bảng linh kiện dự tính")
-            lines.append("Chưa có dữ liệu linh kiện cụ thể.")
-
         return "\n".join(lines)
 
     def _template_error_response(self, error_msg: str, stage: str, circuit_type: str, gain_target: Optional[float], vcc: Optional[float],) -> str:
@@ -280,7 +269,7 @@ class NLGService:
             "3. **Giải pháp** - Phân tích cấu trúc mạch đã chọn, kèm phương trình khuếch đại\n"
             "4. **Bước tính toán thiết kế** - Công thức lý thuyết và thay số cụ thể cho R, C, L, Gain\n"
             "5. **Thông số kỹ thuật cuối cùng** - Tóm tắt Av, Ai, Zin, Zout, BW, Vpp...\n"
-            "6. **Kết quả kiểm tra + Bảng linh kiện dự tính** (Markdown Table: Tên | Giá trị | Ghi chú)\n"
+            "6. **Kết quả kiểm tra**\n"
             "Yêu cầu bắt buộc cho mục 2 (Giải pháp):\n"
             "- Luôn nêu phương trình khuếch đại chính gồm: Av, Ai, Zi, Zo (nếu thiếu dữ liệu thì ghi rõ giả định).\n"
             "- BJT (CE/CC/CB): ưu tiên dùng beta (hFE), gm = Ic/0.026, re ~= 26mV/IE, RC, RL, RB1, RB2, RE; nêu điểm Q, mô hình tín hiệu nhỏ, rồi suy ra Av/Ai/Zi/Zo.\n"
@@ -292,7 +281,7 @@ class NLGService:
             "- Tóm tắt yếu tố quyết định độ lợi: BJT -> beta, gm/re, RC/RE/RL; FET -> gm, RD/RL; Op-amp -> tỉ số điện trở hồi tiếp (Rf/Rin hoặc 1 + Rf/Rg).\n"
             "- Ở mục 3 bắt buộc nêu rõ điểm Q và tiến trình tính toán (DC -> tín hiệu nhỏ -> KCL/KVL).\n"
             "- Mục 1 luôn phải xuất hiện đầu tiên và dùng nó để suy luận waveform đầu ra có độ tin cậy cao.\n"
-            "- Trong mục 1 phải có thêm dạng chuẩn mô phỏng: v_out(t)=Av*v_in(t), và với tín hiệu sin phải nêu Vout_pk, pha phi, điều kiện clipping theo nguồn.\n"
+            "- Trong mục 1 phải có thêm dạng chuẩn mô phỏng: v_{{out}}(t)=A_v \\cdot v_{{in}}(t)\\$, và với tín hiệu sin phải nêu Vout_pk, pha phi, điều kiện clipping theo nguồn.\n"
             "- Ưu tiên định dạng phương trình bằng KaTeX ($...$ hoặc $$...$$) để hiển thị đẹp trên giao diện.\n"
             "Bắt đầu bằng ✅ nếu thành công."
         )
@@ -440,13 +429,7 @@ class NLGService:
         lines.append(f"**Tổng linh kiện:** {comp_count}")
 
         if solved:
-            lines.append("")
-            lines.append("**Thông số linh kiện:**")
-            lines.append("| Linh kiện | Giá trị |")
-            lines.append("|-----------|---------|")
-            for name, val in solved.items():
-                if isinstance(val, (int, float)):
-                    lines.append(f"| {name} | {self._format_component_value(name, val)} |")
+            pass # (Component table removed as GUI already handles it)
 
         return "\n".join(lines)
 
@@ -894,8 +877,8 @@ class NLGService:
         av = gain_actual if gain_actual is not None else gain_target
         if av is None:
             return [
-                "- Dạng chuẩn mô phỏng: v_out(t) = A_v * v_in(t) (cần Av số để thay trực tiếp).",
-                "- Với tín hiệu sin: nếu v_in(t) = V_in_pk * sin(2*pi*f*t) thì v_out(t) = |A_v|*V_in_pk*sin(2*pi*f*t + phi), với phi = 0° hoặc 180°.",
+                "- Dạng chuẩn mô phỏng: v_{{out}}(t) = A_v \\cdot v_{{in}}(t)\\$ (cần Av số để thay trực tiếp).",
+                "- Với tín hiệu sin: nếu v_{{in}}(t) = V_{in\\_pk}\\sin(2\\pi ft)\\$ thì v_{{out}}(t) = |A_v|V_{in\\_pk}\\sin(2\\pi ft + \\phi)\\$, với phi = 0° hoặc 180°.",
                 "- Điều kiện anti-clipping: |V_out_pk| phải nhỏ hơn biên độ dao động khả dụng của tầng ra.",
             ]
 
@@ -919,7 +902,7 @@ class NLGService:
             quality_line = "- Độ tin cậy mô phỏng waveform: cao khi mô phỏng Transient dùng biên độ vào nhỏ-signal quanh điểm Q."
 
         return [
-            f"- Dạng chuẩn mô phỏng (nhỏ-signal): v_out(t) = {av:.4g} * v_in(t).",
+            f"- Dạng chuẩn mô phỏng (nhỏ-signal): v_{{out}}(t) = {av:.4g} \\cdot v_{{in}}(t)\\$.",
             f"- Nếu v_in(t) = V_in_pk*sin(2*pi*f*t) => v_out(t) = {av_abs:.4g}*V_in_pk*sin(2*pi*f*t + {phi_deg}°).",
             clip_line,
             quality_line,
@@ -988,17 +971,17 @@ class NLGService:
             terms.append(f"A_{{stage{idx}}}")
         if not terms:
             return ""
-        return "A_v = " + " \\cdot ".join(terms)
+        return "A_v = " + r" \cdot ".join(terms)
 
     def _to_katex_formula(self, expr: str) -> str:
         """Convert plain gain expression to KaTeX-friendly math text."""
         if not expr:
-            return "A_v = \\frac{V_{out}}{V_{in}}"
+            return r"A_v = \frac{V_{out}}{V_{in}}"
 
         s = str(expr)
-        s = s.replace("~=", "\\approx")
-        s = s.replace("||", "\\parallel")
-        s = s.replace("*", "\\cdot")
+        s = s.replace("~=", r"\approx")
+        s = s.replace("||", r"\parallel")
+        s = s.replace("*", r"\cdot")
         s = re.sub(r"A_stage(\d+)", r"A_{stage\1}", s)
         s = re.sub(r"Rin", "R_{in}", s, flags=re.IGNORECASE)
         s = re.sub(r"Rout", "R_{out}", s, flags=re.IGNORECASE)
