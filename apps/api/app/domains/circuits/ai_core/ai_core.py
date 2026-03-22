@@ -208,8 +208,9 @@ class AICore:
         try:
             # Xác định family từ plan metadata
             family = ""
-            solve_metadata = plan.matched_metadata
-            if plan.matched_metadata:
+            solve_metadata = dict(plan.matched_metadata or {})
+            solve_metadata["vcc"] = spec.vcc
+            if not family:
                 family = plan.matched_metadata.get("domain", {}).get("family", "")
             if not family:
                 family = spec.circuit_type
@@ -230,7 +231,6 @@ class AICore:
                     topology_tokens.append(block_to_token.get(block, "CE"))
 
                 if topology_tokens:
-                    solve_metadata = dict(plan.matched_metadata or {})
                     solver_hints = dict(solve_metadata.get("solver_hints", {}))
                     solver_hints["num_stages"] = len(topology_tokens)
                     solver_hints["topology"] = "+".join(topology_tokens)
