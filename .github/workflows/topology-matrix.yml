@@ -1,16 +1,7 @@
 name: topology-matrix
 
 on:
-  pull_request:
-    paths:
-      - "apps/api/**"
-      - ".github/workflows/topology-matrix.yml"
-  push:
-    branches:
-      - main
-    paths:
-      - "apps/api/**"
-      - ".github/workflows/topology-matrix.yml"
+  workflow_dispatch:
 
 jobs:
   topology-matrix:
