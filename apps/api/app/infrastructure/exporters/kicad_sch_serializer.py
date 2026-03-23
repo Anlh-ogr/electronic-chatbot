@@ -240,9 +240,9 @@ class KiCadSchSerializer:
         lines = [
             f'  (symbol (lib_id "{lib_id}")',
             f'    (at {x} {y} {rotation})',
-            '    (unit 1) (in_bom yes) (on_board yes) (exclude_from_sim no) (dnp no)',
-            f'    (uuid "{uuid}")',
+            '    (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)',
             '    (fields_autoplaced yes)',
+            f'    (uuid "{uuid}")',
             f'    (property "Reference" "{ref}" (at {x+2.0} {y+1.7} 0)',
             '      (effects (font (size 1.27 1.27)))',
             '    )',
@@ -250,13 +250,13 @@ class KiCadSchSerializer:
             '      (effects (font (size 1.27 1.27)))',
             '    )',
             f'    (property "Footprint" "" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) hide)',
+            '      (effects (font (size 1.27 1.27)) (hide yes))',
             '    )',
             f'    (property "Datasheet" "" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) hide)',
+            '      (effects (font (size 1.27 1.27)) (hide yes))',
             '    )',
             f'    (property "Description" "{component.type.value}" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) hide)',
+            '      (effects (font (size 1.27 1.27)) (hide yes))',
             '    )',
         ]
         
@@ -286,15 +286,17 @@ class KiCadSchSerializer:
         if len(points) < 2:
             return []
         
-        pts_str = ' '.join(f'(xy {x} {y})' for x, y in points)
-        
-        lines = [
-            '  (wire',
-            f'    (pts {pts_str})',
-            '    (stroke (width 0.254) (type default))',
-            f'    (uuid "{self._generate_uuid()}")',
-            '  )',
-        ]
+        lines = []
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i+1]
+            lines.extend([
+                '  (wire',
+                f'    (pts (xy {x1} {y1}) (xy {x2} {y2}))',
+                '    (stroke (width 0) (type default))',
+                f'    (uuid "{self._generate_uuid()}")',
+                '  )'
+            ])
         
         return lines
     
@@ -331,10 +333,11 @@ class KiCadSchSerializer:
         
         lines = [
             f'  (global_label "{port.name}" (shape {shape}) (at {x} {y} 0)',
-            f'    (uuid "{self._generate_uuid()}")',
+            '    (fields_autoplaced yes)',
             '    (effects (font (size 1.27 1.27)))',
+            f'    (uuid "{self._generate_uuid()}")',
             f'    (property "Intersheetrefs" "${{INTERSHEET_REFS}}" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) hide)',
+            '      (effects (font (size 1.27 1.27)) (hide yes))',
             '    )',
             '  )',
         ]
