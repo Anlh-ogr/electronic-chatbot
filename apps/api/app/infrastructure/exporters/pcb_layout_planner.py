@@ -11,8 +11,8 @@ Module này chịu trách nhiệm:
 from __future__ import annotations
 
 import math
-from collections import defaultdict
-from typing import Dict, Tuple, List
+from collections import defaultdict, deque
+from typing import Dict, Tuple, List, Set
 
 from app.domains.circuits.entities import Circuit, ComponentType
 from app.infrastructure.exporters.kicad_footprint_library import KiCadFootprintLibrary
@@ -51,12 +51,15 @@ class PCBLayoutPlanner:
         return any(token in cid for token in ground_tokens)
 
     def _is_power_component(self, comp_id: str, component) -> bool:
+        cid = comp_id.strip().lower()
+        if cid.startswith("vin") or cid.startswith("input"):
+            return False
+
         comp_type = self._component_type_value(component)
         if comp_type in ("voltage_source", "current_source"):
             return True
 
-        cid = comp_id.strip().lower()
-        power_tokens = ("vcc", "vdd", "v+", "vin", "vbat", "power", "source")
+        power_tokens = ("vcc", "vdd", "v+", "vbat", "power", "source")
         return any(token in cid for token in power_tokens)
 
     def _place_centered_row(
@@ -91,78 +94,63 @@ class PCBLayoutPlanner:
 
     # ── Public API ─────────────────────────────────────────────
 
-    def place_components(
-        self,
-        circuit: Circuit,
-        hints: Dict[str, Tuple[float, float]] = None,
-    ) -> Dict[str, Tuple[float, float]]:
-        """Plan component placement on PCB.
-
-        Returns  comp_id -> (x_mm, y_mm)  in board coordinates.
-        """
+    def place_components(self, circuit, hints=None):
         comp_ids = list(circuit.components.keys())
         if not comp_ids:
             return {}
 
-        placements: Dict[str, Tuple[float, float]] = {}
-        fixed_positions: Dict[str, Tuple[float, float]] = {}
+        # Tách fixed positions
+        fixed_positions = {}
+        for cid, comp in circuit.components.items():
+            if hints and cid in hints:
+                fixed_positions[cid] = hints[cid]
+            elif (pos := self._manual_pcb_position(comp)) is not None:
+                fixed_positions[cid] = pos
 
-        power_ids: List[str] = []
-        ground_ids: List[str] = []
-        normal_ids: List[str] = []
+        # Build graph
+        adjacency = self._build_adjacency_map(circuit)
 
-        for comp_id, component in circuit.components.items():
-            if hints and comp_id in hints:
-                fixed_positions[comp_id] = hints[comp_id]
-                continue
+        # BFS pipeline (topology-agnostic)
+        power_comps  = self._find_power_comps(circuit)
+        sources      = self._find_signal_sources(circuit, power_comps)
+        sinks        = self._find_signal_sinks(circuit, power_comps)
 
-            manual_pos = self._manual_pcb_position(component)
-            if manual_pos is not None:
-                fixed_positions[comp_id] = manual_pos
-                continue
+        # Fallback nếu không tìm được source
+        if not sources:
+            # Chọn node có bậc thấp nhất ngoài power làm source
+            non_power = {c for c in comp_ids if c not in power_comps and c not in fixed_positions}
+            if non_power:
+                sources = {min(non_power, key=lambda c: sum(adjacency.get(c, {}).values()))}
 
-            if self._is_ground_component(comp_id, component):
-                ground_ids.append(comp_id)
-            elif self._is_power_component(comp_id, component):
-                power_ids.append(comp_id)
-            else:
-                normal_ids.append(comp_id)
+        depth_map = self._compute_signal_depth(circuit, adjacency, sources, power_comps)
 
-        # Place normal components row-major: left -> right, then top -> bottom.
-        usable_left = self.MARGIN
-        usable_right = self.BOARD_WIDTH - self.MARGIN
-        usable_top = self.MARGIN + self.COMP_SPACING
-        usable_bottom = self.BOARD_HEIGHT - self.MARGIN - self.COMP_SPACING
+        # Chỉ xếp component chưa cố định vị trí
+        to_place_set = {cid for cid in comp_ids if cid not in fixed_positions}
+        depth_map = {cid: d for cid, d in depth_map.items() if cid in to_place_set}
+        power_comps_to_place = power_comps & to_place_set
 
-        normal_count = len(normal_ids)
-        if normal_count > 0:
-            width = max(1.0, usable_right - usable_left)
-            max_cols_by_spacing = max(1, int(width // self.COMP_SPACING) + 1)
-            cols = min(max_cols_by_spacing, max(1, int(math.ceil(math.sqrt(normal_count)))))
-            rows = int(math.ceil(normal_count / cols))
+        # Initial placement theo depth
+        placements = self._depth_based_placement(circuit, depth_map, power_comps_to_place, sinks)
 
-            x_step = width / max(1, cols - 1)
-            y_step = max(1.0, usable_bottom - usable_top) / max(1, rows - 1)
+        # Force-directed: kéo linh kiện có liên kết về gần nhau
+        left_anchors  = sources | {c for c in sources if c in placements}  # sources bên trái
+        right_anchors = sinks                                              # sinks bên phải
+        placements = self._force_directed(
+            placements, adjacency, iterations=40,
+            left_anchors=left_anchors,
+            right_anchors=right_anchors,
+        )
 
-            for idx, comp_id in enumerate(normal_ids):
-                col = idx % cols
-                row = idx // cols
-                x = usable_left + col * x_step
-                y = usable_top + row * y_step
-                placements[comp_id] = (x, y)
+        # Symmetry cho differential pairs
+        branch_map = self._detect_branches(circuit)
+        diff_pairs = self._detect_differential_pairs(circuit)
+        placements = self._apply_symmetry(diff_pairs, branch_map, placements)
 
-        center_x = self.BOARD_WIDTH / 2.0
-        placements.update(self._place_centered_row(power_ids, self.MARGIN, center_x))
-        placements.update(self._place_centered_row(ground_ids, self.BOARD_HEIGHT - self.MARGIN, center_x))
-
+        # Restore fixed positions
         placements.update(fixed_positions)
 
-        placements = {
-            cid: (self._snap(x), self._snap(y))
-            for cid, (x, y) in placements.items()
-        }
-
-        return placements
+        return {cid: (self._snap(x), self._snap(y))
+                for cid, (x, y) in placements.items()}
 
     def plan_nets(
         self,
@@ -197,9 +185,26 @@ class PCBLayoutPlanner:
 
         for net_name, net in circuit.nets.items():
             pins = list(net.connected_pins)
-            for i in range(len(pins) - 1):
-                from_key = f"{pins[i].component_id}.{pins[i].pin_name}"
-                to_key = f"{pins[i + 1].component_id}.{pins[i + 1].pin_name}"
+            if len(pins) < 2:
+                continue
+
+            # Sắp xếp theo nearest-neighbor từ pin đầu tiên
+            ordered = [pins[0]]
+            remaining = pins[1:]
+
+            while remaining:
+                last_pos = pad_positions.get(f"{ordered[-1].component_id}.{ordered[-1].pin_name}")
+                if last_pos is None:
+                    ordered.append(remaining.pop(0))
+                    continue
+                
+                nearest = min(remaining, key=lambda p: self._pin_dist(p, last_pos, pad_positions))
+                ordered.append(nearest)
+                remaining.remove(nearest)
+
+            for i in range(len(ordered) - 1):
+                from_key = f"{ordered[i].component_id}.{ordered[i].pin_name}"
+                to_key = f"{ordered[i + 1].component_id}.{ordered[i + 1].pin_name}"
 
                 from_pos = pad_positions.get(from_key)
                 to_pos = pad_positions.get(to_key)
@@ -216,10 +221,19 @@ class PCBLayoutPlanner:
     # ── Internal helpers ───────────────────────────────────────
 
     @staticmethod
+    def _pin_dist(p, from_pos: Tuple[float, float],
+                  pad_positions: Dict[str, Tuple[float, float]]) -> float:
+        key = f"{p.component_id}.{p.pin_name}"
+        to_pos = pad_positions.get(key)
+        if to_pos is None:
+            return float("inf")
+        return math.hypot(to_pos[0] - from_pos[0], to_pos[1] - from_pos[1])
+
+    @staticmethod
     def _snap(v: float, grid: float = 1.27) -> float:
         return round(v / grid) * grid
 
-    def _build_adjacency(self, circuit: Circuit) -> Dict[str, Dict[str, int]]:
+    def _build_adjacency_map(self, circuit: Circuit) -> Dict[str, Dict[str, int]]:
         """Build weighted adjacency: adjacency[a][b] = # shared nets."""
         adj: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         for net in circuit.nets.values():
@@ -230,76 +244,301 @@ class PCBLayoutPlanner:
                     adj[b][a] += 1
         return adj
 
+    def _detect_branches(self, circuit: Circuit) -> Dict[str, int]:
+        """Phát hiện nhánh song song dựa trên shared nets."""
+        branch_map: Dict[str, int] = {}
+        groups = self._classify(circuit)
+        active_comps = groups.get("active", [])
+
+        # Build net → components map
+        net_to_comps: Dict[str, Set[str]] = defaultdict(set)
+        for net_name, net in circuit.nets.items():
+            for p in net.connected_pins:
+                net_to_comps[net_name].add(p.component_id)
+
+        parallel_groups: List[List[str]] = []
+        visited_pairs: Set[frozenset] = set()
+
+        POWER_TOKENS = ("vcc", "vdd", "v+", "gnd", "ground", "vss", "0v")
+
+        for i, cid_a in enumerate(active_comps):
+            for j, cid_b in enumerate(active_comps):
+                if i >= j:
+                    continue
+                pair = frozenset([cid_a, cid_b])
+                if pair in visited_pairs:
+                    continue
+
+                shared_nets = self._find_shared_nets([cid_a], [cid_b], net_to_comps)
+                signal_shared = {n for n in shared_nets
+                                 if not any(tok in n.lower() for tok in POWER_TOKENS)}
+                
+                if len(signal_shared) >= 2:
+                    visited_pairs.add(pair)
+                    found = False
+                    for group in parallel_groups:
+                        if cid_a in group or cid_b in group:
+                            if cid_a not in group: group.append(cid_a)
+                            if cid_b not in group: group.append(cid_b)
+                            found = True
+                            break
+                    if not found:
+                        parallel_groups.append([cid_a, cid_b])
+
+        for group in parallel_groups:
+            for branch_idx, cid in enumerate(group):
+                branch_map[cid] = branch_idx
+                
+        for cid in circuit.components.keys():
+            if cid not in branch_map:
+                branch_map[cid] = 0
+                
+        return branch_map
+
+    def _find_shared_nets(self, comps_a: List[str], comps_b: List[str],
+                          net_to_comps: Dict[str, Set[str]]) -> Set[str]:
+        shared = set()
+        set_a = set(comps_a)
+        set_b = set(comps_b)
+        for net_name, comps in net_to_comps.items():
+            if comps & set_a and comps & set_b:
+                shared.add(net_name)
+        return shared
+
+    def _detect_differential_pairs(self, circuit: Circuit) -> Set[str]:
+        """Tìm các cặp linh kiện là differential pair."""
+        diff_comps: Set[str] = set()
+        groups = self._classify(circuit)
+        active_comps = set(groups.get("active", []))
+
+        tail_net_map: Dict[str, List[str]] = defaultdict(list)
+        for net_name, net_obj in circuit.nets.items():
+            for p in net_obj.connected_pins:
+                if p.pin_name in ("E", "e", "S", "s") and p.component_id in active_comps:
+                    tail_net_map[net_name].append(p.component_id)
+
+        for net_name, comps in tail_net_map.items():
+            if len(comps) == 2:
+                diff_comps.add(comps[0])
+                diff_comps.add(comps[1])
+
+        return diff_comps
+
+    def _apply_symmetry(self, diff_comps: Set[str], branch_map: Dict[str, int],
+                        placements: Dict[str, Tuple[float, float]]) -> Dict[str, Tuple[float, float]]:
+        """Áp symmetry - đối xứng các cặp differential pair qua trục."""
+        result = dict(placements)
+        valid_comps = [cid for cid in diff_comps if cid in placements]
+        if len(valid_comps) < 2:
+            return result
+
+        # Tính trung tâm X và Y của cả cụm differential pair
+        xs = [placements[c][0] for c in valid_comps]
+        ys = [placements[c][1] for c in valid_comps]
+        center_x = sum(xs) / len(xs)
+        center_y = sum(ys) / len(ys)
+        offset = self.COMP_SPACING  # khoảng cách mỗi branch so với center
+
+        branch0 = [c for c in valid_comps if branch_map.get(c, 0) % 2 == 0]
+        branch1 = [c for c in valid_comps if branch_map.get(c, 0) % 2 == 1]
+        x_step = self.COMP_SPACING
+
+        for idx, cid in enumerate(branch0):
+            result[cid] = (center_x + x_step * (idx - len(branch0)/2 + 0.5), center_y - offset / 2)
+        for idx, cid in enumerate(branch1):
+            result[cid] = (center_x + x_step * (idx - len(branch1)/2 + 0.5), center_y + offset / 2)
+                
+        return result
+
+    def _find_power_comps(self, circuit: Circuit) -> Set[str]:
+        """Tổng quát: tìm power/ground bằng cả type lẫn net name."""
+        power = set()
+        POWER_NET_TOKENS = ("vcc", "vdd", "v+", "vbat", "gnd", "ground", "vss", "0v")
+        for cid, comp in circuit.components.items():
+            t = comp.type
+            if t in (ComponentType.VOLTAGE_SOURCE, ComponentType.CURRENT_SOURCE,
+                     ComponentType.GROUND):
+                power.add(cid)
+                continue
+            # Nếu component này chỉ nối với power/ground nets → cũng là power
+            comp_nets = {
+                net.name.lower()
+                for net in circuit.nets.values()
+                if any(p.component_id == cid for p in net.connected_pins)
+            }
+            if comp_nets and all(
+                any(tok in n for tok in POWER_NET_TOKENS) for n in comp_nets
+            ):
+                power.add(cid)
+        return power
+
+    def _find_signal_sources(self, circuit: Circuit,
+                              power_comps: Set[str]) -> Set[str]:
+        """Tổng quát: tìm nguồn tín hiệu bằng tên ID + type + vị trí trong graph."""
+        sources = set()
+        INPUT_TOKENS = ("vin", "input", "in", "src", "source", "sig")
+        for cid, comp in circuit.components.items():
+            if cid in power_comps:
+                continue
+            cid_l = cid.strip().lower()
+            # Tên gợi ý input
+            if any(cid_l.startswith(t) for t in INPUT_TOKENS):
+                sources.add(cid)
+                continue
+            # Port/connector với 1 kết nối net ngoài power → signal source
+            t = comp.type
+            if t in (ComponentType.VOLTAGE_SOURCE, ComponentType.CURRENT_SOURCE):
+                if cid not in power_comps:
+                    sources.add(cid)
+        # Fallback: nếu không tìm được sources, lấy node có bậc nhỏ nhất trong graph
+        return sources
+
+    def _find_signal_sinks(self, circuit: Circuit,
+                            power_comps: Set[str]) -> Set[str]:
+        """Tổng quát: tìm đích tín hiệu."""
+        sinks = set()
+        OUTPUT_TOKENS = ("vout", "output", "out", "load", "rl", "rload", "speaker")
+        for cid in circuit.components:
+            if cid in power_comps:
+                continue
+            cid_l = cid.strip().lower()
+            if any(cid_l.startswith(t) for t in OUTPUT_TOKENS):
+                sinks.add(cid)
+        return sinks
+
+    def _compute_signal_depth(
+        self,
+        circuit: Circuit,
+        adjacency: Dict[str, Dict[str, int]],
+        sources: Set[str],
+        power_comps: Set[str],
+    ) -> Dict[str, int]:
+        """
+        BFS từ signal sources qua adjacency (không đi qua power rails).
+        Trả về {comp_id: depth}, depth = khoảng cách BFS từ source.
+        Component không đến được → depth = max_depth (đặt về phía output).
+        """
+        depth: Dict[str, int] = {}
+        queue: deque = deque()
+
+        for src in sources:
+            depth[src] = 0
+            queue.append(src)
+
+        while queue:
+            curr = queue.popleft()
+            for neighbor in adjacency.get(curr, {}):
+                if neighbor in power_comps:
+                    continue  # bỏ qua power rail trong BFS
+                if neighbor not in depth:
+                    depth[neighbor] = depth[curr] + 1
+                    queue.append(neighbor)
+
+        # Fallback: component không nằm trong BFS tree
+        # (isolated hoặc chỉ nối với power) → gán depth trung bình
+        all_non_power = [c for c in circuit.components if c not in power_comps]
+        if all_non_power and depth:
+            fallback_depth = max(depth.values()) // 2
+            for cid in all_non_power:
+                if cid not in depth:
+                    depth[cid] = fallback_depth
+
+        return depth
+
     def _classify(self, circuit: Circuit) -> Dict[str, List[str]]:
         """Classify components into placement groups."""
         groups: Dict[str, List[str]] = {
             "power": [],
             "active": [],
             "passive": [],
-            "io": [],
+            "io_in": [],
+            "io_out": [],
         }
+        
+        power_comps = self._find_power_comps(circuit)
+        sources = self._find_signal_sources(circuit, power_comps)
+        sinks = self._find_signal_sinks(circuit, power_comps)
+        
         for cid, comp in circuit.components.items():
             t = comp.type
-            if t in (ComponentType.VOLTAGE_SOURCE, ComponentType.CURRENT_SOURCE,
-                     ComponentType.GROUND):
+            if cid in power_comps:
                 groups["power"].append(cid)
+            elif cid in sources:
+                groups["io_in"].append(cid)
+            elif cid in sinks:
+                groups["io_out"].append(cid)
             elif t in (ComponentType.BJT, ComponentType.BJT_NPN, ComponentType.BJT_PNP,
                        ComponentType.MOSFET, ComponentType.MOSFET_N, ComponentType.MOSFET_P,
                        ComponentType.OPAMP):
                 groups["active"].append(cid)
-            elif t in (ComponentType.RESISTOR, ComponentType.CAPACITOR,
-                       ComponentType.CAPACITOR_POLARIZED, ComponentType.INDUCTOR,
-                       ComponentType.DIODE):
-                groups["passive"].append(cid)
             else:
-                groups["io"].append(cid)
+                groups["passive"].append(cid)
         return groups
 
-    def _initial_placement(
+    def _depth_based_placement(
         self,
-        comp_ids: List[str],
-        groups: Dict[str, List[str]],
-        adjacency: Dict[str, Dict[str, int]],
         circuit: Circuit,
+        depth_map: Dict[str, int],
+        power_comps: Set[str],
+        sinks: Set[str],
     ) -> Dict[str, Tuple[float, float]]:
-        """Create initial placement by placing each group in its zone then
-           ordering components within each group by connectivity (BFS-like)."""
-        placements: Dict[str, Tuple[float, float]] = {}
+        """
+        Gán tọa độ ban đầu:
+        - X = lerp(MARGIN, BOARD_WIDTH-MARGIN) theo depth
+        - Y = phân bổ đều các comp cùng depth theo chiều dọc
+        - Power comps: trải đều theo Y ở X = MARGIN+10 (left power strip)
+        """
         W, H, M = self.BOARD_WIDTH, self.BOARD_HEIGHT, self.MARGIN
+        usable_x0 = M + 20   # để chỗ cho power strip bên trái
+        usable_x1 = W - M - 5
 
-        # Zone rectangles  (x_min, y_min, x_max, y_max)
-        zones = {
-            "power": (M, M, M + 20, H - M),                 # left strip
-            "io":    (W - M - 20, M, W - M, H - M),          # right strip
-            "active": (M + 25, M + 5, W - M - 25, H - M - 5),  # centre
-            "passive": (M + 25, M + 5, W - M - 25, H - M - 5), # centre (interleaved)
-        }
+        placements: Dict[str, Tuple[float, float]] = {}
 
-        for group_name in ("power", "active", "passive", "io"):
-            members = groups.get(group_name, [])
-            if not members:
-                continue
+        if not depth_map:
+            return placements
 
-            # Sort members by total connectivity (most connected first)
-            members.sort(key=lambda c: sum(adjacency.get(c, {}).values()), reverse=True)
+        max_depth = max(depth_map.values()) if depth_map else 1
 
-            zx0, zy0, zx1, zy1 = zones[group_name]
-            zw = zx1 - zx0
-            zh = zy1 - zy0
+        # Nhóm theo depth
+        by_depth: Dict[int, List[str]] = defaultdict(list)
+        for cid, d in depth_map.items():
+            by_depth[d].append(cid)
 
-            # Lay out in a grid within the zone
+        # Sắp xếp trong mỗi depth: active trước, passive sau
+        ACTIVE_TYPES = {ComponentType.BJT, ComponentType.BJT_NPN, ComponentType.BJT_PNP,
+                        ComponentType.MOSFET, ComponentType.MOSFET_N, ComponentType.MOSFET_P,
+                        ComponentType.OPAMP}
+
+        def _priority(cid: str) -> int:
+            comp = circuit.components.get(cid)
+            if comp and comp.type in ACTIVE_TYPES:
+                return 0   # active first
+            if cid in sinks:
+                return 2   # output last
+            return 1
+
+        for d, members in by_depth.items():
+            members.sort(key=_priority)
+
+        # Gán tọa độ
+        for d, members in sorted(by_depth.items()):
+            if max_depth == 0:
+                x = (usable_x0 + usable_x1) / 2
+            else:
+                x = usable_x0 + (d / max_depth) * (usable_x1 - usable_x0)
+
             n = len(members)
-            cols = max(1, int(math.ceil(math.sqrt(n * zw / max(zh, 1)))))
-            rows = max(1, math.ceil(n / cols))
-            dx = zw / max(cols, 1)
-            dy = zh / max(rows, 1)
+            for i, cid in enumerate(members):
+                y = M + ((i + 0.5) / n) * (H - 2 * M)
+                placements[cid] = (x, y)
 
-            for idx, cid in enumerate(members):
-                c = idx % cols
-                r = idx // cols
-                px = zx0 + dx * (c + 0.5)
-                py = zy0 + dy * (r + 0.5)
-                placements[cid] = (px, py)
+        # Power comps: left vertical strip
+        power_list = sorted(power_comps & set(circuit.components.keys()))
+        n_pwr = len(power_list)
+        for i, cid in enumerate(power_list):
+            x = M + 5
+            y = M + ((i + 0.5) / max(n_pwr, 1)) * (H - 2 * M)
+            placements[cid] = (x, y)
 
         return placements
 
@@ -308,11 +547,13 @@ class PCBLayoutPlanner:
         placements: Dict[str, Tuple[float, float]],
         adjacency: Dict[str, Dict[str, int]],
         iterations: int = 20,
+        left_anchors: Set[str] = None,
+        right_anchors: Set[str] = None,
     ) -> Dict[str, Tuple[float, float]]:
         """Simple spring-electric force-directed relaxation.
 
         Springs pull connected components together; a repulsive force
-        prevents overlap.
+        prevents overlap. Anchors ensure signal flow direction.
         """
         pos = {cid: list(xy) for cid, xy in placements.items()}
         ids = list(pos.keys())
@@ -320,10 +561,14 @@ class PCBLayoutPlanner:
         if n < 2:
             return placements
 
-        k_attract = 0.05
+        k_attract = 0.025  # Giảm từ 0.05 -> bù lại việc tính đôi
         k_repel = 200.0
         damping = 0.8
         min_dist = self.COMP_SPACING
+        
+        k_anchor = 0.1  # lực kéo về vị trí anchor
+        target_left_x = self.MARGIN + 10
+        target_right_x = self.BOARD_WIDTH - self.MARGIN - 10
 
         for _ in range(iterations):
             forces: Dict[str, List[float]] = {cid: [0.0, 0.0] for cid in ids}
@@ -357,6 +602,13 @@ class PCBLayoutPlanner:
                     fy = f * dy / dist
                     forces[a][0] += fx
                     forces[a][1] += fy
+
+            # Anchor force: ghim Vin về trái, Vout về phải
+            for cid in ids:
+                if left_anchors and cid in left_anchors:
+                    forces[cid][0] += k_anchor * (target_left_x - pos[cid][0])
+                elif right_anchors and cid in right_anchors:
+                    forces[cid][0] += k_anchor * (target_right_x - pos[cid][0])
 
             # Apply forces with damping and clamping inside board bounds
             for cid in ids:
