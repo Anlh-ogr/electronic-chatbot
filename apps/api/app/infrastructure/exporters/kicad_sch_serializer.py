@@ -5,15 +5,10 @@ Module này chuyển đổi Circuit entities + layout information thành
 KiCad .kicad_sch s-expression format. Nó xử lý lib_symbols, symbol instances,
 wires, labels, nets để tạo schematic đầy đủ theo KiCad 8+ standard.
 
-Vietnamese:
+Chức năng:
 - Trách nhiệm: Chuyển đổi Circuit → KiCad schematic s-expression
 - Đầu ra: lib_symbols, (symbol ...), (wire ...), (label ...) blocks
 - Tiêu chuẩn: KiCad 8 / KiCanvas compatibility
-
-English:
-- Responsibility: Convert Circuit → KiCad schematic s-expression
-- Output: lib_symbols, (symbol ...), (wire ...), (label ...) blocks
-- Standard: KiCad 8 / KiCanvas compatibility
 """
 
 from __future__ import annotations
