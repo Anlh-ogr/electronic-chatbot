@@ -264,7 +264,7 @@ class NLGService:
             "Bạn là trợ lý thiết kế mạch điện tử. "
             "Dựa trên kết quả thiết kế, sinh response bằng tiếng Việt cho người dùng.\n"
             "Trình bày phản hồi theo đúng 6 mục sau (dùng Markdown):\n"
-            "1. **Hệ phương trình hệ số khuếch đại (Av là chìa khóa)** - BẮT BUỘC in đầu tiên: Av, Ai, Zi, Zo và kết luận waveform (đảo pha/không đảo pha, nguy cơ méo).\n"
+            "1. **Hệ phương trình hệ số khuếch đại** - BẮT BUỘC in đầu tiên: Av, Ai, Zi, Zo và kết luận waveform (đảo pha/không đảo pha, nguy cơ méo).\n"
             "2. **Chức năng mạch** - Mô tả luồng tín hiệu từ đầu vào đến đầu ra\n"
             "3. **Giải pháp** - Phân tích cấu trúc mạch đã chọn, kèm phương trình khuếch đại\n"
             "4. **Bước tính toán thiết kế** - Công thức lý thuyết và thay số cụ thể cho R, C, L, Gain\n"
@@ -793,7 +793,7 @@ class NLGService:
 
         eq = self._build_equation_context(circuit_type).get("equations", {})
         gain_first_block = [
-            "## 1. Hệ phương trình hệ số khuếch đại (Av là chìa khóa)",
+            "## 1. Hệ phương trình hệ số khuếch đại",
             f"- Av: {gain_formula or eq.get('Av', 'Av = Vout/Vin')}",
             f"- Av (KaTeX): $ {self._to_katex_formula(gain_formula or eq.get('Av', 'Av = Vout/Vin'))} $",
             f"- Ai: {eq.get('Ai', 'Ai = Iout/Iin')}",
