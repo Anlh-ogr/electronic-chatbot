@@ -45,7 +45,12 @@ class BlockType(Enum):
     OPAMP_INV = "opamp_inv"            # Op-Amp Inverting
     OPAMP_NONINV = "opamp_noninv"      # Op-Amp Non-inverting
     OPAMP_DIFF = "opamp_diff"          # Op-Amp Differential
+    OPAMP_AMPLIFIER = "opamp_amplifier" # Op-Amp Amplifier
+    CLASS_A = "class_a"                # Class A Power Amplifier
+    CLASS_B= "class_b"                 # Class B Power Amplifier
     CLASS_AB = "class_ab"              # Class AB Power Amplifier
+    CLASS_C = "class_c"                # Class C Power Amplifier
+    CLASS_D = "class_d"                # Class D Power Amplifier
     DIFF_PAIR = "diff_pair"            # Differential pair
     CURRENT_MIRROR = "current_mirror"  # Current mirror
     SIMPLE_RC = "simple_rc"            # Simple RC network
@@ -150,6 +155,16 @@ class BlockTemplates:
                 "gnd_point": (0, 10),
                 "power_rails": True,
             },
+            BlockType.BJT_CB: {
+                "width": 25,
+                "height": 25,
+                "description": "BJT Common Base",
+                "input_point": (-12, 5),
+                "output_point": (12, -5),
+                "vcc_point": (0, -10),
+                "gnd_point": (0, 12),
+                "power_rails": True,
+            },
             BlockType.MOSFET_CS: {
                 "width": 30,
                 "height": 25,
@@ -158,6 +173,36 @@ class BlockTemplates:
                 "output_point": (15, -5),
                 "vcc_point": (0, -10),
                 "gnd_point": (0, 12),
+                "power_rails": True,
+            },
+            BlockType.MOSFET_CD: {
+                "width": 25,
+                "height": 20,
+                "description": "MOSFET Common Drain",
+                "input_point": (-12, 2),
+                "output_point": (12, 6),
+                "vcc_point": (0, -8),
+                "gnd_point": (0, 10),
+                "power_rails": True,
+            },
+            BlockType.MOSFET_CG: {
+                "width": 25,
+                "height": 25,
+                "description": "MOSFET Common Gate",
+                "input_point": (-12, 5),
+                "output_point": (12, -5),
+                "vcc_point": (0, -10),
+                "gnd_point": (0, 12),
+                "power_rails": True,
+            },
+            BlockType.DARLINGTON: {
+                "width": 35,
+                "height": 30,
+                "description": "Darlington Pair",
+                "input_point": (-15, 0),
+                "output_point": (15, 5),
+                "vcc_point": (0, -12),
+                "gnd_point": (0, 15),
                 "power_rails": True,
             },
             BlockType.OPAMP_INV: {
@@ -180,6 +225,80 @@ class BlockTemplates:
                 "gnd_point": (-2, 10),
                 "power_rails": True,
             },
+            BlockType.OPAMP_DIFF: {
+                "width": 35,
+                "height": 25,
+                "description": "Op-Amp Differential",
+                "input_point": (-18, 0),
+                "output_point": (15, 0),
+                "vcc_point": (-2, -10),
+                "gnd_point": (-2, 10),
+                "power_rails": True,
+                "symmetric": True,
+            },
+            
+            BlockType.OPAMP_AMPLIFIER: {
+                "width": 32,
+                "height": 22,
+                "description": "Op-Amp Amplifier",
+                "input_point": (-15, 0),
+                "output_point": (15, 0),
+                "vcc_point": (-2, -10),
+                "gnd_point": (-2, 10),
+                "power_rails": True,
+            },
+            BlockType.CLASS_A: {
+                "width": 35,
+                "height": 30,
+                "description": "Class A Power Amplifier",
+                "input_point": (-15, 0),
+                "output_point": (15, 0),
+                "vcc_point": (0, -12),
+                "gnd_point": (0, 15),
+                "power_rails": True,
+            },
+            BlockType.CLASS_B: {
+                "width": 45,
+                "height": 40,
+                "description": "Class B Power Amplifier",
+                "input_point": (-20, 0),
+                "output_point": (20, 0),
+                "vcc_point": (0, -15),
+                "gnd_point": (0, 15),
+                "power_rails": True,
+                "symmetric": True,
+            },
+            BlockType.CLASS_AB: {
+                "width": 45,
+                "height": 40,
+                "description": "Class AB Power Amplifier",
+                "input_point": (-20, 0),
+                "output_point": (20, 0),
+                "vcc_point": (0, -15),
+                "gnd_point": (0, 15),
+                "power_rails": True,
+                "symmetric": True,
+            },
+            BlockType.CLASS_C: {
+                "width": 35,
+                "height": 30,
+                "description": "Class C Power Amplifier",
+                "input_point": (-15, 0),
+                "output_point": (15, 0),
+                "vcc_point": (0, -12),
+                "gnd_point": (0, 15),
+                "power_rails": True,
+            },
+            BlockType.CLASS_D: {
+                "width": 45,
+                "height": 35,
+                "description": "Class D Power Amplifier",
+                "input_point": (-20, 0),
+                "output_point": (20, 0),
+                "vcc_point": (0, -12),
+                "gnd_point": (0, 15),
+                "power_rails": True,
+            },
             BlockType.DIFF_PAIR: {
                 "width": 36,
                 "height": 28,
@@ -191,6 +310,27 @@ class BlockTemplates:
                 "power_rails": True,
                 "symmetric": True,
             },
+            BlockType.CURRENT_MIRROR: {
+                "width": 30,
+                "height": 25,
+                "description": "Current Mirror",
+                "input_point": (-15, 5),
+                "output_point": (15, 5),
+                "vcc_point": (0, -12),
+                "gnd_point": (0, 12),
+                "power_rails": True,
+                "symmetric": True,
+            },
+            BlockType.SIMPLE_RC: {
+                "width": 20,
+                "height": 15,
+                "description": "Simple RC Network",
+                "input_point": (-10, 0),
+                "output_point": (10, 0),
+                "vcc_point": (0, 0),
+                "gnd_point": (0, 8),
+                "power_rails": False,
+            }
         }
         
         default = {
@@ -229,8 +369,7 @@ class CircuitGraph:
         """Add net (edge)."""
         self.nets[net.name] = net
         
-    def extract_signal_path(self, vin_prefix: str = "vin", 
-                           vout_prefix: str = "vout") -> List[str]:
+    def extract_signal_path(self, vin_prefix: str = "vin", vout_prefix: str = "vout") -> List[str]:
         """Extract primary signal path from Vin to Vout using DFS.
         
         Returns:
@@ -528,8 +667,8 @@ class LayoutPlanner:
                 x = axis_start_x + idx * step
                 placements[comp_id] = (x, y_value)
 
-        # Enforce 3 horizontal layers (TOP/MIDDLE/BOTTOM) without mixing.
-        top_layer_y = max(20.0, signal_axis_y - (2.0 * y_spacing))
+        # Enforce layers (POWER/TOP/MIDDLE/BOTTOM/GROUND) without mixing.
+        top_layer_y = max(40.0, signal_axis_y - (2.0 * y_spacing))
         bottom_layer_y = signal_axis_y + (2.0 * y_spacing)
 
         # Non-signal components stay off the signal axis.
@@ -538,8 +677,11 @@ class LayoutPlanner:
 
         # Power and ground rails with strict vertical semantics.
         rail_spacing = min(x_spacing, 18.0)
-        top_y = top_layer_y
-        bottom_y = bottom_layer_y
+        power_layer_y = max(10.0, top_layer_y - (1.5 * y_spacing))
+        ground_layer_y = bottom_layer_y + (1.5 * y_spacing)
+
+        top_y = power_layer_y
+        bottom_y = ground_layer_y
 
         self._place_centered_row(power_ids, top_y, center_x, rail_spacing, placements)
         self._place_centered_row(ground_ids, bottom_y, center_x, rail_spacing, placements)
@@ -1001,6 +1143,9 @@ class LayoutPlanner:
         
         # Get component placement
         x, y = placements[comp_id]
+
+        if hasattr(component, "pins") and len(component.pins) == 1 and (self._is_power_component(comp_id, component) or self._is_ground_component(comp_id, component)):
+            return (x, y)
         
         # Get pin index from component's pin list
         try:
@@ -1036,7 +1181,7 @@ class LayoutPlanner:
         elif rot == 270:
             dx, dy = dy, -dx
         
-        return self._snap_point((x + dx, y + dy))
+        return (x + dx, y + dy)
 
     def infer_component_rotations(
         self,
@@ -1409,3 +1554,4 @@ class LayoutPlanner:
             remaining.remove(nxt)
         
         return ordered
+
