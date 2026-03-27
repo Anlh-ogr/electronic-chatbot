@@ -42,6 +42,11 @@ const statusText = document.getElementById('statusText');
 const processingTime = document.getElementById('processingTime');
 const suggestions = document.getElementById('suggestions');
 const detailPanel = document.getElementById('detailPanel');
+const modelSelector = document.getElementById('modelSelector');
+const modelDropdownToggle = document.getElementById('modelDropdownToggle');
+const modelDropdownMenu = document.getElementById('modelDropdownMenu');
+const modelDropdownLabel = document.getElementById('modelDropdownLabel');
+let selectedModelTier = 'fast';
 
 // ── Init ──
 document.addEventListener('DOMContentLoaded', () => {
@@ -62,6 +67,8 @@ function setupEventListeners() {
 
     // Send button
     btnSend.addEventListener('click', sendMessage);
+
+    setupModelDropdown();
 
     // Auto-resize textarea
     chatInput.addEventListener('input', () => autoResize(chatInput));
@@ -110,6 +117,57 @@ function setupEventListeners() {
     }
 }
 
+function setupModelDropdown() {
+    if (!modelSelector || !modelDropdownToggle || !modelDropdownMenu) {
+        return;
+    }
+
+    const modeOptions = Array.from(modelDropdownMenu.querySelectorAll('.mode-option'));
+
+    const applyMode = (mode) => {
+        selectedModelTier = String(mode || 'fast').toLowerCase();
+        if (modelDropdownLabel) {
+            modelDropdownLabel.textContent = selectedModelTier.charAt(0).toUpperCase() + selectedModelTier.slice(1);
+        }
+        for (const opt of modeOptions) {
+            const isActive = opt.dataset.mode === selectedModelTier;
+            opt.classList.toggle('is-active', isActive);
+            opt.setAttribute('aria-selected', String(isActive));
+        }
+    };
+
+    const closeMenu = () => {
+        modelSelector.classList.remove('open');
+        modelDropdownToggle.setAttribute('aria-expanded', 'false');
+    };
+
+    modelDropdownToggle.addEventListener('click', () => {
+        const isOpen = modelSelector.classList.toggle('open');
+        modelDropdownToggle.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    for (const opt of modeOptions) {
+        opt.addEventListener('click', () => {
+            applyMode(opt.dataset.mode || 'fast');
+            closeMenu();
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        if (!modelSelector.contains(event.target)) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeMenu();
+        }
+    });
+
+    applyMode('fast');
+}
+
 // ── Health Check ──
 async function checkHealth() {
     try {
@@ -138,9 +196,6 @@ async function sendMessage() {
     chatInput.value = '';
     autoResize(chatInput);
 
-    // Hide suggestions after first message
-    suggestions.style.display = 'none';
-
     // Show typing indicator
     const typingId = showTyping();
 
@@ -151,7 +206,10 @@ async function sendMessage() {
         const resp = await fetch(`${API_BASE}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: text }),
+            body: JSON.stringify({
+                message: text,
+                mode: selectedModelTier,
+            }),
         });
 
         const data = await resp.json();
@@ -194,7 +252,6 @@ async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
     addMessage(userLabel, 'user');
     chatInput.value = '';
     autoResize(chatInput);
-    suggestions.style.display = 'none';
 
     const typingId = showTyping();
     isProcessing = true;
@@ -763,8 +820,8 @@ function sendSuggestion(text) {
 
 // ── Handle Bot Response ──
 function handleBotResponse(data) {
-    // Add bot message (markdown rendered)
-    addMessage(data.message, 'bot');
+    // Add bot message (markdown rendered) + mode badge for easier tracking
+    addMessage(data.message, 'bot', { mode: data.mode });
 
     // Update processing time
     if (data.processing_time_ms) {
@@ -788,19 +845,19 @@ function handleBotResponse(data) {
         clearCircuitArtifacts();
     }
 
-    // Show new suggestions if needed
-    if (data.suggestions && data.suggestions.length > 0) {
-        showSuggestions(data.suggestions);
-    }
-
-    // If needs clarification, show suggestions
-    if (data.needs_clarification && data.suggestions) {
-        showSuggestions(data.suggestions);
-    }
 }
 
 // ── Message Rendering ──
-function addMessage(text, type) {
+function toModeLabel(mode) {
+    const value = String(mode || '').trim().toLowerCase();
+    if (value === 'fast' || value === 'air') return 'Fast';
+    if (value === 'think') return 'Think';
+    if (value === 'pro') return 'Pro';
+    if (value === 'ultra') return 'Ultra';
+    return 'Fast';
+}
+
+function addMessage(text, type, options = {}) {
     const div = document.createElement('div');
     div.className = `message ${type}-message`;
 
@@ -821,6 +878,11 @@ function addMessage(text, type) {
         if (typeof renderLatexInElement === 'function') {
             renderLatexInElement(msgText);
         }
+
+        const modeMeta = document.createElement('div');
+        modeMeta.className = 'message-meta';
+        modeMeta.textContent = `Mode: ${toModeLabel(options.mode)}`;
+        content.appendChild(modeMeta);
     } else {
         msgText.textContent = text;
     }
@@ -1770,6 +1832,7 @@ function pickChartColor(index) {
 
 // ── Suggestions ──
 function showSuggestions(items) {
+    if (!suggestions) return;
     suggestions.style.display = 'flex';
     suggestions.innerHTML = '';
     for (const item of items) {
