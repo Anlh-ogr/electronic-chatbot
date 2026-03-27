@@ -28,7 +28,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.application.ai.llm_router import LLMMode, LLMRole, get_router
 from app.application.ai.context_router_service import (
@@ -40,7 +40,8 @@ from app.application.ai.nlg_service import NLGService
 from app.application.ai.constraint_validator import ConstraintValidator
 from app.application.ai.repair_engine import RepairEngine
 from app.application.ai.simulation_service import NgSpiceSimulationService, SimulationError
-from app.db.database import SessionLocal
+from app.db.database import Base, SessionLocal, engine
+from app.domain.validators import ComponentSet, DCBiasValidator, DCValidationResult
 from app.domains.circuits.ai_core import AICore
 from app.domains.circuits.ai_core.spec_parser import UserSpec
 from app.domains.circuits.ai_core.parameter_solver import ParameterSolver
@@ -76,6 +77,7 @@ class ChatResponse:
     suggestions: List[str] = field(default_factory=list)
     validation: Optional[Dict] = None  # validation report
     repair: Optional[Dict] = None      # repair result (nếu đã sửa)
+    physics_validation: Optional[Dict] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -102,6 +104,8 @@ class ChatResponse:
             d["validation"] = self.validation
         if self.repair:
             d["repair"] = self.repair
+        if self.physics_validation:
+            d["physics_validation"] = self.physics_validation
         return d
 
 
@@ -118,11 +122,32 @@ class ChatbotService:
         )
         self._router = get_router()
         self._validator = ConstraintValidator()
+        self._dc_validator = DCBiasValidator()
         self._repair = RepairEngine()
+        self._enforce_physics_gate = (
+            os.getenv("ENFORCE_PHYSICS_GATE", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self._enforce_simulation_feedback_gate = (
+            os.getenv("ENFORCE_SIMULATION_FEEDBACK_GATE", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        try:
+            self._simulation_retry_attempts = max(
+                int(os.getenv("SIMULATION_FEEDBACK_MAX_RETRIES", "1") or "1"),
+                0,
+            )
+        except ValueError:
+            self._simulation_retry_attempts = 1
         self._electronics_domain_only = (
             os.getenv("ELECTRONICS_DOMAIN_ONLY", "true").strip().lower()
             in {"1", "true", "yes", "on"}
         )
+        self._feedback_memory_enabled = (
+            os.getenv("CHATBOT_FEEDBACK_MEMORY_ENABLED", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self._feedback_memory_path = _API_ROOT / "resources" / "runtime" / "design_feedback_memory.json"
         self._context_db_enabled = False
         self._chat_repo: Optional[ChatHistoryRepository] = None
         self._summary_repo: Optional[SummaryMemoryRepository] = None
@@ -187,12 +212,20 @@ class ChatbotService:
                 f"edit_ops={len(intent.edit_operations)}"
             )
 
+            normalized_intent_type, used_fallback = self._normalize_intent_type(intent.intent_type)
+            if used_fallback:
+                intent.warnings.append(
+                    f"Intent type '{intent.intent_type}' khong hop le, fallback sang '{normalized_intent_type}'"
+                )
+                intent.intent_type = normalized_intent_type
+                response.intent = intent.to_dict()
+
             # ── GĐ 2: Branch theo intent_type ──
-            if intent.intent_type == "modify":
+            if normalized_intent_type == "modify":
                 response = self._handle_modify(intent, response, start, mode=selected_mode)
-            elif intent.intent_type == "validate":
+            elif normalized_intent_type == "validate":
                 response = self._handle_validate(intent, response, start, mode=selected_mode)
-            elif intent.intent_type == "explain":
+            elif normalized_intent_type == "explain":
                 response = self._handle_explain(intent, response, start, mode=selected_mode)
             else:
                 response = self._handle_create(intent, response, start, mode=selected_mode)
@@ -215,6 +248,7 @@ class ChatbotService:
     def _init_context_router(self) -> None:
         """Initialize chat-context persistence layer if database is available."""
         try:
+            self._ensure_chat_context_schema()
             db = SessionLocal()
             self._chat_repo = ChatHistoryRepository(db)
             self._summary_repo = SummaryMemoryRepository(db)
@@ -230,6 +264,26 @@ class ChatbotService:
             logger.warning("Chat context DB disabled: %s", exc)
             self._context_db_enabled = False
 
+    @staticmethod
+    def _ensure_chat_context_schema() -> None:
+        """Create chat-context tables if migrations have not been applied yet."""
+        from app.db.chat_context_models import (
+            ChatModel,
+            ChatSummaryModel,
+            MemoryFactModel,
+            MessageModel,
+        )
+
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                ChatModel.__table__,
+                MessageModel.__table__,
+                ChatSummaryModel.__table__,
+                MemoryFactModel.__table__,
+            ],
+        )
+
     def _disable_context_db(self, reason: Exception) -> None:
         """Hard-disable context DB after runtime failure and rollback session state."""
         for repo in (self._chat_repo, self._summary_repo, self._knowledge_repo):
@@ -237,7 +291,8 @@ class ChatbotService:
             if session is None:
                 continue
             try:
-                session.rollback()
+                if getattr(session, "is_active", False):
+                    session.rollback()
             except Exception:  # pragma: no cover - defensive runtime behavior
                 pass
 
@@ -325,6 +380,8 @@ class ChatbotService:
     def _handle_create(self, intent: CircuitIntent, response: ChatResponse, start: float, mode: LLMMode) -> ChatResponse:
         """Flow tạo mạch mới: NLU → Clarify? → AI Core → Validate → Repair → NLG."""
 
+        assumption_notes = self._apply_reasonable_defaults(intent)
+
         # Clarification nếu thiếu thông tin
         if intent.circuit_type == "unknown" or intent.confidence < 0.3:
             response.needs_clarification = True
@@ -352,7 +409,8 @@ class ChatbotService:
             return response
 
         # AI Core pipeline
-        spec = self._intent_to_spec(intent)
+        generation_intent = self._inject_feedback_hints(intent)
+        spec = self._intent_to_spec(generation_intent)
         pipeline_result = self._ai_core.handle_spec(spec)
         response.pipeline = pipeline_result.to_dict()
         response.template_id = pipeline_result.plan.matched_template_id or "" if pipeline_result.plan else ""
@@ -445,8 +503,33 @@ class ChatbotService:
 
             if not val_report.passed and self._has_hard_constraint_errors(val_report):
                 failed_codes = self._extract_validation_error_codes(val_report)
+                alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
+                    intent=intent,
+                    failed_codes=failed_codes,
+                )
+                if alternative_bundle:
+                    pipeline_result = alternative_bundle["pipeline_result"]
+                    circuit = pipeline_result.circuit
+                    solved = pipeline_result.solved
+                    circuit_data = circuit.circuit_data if circuit else circuit_data
+                    solved_values = solved.values if solved else solved_values
+                    val_report = alternative_bundle["validation_report"]
+                    response.pipeline = pipeline_result.to_dict()
+                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
+                    response.validation = val_report.to_dict()
+                    response.suggestions.extend(alternative_bundle.get("relax_notes", []))
+
+            if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                failed_codes = self._extract_validation_error_codes(val_report)
+                self._record_feedback_event(
+                    intent=intent,
+                    stage="validate",
+                    errors=[f"Hard constraints not satisfied: {', '.join(failed_codes)}"],
+                    suggestions=["Dieu chinh topology va tham so de dap ung hard constraints"],
+                    metadata={"failed_codes": failed_codes, "flow": "create"},
+                )
                 response.success = False
-                response.message = self._nlg.generate_error_response(
+                response.message = self._safe_error_response(
                     error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
                     stage="validate",
                     circuit_type=intent.circuit_type,
@@ -456,6 +539,73 @@ class ChatbotService:
                 )
                 response.processing_time_ms = (time.time() - start) * 1000
                 return response
+
+            gain_for_validation = self._resolve_gain_for_validation(
+                solved_values=solved_values,
+                fallback_gain=(solved.actual_gain if solved else None),
+            )
+            physics_payload = self._run_physics_validation(
+                intent=intent,
+                solved_values=solved_values,
+                circuit_data=circuit_data,
+                gain_actual=gain_for_validation,
+            )
+            self._attach_physics_validation(response, physics_payload)
+            if not physics_payload.get("passed", True):
+                local_fix = self._attempt_local_physics_autofix(
+                    intent=intent,
+                    solved_values=solved_values,
+                    circuit_data=circuit_data,
+                    gain_actual=gain_for_validation,
+                    physics_payload=physics_payload,
+                )
+                if local_fix:
+                    solved_values = local_fix["solved_values"]
+                    circuit_data = local_fix["circuit_data"]
+                    physics_payload = local_fix["physics_validation"]
+                    self._attach_physics_validation(response, physics_payload)
+
+                if not physics_payload.get("passed", True):
+                    retry_bundle = self._retry_pipeline_for_physics_failures(
+                        intent=intent,
+                        physics_payload=physics_payload,
+                        max_attempts=3,
+                    )
+                    if retry_bundle:
+                        pipeline_result = retry_bundle["pipeline_result"]
+                        circuit = pipeline_result.circuit
+                        solved = pipeline_result.solved
+                        circuit_data = circuit.circuit_data if circuit else circuit_data
+                        solved_values = solved.values if solved else {}
+                        val_report = retry_bundle["validation_report"]
+                        physics_payload = retry_bundle["physics_validation"]
+                        response.pipeline = pipeline_result.to_dict()
+                        response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
+                        response.validation = val_report.to_dict()
+                        self._attach_physics_validation(response, physics_payload)
+
+                if not physics_payload.get("passed", True):
+                    self._record_feedback_event(
+                        intent=intent,
+                        stage="physical_validate",
+                        errors=list(physics_payload.get("errors", [])),
+                        suggestions=list(physics_payload.get("suggestions", [])),
+                        metadata={"flow": "create"},
+                    )
+                    response.success = False
+                    response.message = self._safe_error_response(
+                        error_msg=(
+                            "Physical validation failed: "
+                            + "; ".join(physics_payload.get("errors", []))
+                        ),
+                        stage="physical_validate",
+                        circuit_type=intent.circuit_type,
+                        gain_target=intent.gain_target,
+                        vcc=intent.vcc,
+                        mode=mode,
+                    )
+                    response.processing_time_ms = (time.time() - start) * 1000
+                    return response
 
             # Enrich circuit_data with simulation schema extracted from user prompt.
             self._apply_simulation_requirements(intent, circuit_data)
@@ -473,6 +623,71 @@ class ChatbotService:
             )
             response.template_id = circuit.template_id
 
+            simulation_feedback = self._evaluate_simulation_feedback(
+                intent=intent,
+                analysis=response.analysis,
+            )
+            self._attach_simulation_feedback(response, simulation_feedback)
+
+            if not simulation_feedback.get("passed", True):
+                retry_bundle = self._retry_pipeline_for_simulation_feedback(
+                    intent=intent,
+                    simulation_feedback=simulation_feedback,
+                    max_attempts=self._simulation_retry_attempts,
+                )
+                if retry_bundle:
+                    pipeline_result = retry_bundle["pipeline_result"]
+                    circuit = pipeline_result.circuit
+                    solved = pipeline_result.solved
+                    circuit_data = circuit.circuit_data if circuit else circuit_data
+                    solved_values = solved.values if solved else {}
+                    val_report = retry_bundle["validation_report"]
+                    physics_payload = retry_bundle["physics_validation"]
+                    response.pipeline = pipeline_result.to_dict()
+                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
+                    response.validation = val_report.to_dict()
+                    self._attach_physics_validation(response, physics_payload)
+
+                    self._apply_simulation_requirements(intent, circuit_data)
+                    response.params = solved_values
+                    response.circuit_data = circuit_data
+                    response.analysis = self._build_design_analysis(
+                        intent=intent,
+                        circuit_data=circuit_data,
+                        solved_values=solved_values,
+                        gain_formula=circuit.gain_formula if circuit else "",
+                        gain_actual=solved.actual_gain if solved else None,
+                        stage_analysis=(solved.stage_analysis if solved else None),
+                    )
+                    simulation_feedback = self._evaluate_simulation_feedback(
+                        intent=intent,
+                        analysis=response.analysis,
+                    )
+                    self._attach_simulation_feedback(response, simulation_feedback)
+
+            if not simulation_feedback.get("passed", True):
+                self._record_feedback_event(
+                    intent=intent,
+                    stage="simulation_feedback",
+                    errors=list(simulation_feedback.get("errors", [])),
+                    suggestions=list(simulation_feedback.get("suggestions", [])),
+                    metadata={"flow": "create"},
+                )
+                response.success = False
+                response.message = self._safe_error_response(
+                    error_msg=(
+                        "Simulation feedback gate failed: "
+                        + "; ".join(simulation_feedback.get("errors", []))
+                    ),
+                    stage="simulation_feedback",
+                    circuit_type=intent.circuit_type,
+                    gain_target=intent.gain_target,
+                    vcc=intent.vcc,
+                    mode=mode,
+                )
+                response.processing_time_ms = (time.time() - start) * 1000
+                return response
+
             analysis_gain = (
                 ((response.analysis or {}).get("parameters") or {}).get("gain_actual")
                 if isinstance(response.analysis, dict)
@@ -482,6 +697,8 @@ class ChatbotService:
 
             # Collect warnings
             warnings = []
+            if assumption_notes:
+                warnings.extend(assumption_notes)
             if circuit.validation and circuit.validation.warnings:
                 warnings.extend(circuit.validation.warnings)
             if solved and solved.warnings:
@@ -501,6 +718,10 @@ class ChatbotService:
                 stage_table=((response.analysis or {}).get("cascading", {}) or {}).get("stage_table", []),
                 mode=mode,
             )
+            response.message = self._safe_text(
+                response.message,
+                "✅ Da hoan tat thiet ke va kiem tra, nhung NLG khong tra ve noi dung day du.",
+            )
 
             # Nếu user gửi câu đa ý (vừa thiết kế vừa yêu cầu giải thích), append phần explain.
             if "explain" in intent.requested_actions:
@@ -516,9 +737,12 @@ class ChatbotService:
                     response.repair.get("actions", []),
                 )
                 response.message += "\n\n" + repair_summary
+
+            if assumption_notes:
+                response.suggestions.extend([f"Gia dinh bo sung: {note}" for note in assumption_notes])
         else:
             response.success = False
-            response.message = self._nlg.generate_error_response(
+            response.message = self._safe_error_response(
                 error_msg=pipeline_result.error,
                 stage=pipeline_result.stage_reached,
                 circuit_type=intent.circuit_type,
@@ -533,6 +757,8 @@ class ChatbotService:
     def _handle_modify(self, intent: CircuitIntent, response: ChatResponse, start: float, mode: LLMMode) -> ChatResponse:
         """Flow chỉnh sửa mạch: xác định thao tác → apply lên mạch base → validate → NLG."""
 
+        assumption_notes = self._apply_reasonable_defaults(intent)
+
         if not intent.edit_operations:
             response.needs_clarification = True
             response.success = False
@@ -542,7 +768,8 @@ class ChatbotService:
 
         # Nếu chưa có mạch base (circuit_type rõ) → tạo trước, rồi modify
         if intent.circuit_type and intent.circuit_type != "unknown":
-            spec = self._intent_to_spec(intent)
+            generation_intent = self._inject_feedback_hints(intent)
+            spec = self._intent_to_spec(generation_intent)
             pipeline_result = self._ai_core.handle_spec(spec)
 
             if pipeline_result.success and pipeline_result.circuit:
@@ -618,8 +845,43 @@ class ChatbotService:
 
                 if not val_report.passed and self._has_hard_constraint_errors(val_report):
                     failed_codes = self._extract_validation_error_codes(val_report)
+                    alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
+                        intent=intent,
+                        failed_codes=failed_codes,
+                    )
+                    if alternative_bundle:
+                        pipeline_result = alternative_bundle["pipeline_result"]
+                        circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
+                        solved = dict(pipeline_result.solved.values) if pipeline_result.solved else solved
+                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
+
+                        gain_for_validation = self._resolve_gain_for_validation(
+                            solved_values=solved,
+                            fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                        )
+                        solved_for_validation = self._prepare_validation_metrics(
+                            intent=intent,
+                            solved_values=solved,
+                            gain_actual=gain_for_validation,
+                            stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                        )
+                        val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                        response.validation = val_report.to_dict()
+                        response.pipeline = pipeline_result.to_dict()
+                        response.template_id = pipeline_result.plan.matched_template_id if pipeline_result.plan else response.template_id
+                        response.suggestions.extend(alternative_bundle.get("relax_notes", []))
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    self._record_feedback_event(
+                        intent=intent,
+                        stage="validate",
+                        errors=[f"Hard constraints not satisfied: {', '.join(failed_codes)}"],
+                        suggestions=["Dieu chinh edit operations hoac topology de dap ung hard constraints"],
+                        metadata={"failed_codes": failed_codes, "flow": "modify"},
+                    )
                     response.success = False
-                    response.message = self._nlg.generate_error_response(
+                    response.message = self._safe_error_response(
                         error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
                         stage="validate",
                         circuit_type=intent.circuit_type,
@@ -629,6 +891,88 @@ class ChatbotService:
                     )
                     response.processing_time_ms = (time.time() - start) * 1000
                     return response
+
+                gain_for_validation = self._resolve_gain_for_validation(
+                    solved_values=solved,
+                    fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                )
+                physics_payload = self._run_physics_validation(
+                    intent=intent,
+                    solved_values=solved,
+                    circuit_data=circuit_data,
+                    gain_actual=gain_for_validation,
+                )
+                self._attach_physics_validation(response, physics_payload)
+                if not physics_payload.get("passed", True):
+                    local_fix = self._attempt_local_physics_autofix(
+                        intent=intent,
+                        solved_values=solved,
+                        circuit_data=circuit_data,
+                        gain_actual=gain_for_validation,
+                        physics_payload=physics_payload,
+                    )
+                    if local_fix:
+                        solved = local_fix["solved_values"]
+                        circuit_data = local_fix["circuit_data"]
+                        physics_payload = local_fix["physics_validation"]
+                        self._attach_physics_validation(response, physics_payload)
+
+                    retry_bundle = self._retry_pipeline_for_physics_failures(
+                        intent=intent,
+                        physics_payload=physics_payload,
+                        max_attempts=3,
+                    )
+                    if retry_bundle:
+                        pipeline_result = retry_bundle["pipeline_result"]
+                        circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
+                        solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
+                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
+
+                        gain_for_validation = self._resolve_gain_for_validation(
+                            solved_values=solved,
+                            fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                        )
+                        solved_for_validation = self._prepare_validation_metrics(
+                            intent=intent,
+                            solved_values=solved,
+                            gain_actual=gain_for_validation,
+                            stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
+                        )
+                        val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                        response.validation = val_report.to_dict()
+                        response.pipeline = pipeline_result.to_dict()
+                        response.template_id = pipeline_result.plan.matched_template_id if pipeline_result.plan else response.template_id
+
+                        physics_payload = self._run_physics_validation(
+                            intent=intent,
+                            solved_values=solved,
+                            circuit_data=circuit_data,
+                            gain_actual=gain_for_validation,
+                        )
+                        self._attach_physics_validation(response, physics_payload)
+
+                    if not physics_payload.get("passed", True):
+                        self._record_feedback_event(
+                            intent=intent,
+                            stage="physical_validate",
+                            errors=list(physics_payload.get("errors", [])),
+                            suggestions=list(physics_payload.get("suggestions", [])),
+                            metadata={"flow": "modify"},
+                        )
+                        response.success = False
+                        response.message = self._safe_error_response(
+                            error_msg=(
+                                "Physical validation failed: "
+                                + "; ".join(physics_payload.get("errors", []))
+                            ),
+                            stage="physical_validate",
+                            circuit_type=intent.circuit_type,
+                            gain_target=intent.gain_target,
+                            vcc=intent.vcc,
+                            mode=mode,
+                        )
+                        response.processing_time_ms = (time.time() - start) * 1000
+                        return response
 
                 # Keep simulation schema consistent after edits.
                 self._apply_simulation_requirements(intent, circuit_data)
@@ -644,6 +988,33 @@ class ChatbotService:
                     gain_actual=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
                     stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
                 )
+                simulation_feedback = self._evaluate_simulation_feedback(
+                    intent=intent,
+                    analysis=response.analysis,
+                )
+                self._attach_simulation_feedback(response, simulation_feedback)
+                if not simulation_feedback.get("passed", True):
+                    self._record_feedback_event(
+                        intent=intent,
+                        stage="simulation_feedback",
+                        errors=list(simulation_feedback.get("errors", [])),
+                        suggestions=list(simulation_feedback.get("suggestions", [])),
+                        metadata={"flow": "modify"},
+                    )
+                    response.success = False
+                    response.message = self._safe_error_response(
+                        error_msg=(
+                            "Simulation feedback gate failed: "
+                            + "; ".join(simulation_feedback.get("errors", []))
+                        ),
+                        stage="simulation_feedback",
+                        circuit_type=intent.circuit_type,
+                        gain_target=intent.gain_target,
+                        vcc=intent.vcc,
+                        mode=mode,
+                    )
+                    response.processing_time_ms = (time.time() - start) * 1000
+                    return response
                 response.template_id = pipeline_result.plan.matched_template_id if pipeline_result.plan else ""
                 response.pipeline = pipeline_result.to_dict()
                 response.message = self._nlg.generate_modify_response(
@@ -652,9 +1023,15 @@ class ChatbotService:
                     circuit_data=circuit_data,
                     solved=solved,
                 )
+                response.message = self._safe_text(
+                    response.message,
+                    "✅ Da thuc thi yeu cau chinh sua, nhung NLG chua tra ve tom tat hop le.",
+                )
+                if assumption_notes:
+                    response.suggestions.extend([f"Gia dinh bo sung: {note}" for note in assumption_notes])
             else:
                 response.success = False
-                response.message = self._nlg.generate_error_response(
+                response.message = self._safe_error_response(
                     error_msg=pipeline_result.error,
                     stage=pipeline_result.stage_reached,
                     circuit_type=intent.circuit_type,
@@ -675,8 +1052,10 @@ class ChatbotService:
 
     def _handle_validate(self, intent: CircuitIntent, response: ChatResponse, start: float, mode: LLMMode) -> ChatResponse:
         """Flow kiểm tra: tạo mạch → validate → báo cáo."""
+        assumption_notes = self._apply_reasonable_defaults(intent)
         if intent.circuit_type and intent.circuit_type != "unknown":
-            spec = self._intent_to_spec(intent)
+            generation_intent = self._inject_feedback_hints(intent)
+            spec = self._intent_to_spec(generation_intent)
             pipeline_result = self._ai_core.handle_spec(spec)
 
             if pipeline_result.success and pipeline_result.circuit:
@@ -710,9 +1089,29 @@ class ChatbotService:
 
                 if not val_report.passed and self._has_hard_constraint_errors(val_report):
                     failed_codes = self._extract_validation_error_codes(val_report)
+                    alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
+                        intent=intent,
+                        failed_codes=failed_codes,
+                    )
+                    if alternative_bundle:
+                        pipeline_result = alternative_bundle["pipeline_result"]
+                        solved = pipeline_result.solved.values if pipeline_result.solved else solved
+                        val_report = alternative_bundle["validation_report"]
+                        response.pipeline = pipeline_result.to_dict()
+                        response.suggestions.extend(alternative_bundle.get("relax_notes", []))
+
+                if not val_report.passed and self._has_hard_constraint_errors(val_report):
+                    failed_codes = self._extract_validation_error_codes(val_report)
+                    self._record_feedback_event(
+                        intent=intent,
+                        stage="validate",
+                        errors=[f"Hard constraints not satisfied: {', '.join(failed_codes)}"],
+                        suggestions=["Dieu chinh topology va tham so de dap ung hard constraints"],
+                        metadata={"failed_codes": failed_codes, "flow": "validate"},
+                    )
                     response.success = False
                     response.validation = val_report.to_dict()
-                    response.message = self._nlg.generate_error_response(
+                    response.message = self._safe_error_response(
                         error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
                         stage="validate",
                         circuit_type=intent.circuit_type,
@@ -723,10 +1122,73 @@ class ChatbotService:
                     response.processing_time_ms = (time.time() - start) * 1000
                     return response
 
+                gain_for_validation = self._resolve_gain_for_validation(
+                    solved_values=solved,
+                    fallback_gain=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
+                )
+                physics_payload = self._run_physics_validation(
+                    intent=intent,
+                    solved_values=solved,
+                    circuit_data=pipeline_result.circuit.circuit_data,
+                    gain_actual=gain_for_validation,
+                )
+                self._attach_physics_validation(response, physics_payload)
+                if not physics_payload.get("passed", True):
+                    local_fix = self._attempt_local_physics_autofix(
+                        intent=intent,
+                        solved_values=solved,
+                        circuit_data=pipeline_result.circuit.circuit_data,
+                        gain_actual=gain_for_validation,
+                        physics_payload=physics_payload,
+                    )
+                    if local_fix:
+                        solved = local_fix["solved_values"]
+                        pipeline_result.circuit.circuit_data = local_fix["circuit_data"]
+                        physics_payload = local_fix["physics_validation"]
+                        self._attach_physics_validation(response, physics_payload)
+
+                    retry_bundle = self._retry_pipeline_for_physics_failures(
+                        intent=intent,
+                        physics_payload=physics_payload,
+                        max_attempts=3,
+                    )
+                    if retry_bundle:
+                        pipeline_result = retry_bundle["pipeline_result"]
+                        solved = pipeline_result.solved.values if pipeline_result.solved else {}
+                        val_report = retry_bundle["validation_report"]
+                        physics_payload = retry_bundle["physics_validation"]
+                        response.pipeline = pipeline_result.to_dict()
+                        self._attach_physics_validation(response, physics_payload)
+
+                    if not physics_payload.get("passed", True):
+                        self._record_feedback_event(
+                            intent=intent,
+                            stage="physical_validate",
+                            errors=list(physics_payload.get("errors", [])),
+                            suggestions=list(physics_payload.get("suggestions", [])),
+                            metadata={"flow": "validate"},
+                        )
+                        response.success = False
+                        response.validation = val_report.to_dict()
+                        response.message = self._safe_error_response(
+                            error_msg=(
+                                "Physical validation failed: "
+                                + "; ".join(physics_payload.get("errors", []))
+                            ),
+                            stage="physical_validate",
+                            circuit_type=intent.circuit_type,
+                            gain_target=intent.gain_target,
+                            vcc=intent.vcc,
+                            mode=mode,
+                        )
+                        response.processing_time_ms = (time.time() - start) * 1000
+                        return response
+
                 response.validation = val_report.to_dict()
                 response.success = True
                 response.circuit_data = pipeline_result.circuit.circuit_data
                 response.params = solved
+                self._apply_simulation_requirements(intent, response.circuit_data)
                 response.analysis = self._build_design_analysis(
                     intent=intent,
                     circuit_data=pipeline_result.circuit.circuit_data,
@@ -735,10 +1197,43 @@ class ChatbotService:
                     gain_actual=(pipeline_result.solved.actual_gain if pipeline_result.solved else None),
                     stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
                 )
+                simulation_feedback = self._evaluate_simulation_feedback(
+                    intent=intent,
+                    analysis=response.analysis,
+                )
+                self._attach_simulation_feedback(response, simulation_feedback)
+                if not simulation_feedback.get("passed", True):
+                    self._record_feedback_event(
+                        intent=intent,
+                        stage="simulation_feedback",
+                        errors=list(simulation_feedback.get("errors", [])),
+                        suggestions=list(simulation_feedback.get("suggestions", [])),
+                        metadata={"flow": "validate"},
+                    )
+                    response.success = False
+                    response.message = self._safe_error_response(
+                        error_msg=(
+                            "Simulation feedback gate failed: "
+                            + "; ".join(simulation_feedback.get("errors", []))
+                        ),
+                        stage="simulation_feedback",
+                        circuit_type=intent.circuit_type,
+                        gain_target=intent.gain_target,
+                        vcc=intent.vcc,
+                        mode=mode,
+                    )
+                    response.processing_time_ms = (time.time() - start) * 1000
+                    return response
                 response.message = self._nlg.generate_validation_report(val_report)
+                response.message = self._safe_text(
+                    response.message,
+                    "✅ Da kiem tra thanh cong, nhung NLG chua tra ve bao cao hop le.",
+                )
+                if assumption_notes:
+                    response.suggestions.extend([f"Gia dinh bo sung: {note}" for note in assumption_notes])
             else:
                 response.success = False
-                response.message = self._nlg.generate_error_response(
+                response.message = self._safe_error_response(
                     error_msg=pipeline_result.error,
                     stage=pipeline_result.stage_reached,
                     circuit_type=intent.circuit_type,
@@ -983,17 +1478,293 @@ class ChatbotService:
     def _resolve_chat_mode(self, mode: Optional[str]) -> LLMMode:
         if mode:
             value = str(mode).strip().lower()
+            if value in {"air", "fast"}:
+                return LLMMode.FAST
+            if value == "think":
+                return LLMMode.THINK
             if value == "pro":
                 return LLMMode.PRO
-            if value == "air":
-                return LLMMode.AIR
+            if value == "ultra":
+                return LLMMode.ULTRA
         default_mode = (
             os.getenv("GoogleCloud_Default_Mode")
             or os.getenv("Google_Cloud_Default_Mode")
             or os.getenv("DEFAULT_MODE")
-            or "air"
+            or "fast"
         ).strip().lower()
-        return LLMMode.PRO if default_mode == "pro" else LLMMode.AIR
+        mode_alias = {
+            "air": LLMMode.FAST,
+            "fast": LLMMode.FAST,
+            "think": LLMMode.THINK,
+            "pro": LLMMode.PRO,
+            "ultra": LLMMode.ULTRA,
+        }
+        return mode_alias.get(default_mode, LLMMode.FAST)
+
+    @staticmethod
+    def _normalize_intent_type(intent_type: str) -> Tuple[str, bool]:
+        """Chuan hoa intent type de dam bao request stage xac dinh dung/sai ro rang."""
+        allowed = {"create", "modify", "validate", "explain", "optimize", "compare"}
+        value = (intent_type or "").strip().lower()
+        if value in allowed:
+            return value, False
+        return "create", True
+
+    @staticmethod
+    def _safe_text(text: Optional[str], fallback: str) -> str:
+        """Dam bao response stage luon tra ve text hop le, neu khong thi fallback."""
+        if isinstance(text, str) and text.strip():
+            return text
+        return fallback
+
+    def _safe_error_response(
+        self,
+        *,
+        error_msg: str,
+        stage: str,
+        circuit_type: str,
+        gain_target: Optional[float],
+        vcc: Optional[float],
+        mode: LLMMode,
+    ) -> str:
+        """Sinh error message va fallback khi NLG khong tra ve noi dung hop le."""
+        generated = self._nlg.generate_error_response(
+            error_msg=error_msg,
+            stage=stage,
+            circuit_type=circuit_type,
+            gain_target=gain_target,
+            vcc=vcc,
+            mode=mode,
+        )
+        return self._safe_text(generated, f"❌ Loi tai buoc '{stage}': {error_msg}")
+
+    def _apply_reasonable_defaults(self, intent: CircuitIntent) -> List[str]:
+        """Apply conservative defaults for incomplete but reasonable design requests."""
+        notes: List[str] = []
+        raw_text = (intent.raw_text or "").lower()
+
+        if not intent.hard_constraints.get("gain_min") and not intent.hard_constraints.get("gain_max"):
+            range_match = re.search(
+                r"(?:tong\s*)?gain\s*(?:trong\s*khoang|khoảng|tu|từ|xap\s*xi|xấp\s*xỉ)?\s*"
+                r"(-?[0-9]+(?:\.[0-9]+)?)\s*(?:-|den|đến|to|~)\s*(-?[0-9]+(?:\.[0-9]+)?)",
+                raw_text,
+                re.IGNORECASE,
+            )
+            if range_match:
+                try:
+                    g1 = float(range_match.group(1))
+                    g2 = float(range_match.group(2))
+                    g_min = min(g1, g2)
+                    g_max = max(g1, g2)
+                    intent.hard_constraints["gain_min"] = g_min
+                    intent.hard_constraints["gain_max"] = g_max
+                    notes.append(f"Suy luan range gain tu prompt: {g_min:g}..{g_max:g}")
+                except (ValueError, TypeError):
+                    pass
+
+        if (
+            intent.circuit_type == "multi_stage"
+            and intent.hard_constraints.get("direct_coupling_required")
+            and "ce" in raw_text
+            and "cc" in raw_text
+        ):
+            if "prefer_ce_cc_direct" not in intent.extra_requirements:
+                intent.extra_requirements.append("prefer_ce_cc_direct")
+
+        zout_max = intent.hard_constraints.get("output_impedance_max_ohm")
+        if isinstance(zout_max, (int, float)) and float(zout_max) <= 100.0:
+            if not intent.output_buffer:
+                intent.output_buffer = True
+                notes.append(f"Zout yeu cau <= {float(zout_max):g} ohm, tu bat output buffer")
+            if "low_output_impedance" not in intent.extra_requirements:
+                intent.extra_requirements.append("low_output_impedance")
+
+        ctype = (intent.circuit_type or "").strip().lower()
+        if not isinstance(intent.gain_target, (int, float)) or intent.gain_target <= 0:
+            default_gain = 10.0
+            if ctype in {"common_emitter", "common_source", "common_base", "common_collector"}:
+                default_gain = 20.0
+            elif ctype in {"inverting", "non_inverting", "differential", "instrumentation"}:
+                default_gain = 5.0
+            elif ctype in {"multi_stage", "darlington"}:
+                if isinstance(intent.hard_constraints.get("gain_min"), (int, float)) and isinstance(intent.hard_constraints.get("gain_max"), (int, float)):
+                    default_gain = (float(intent.hard_constraints["gain_min"]) + float(intent.hard_constraints["gain_max"])) / 2.0
+                else:
+                    default_gain = 24.0
+            intent.gain_target = float(default_gain)
+            notes.append(f"Thieu gain, he thong tu gia dinh gain_target={default_gain:g}")
+
+        if not isinstance(intent.vcc, (int, float)) or intent.vcc <= 0:
+            default_vcc = 12.0
+            if intent.supply_mode == "single_supply" or intent.device_preference == "opamp":
+                default_vcc = 5.0
+            intent.vcc = float(default_vcc)
+            notes.append(f"Thieu VCC, he thong tu gia dinh VCC={default_vcc:g}V")
+
+        if not intent.frequency and any(tag in (intent.raw_text or "").lower() for tag in ["ac", "sin", "transient"]):
+            intent.frequency = 1000.0
+            notes.append("Thieu tan so kich, he thong tu gia dinh f=1kHz")
+
+        return notes
+
+    def _attempt_alternative_design_for_unreasonable_constraints(
+        self,
+        *,
+        intent: CircuitIntent,
+        failed_codes: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Try generating a feasible alternative by relaxing conflicting hard constraints."""
+        relaxed = copy.deepcopy(intent)
+        constraints = dict(relaxed.hard_constraints or {})
+        relax_notes: List[str] = []
+
+        if "HARD_GAIN_MAX" in failed_codes and "gain_max" in constraints:
+            gain_max = constraints.pop("gain_max")
+            if isinstance(gain_max, (int, float)):
+                relaxed.gain_target = min(float(relaxed.gain_target or gain_max), float(gain_max))
+                relax_notes.append(f"Rang buoc gain_max={gain_max:g} khong kha thi, de xuat muc gain gan nhat")
+
+        if "HARD_GAIN_MIN" in failed_codes and "gain_min" in constraints:
+            gain_min = constraints.pop("gain_min")
+            if isinstance(gain_min, (int, float)):
+                relaxed.gain_target = max(float(relaxed.gain_target or gain_min), float(gain_min))
+                relax_notes.append(f"Rang buoc gain_min={gain_min:g} khong kha thi, de xuat muc gain gan nhat")
+
+        if "HARD_VCC_MAX" in failed_codes and "vcc_max" in constraints:
+            vcc_max = constraints.pop("vcc_max")
+            if isinstance(vcc_max, (int, float)):
+                if isinstance(relaxed.vcc, (int, float)):
+                    relaxed.vcc = min(float(relaxed.vcc), float(vcc_max))
+                else:
+                    relaxed.vcc = float(vcc_max)
+                relax_notes.append(f"Rang buoc VCC toi da {vcc_max:g}V duoc ap vao thiet ke thay the")
+
+        if "HARD_ZOUT_MAX" in failed_codes:
+            relaxed.output_buffer = True
+            if "low_output_impedance" not in relaxed.extra_requirements:
+                relaxed.extra_requirements.append("low_output_impedance")
+            if "output_impedance_max_ohm" in constraints:
+                try:
+                    original_zout = float(constraints.get("output_impedance_max_ohm"))
+                    relaxed_zout = max(original_zout * 1.8, 80.0)
+                    constraints["output_impedance_max_ohm"] = relaxed_zout
+                    relax_notes.append(
+                        f"Rang buoc Zout <= {original_zout:g} ohm qua chat, de xuat phuong an kha thi voi Zout <= {relaxed_zout:g} ohm"
+                    )
+                except (TypeError, ValueError):
+                    constraints.pop("output_impedance_max_ohm", None)
+                    relax_notes.append("Khong the dam bao hard Zout ban dau, de xuat phuong an output buffer toi uu")
+            else:
+                relax_notes.append("Them tang buffer dau ra de cai thien Zout")
+
+        if "HARD_DIRECT_COUPLING" in failed_codes and constraints.get("direct_coupling_required"):
+            constraints.pop("direct_coupling_required", None)
+            relax_notes.append("Cho phep phuong an coupling thay the do direct coupling khong kha thi")
+
+        if not relax_notes:
+            return None
+
+        relaxed.raw_text = (
+            f"{relaxed.raw_text}. Neu rang buoc ban dau mau thuan, "
+            "uu tien thiet ke kha thi vat ly va de xuat phuong an gan nhat."
+        )
+
+        attempts: List[Tuple[CircuitIntent, List[str]]] = []
+        primary = copy.deepcopy(relaxed)
+        primary.hard_constraints = dict(constraints)
+        attempts.append((primary, list(relax_notes)))
+
+        fallback = copy.deepcopy(relaxed)
+        fallback_constraints = dict(constraints)
+        fallback_notes = list(relax_notes)
+        dropped_any = False
+
+        if "HARD_ZOUT_MAX" in failed_codes and "output_impedance_max_ohm" in fallback_constraints:
+            prev = fallback_constraints.pop("output_impedance_max_ohm", None)
+            if isinstance(prev, (int, float)):
+                fallback_notes.append(
+                    f"Khong the dam bao hard Zout <= {float(prev):g} ohm, chuyen sang phuong an kha thi va uu tien output buffer"
+                )
+                dropped_any = True
+
+        if "HARD_GAIN_MIN" in failed_codes and "gain_min" in fallback_constraints:
+            prev = fallback_constraints.pop("gain_min", None)
+            if isinstance(prev, (int, float)):
+                fallback_notes.append(
+                    f"Khong the dam bao hard gain_min={float(prev):g}, de xuat muc gain toi uu gan nhat"
+                )
+                dropped_any = True
+
+        if "HARD_GAIN_MAX" in failed_codes and "gain_max" in fallback_constraints:
+            prev = fallback_constraints.pop("gain_max", None)
+            if isinstance(prev, (int, float)):
+                fallback_notes.append(
+                    f"Khong the dam bao hard gain_max={float(prev):g}, de xuat muc gain toi uu gan nhat"
+                )
+                dropped_any = True
+
+        if "HARD_DIRECT_COUPLING" in failed_codes and "direct_coupling_required" in fallback_constraints:
+            fallback_constraints.pop("direct_coupling_required", None)
+            fallback_notes.append("Khong the duy tri hard direct coupling, de xuat phuong an coupling kha thi")
+            dropped_any = True
+
+        if dropped_any:
+            fallback.hard_constraints = fallback_constraints
+            attempts.append((fallback, fallback_notes))
+
+        best_effort_bundle: Optional[Dict[str, Any]] = None
+
+        for candidate, notes in attempts:
+            spec = self._intent_to_spec(candidate)
+            retry_result = self._ai_core.handle_spec(spec)
+            if not retry_result.success or not retry_result.circuit:
+                continue
+
+            retry_solved_values = retry_result.solved.values if retry_result.solved else {}
+            retry_gain = self._resolve_gain_for_validation(
+                solved_values=retry_solved_values,
+                fallback_gain=(retry_result.solved.actual_gain if retry_result.solved else None),
+            )
+            retry_metrics = self._prepare_validation_metrics(
+                intent=candidate,
+                solved_values=retry_solved_values,
+                gain_actual=retry_gain,
+                stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
+            )
+            retry_report = self._validator.validate(
+                retry_result.circuit.circuit_data,
+                candidate.to_dict(),
+                retry_metrics,
+            )
+            if not retry_report.passed and self._has_hard_constraint_errors(retry_report):
+                continue
+
+            retry_physics = self._run_physics_validation(
+                intent=candidate,
+                solved_values=retry_solved_values,
+                circuit_data=retry_result.circuit.circuit_data,
+                gain_actual=retry_gain,
+            )
+            bundle = {
+                "pipeline_result": retry_result,
+                "validation_report": retry_report,
+                "physics_validation": retry_physics,
+                "relax_notes": [f"De xuat thay the: {note}" for note in notes],
+                "intent": candidate,
+            }
+            if retry_physics.get("passed", False):
+                return bundle
+
+            if best_effort_bundle is None:
+                best_effort_bundle = bundle
+
+        if best_effort_bundle:
+            best_effort_bundle["relax_notes"] = list(best_effort_bundle.get("relax_notes", [])) + [
+                "De xuat thay the: Da tim thay cau hinh giam vi pham hard constraints, dang uu tien xu ly can bang vat ly"
+            ]
+            return best_effort_bundle
+
+        return None
 
     def _rule_based_explain(self, intent: CircuitIntent) -> str:
         """Fallback explanation when LLM is unavailable."""
@@ -1162,7 +1933,7 @@ class ChatbotService:
             stage_count = 2 if intent.circuit_type in {"multi_stage", "darlington"} else 1
             recommended_blocks = ["single_stage"] if stage_count == 1 else ["gain_stage", "buffer_stage"]
 
-        simulation = self._maybe_auto_simulation(intent, circuit_data)
+        simulation = self._maybe_auto_simulation(circuit_data)
 
         return {
             "parameters": {
@@ -1257,6 +2028,977 @@ class ChatbotService:
         return None
 
     @staticmethod
+    def _attach_physics_validation(response: ChatResponse, physics_payload: Dict[str, Any]) -> None:
+        """Gan ket qua physical validation vao response va validation payload tong."""
+        response.physics_validation = physics_payload
+        if response.validation is None:
+            response.validation = {}
+        if isinstance(response.validation, dict):
+            response.validation["physics"] = physics_payload
+
+    @staticmethod
+    def _attach_simulation_feedback(response: ChatResponse, payload: Dict[str, Any]) -> None:
+        """Gan ket qua simulation feedback gate vao validation payload tong."""
+        if response.validation is None:
+            response.validation = {}
+        if isinstance(response.validation, dict):
+            response.validation["simulation_feedback"] = payload
+
+    def _evaluate_simulation_feedback(
+        self,
+        intent: CircuitIntent,
+        analysis: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Danh gia ket qua simulation va chan ket qua lech yeu cau nghiem trong."""
+        if not self._enforce_simulation_feedback_gate:
+            return {
+                "enabled": False,
+                "passed": True,
+                "errors": [],
+                "suggestions": ["Simulation feedback gate disabled"],
+                "metrics": {},
+            }
+
+        sim = (analysis or {}).get("simulation") if isinstance(analysis, dict) else None
+        if not isinstance(sim, dict):
+            return {
+                "enabled": True,
+                "passed": False,
+                "errors": ["Khong co du lieu simulation de doi chieu feedback"],
+                "suggestions": ["Bat auto simulation va tra ve payload waveform/gain metrics"],
+                "metrics": {},
+            }
+
+        status = str(sim.get("status") or "").strip().lower()
+        errors: List[str] = []
+        suggestions: List[str] = []
+        metrics: Dict[str, Any] = {"status": status}
+
+        if status == "failed":
+            errors.append(f"Simulation failed: {sim.get('reason', 'unknown error')}")
+            suggestions.append("Kiem tra lai netlist va dieu kien nguon cap")
+        elif status == "skipped":
+            errors.append(f"Simulation skipped: {sim.get('reason', 'unknown')}")
+            suggestions.append("Can bo sung schema simulation hop le truoc khi tra ket qua")
+
+        analysis_block = sim.get("analysis") if isinstance(sim.get("analysis"), dict) else {}
+        gain_metrics = analysis_block.get("gain_metrics") if isinstance(analysis_block, dict) else {}
+        if isinstance(gain_metrics, dict):
+            metrics.update(gain_metrics)
+            if gain_metrics.get("status") == "ok":
+                rel_err_pct = gain_metrics.get("rel_error_pct")
+                if isinstance(rel_err_pct, (int, float)) and rel_err_pct > 20.0:
+                    errors.append(
+                        f"Do lech gain sau mo phong {rel_err_pct:.2f}% vuot nguong 20%"
+                    )
+                    suggestions.append("Can tune lai tham so linh kien theo gain metrics sau mo phong")
+
+                phase_match = gain_metrics.get("phase_match")
+                if phase_match is False:
+                    errors.append("Pha dau ra khong khop voi cau hinh gain ky vong")
+                    suggestions.append("Kiem tra lai topology inverting/non-inverting")
+
+            expected_gain = gain_metrics.get("expected_av")
+            measured_gain = gain_metrics.get("measured_av")
+            if isinstance(expected_gain, (int, float)) and isinstance(measured_gain, (int, float)):
+                metrics["gain_delta"] = float(measured_gain) - float(expected_gain)
+
+        supply_range = (analysis or {}).get("voltage_range") if isinstance(analysis, dict) else None
+        if isinstance(supply_range, dict):
+            metrics["supply_min"] = supply_range.get("min")
+            metrics["supply_max"] = supply_range.get("max")
+
+        if not errors and status in {"completed", "ok"}:
+            return {
+                "enabled": True,
+                "passed": True,
+                "errors": [],
+                "suggestions": [],
+                "metrics": metrics,
+            }
+
+        return {
+            "enabled": True,
+            "passed": len(errors) == 0,
+            "errors": errors,
+            "suggestions": list(dict.fromkeys(suggestions)),
+            "metrics": metrics,
+        }
+
+    def _run_physics_validation(
+        self,
+        intent: CircuitIntent,
+        solved_values: Dict[str, float],
+        circuit_data: Dict[str, Any],
+        gain_actual: Optional[float],
+    ) -> Dict[str, Any]:
+        """Thuc thi gate kiem tra vat ly truoc khi cho phep qua buoc tiep theo."""
+        if not self._enforce_physics_gate:
+            return {
+                "enabled": False,
+                "passed": True,
+                "errors": [],
+                "suggestions": ["Physics gate disabled by ENFORCE_PHYSICS_GATE"],
+                "metrics": {},
+            }
+
+        component_set, missing_fields = self._build_component_set_for_physics(
+            intent=intent,
+            solved_values=solved_values,
+            circuit_data=circuit_data,
+        )
+        if component_set is None:
+            return {
+                "enabled": True,
+                "passed": False,
+                "errors": [
+                    "Khong du tham so de kiem tra vat ly: " + ", ".join(missing_fields or ["unknown"])
+                ],
+                "suggestions": [
+                    "Bo sung tham so R1, R2, RC, RE va VCC de validator tinh Q-point"
+                ],
+                "metrics": {},
+            }
+
+        gain_target = intent.gain_target if intent.gain_target is not None else gain_actual
+        if (intent.circuit_type or "").strip().lower() == "multi_stage":
+            # For multi-stage chains, CE-equivalent DC check is for bias sanity only;
+            # total gain target is enforced by constraint validator/simulation gate.
+            gain_target = None
+        result: DCValidationResult = self._dc_validator.validate_by_topology(component_set, gain_target)
+        extra_checks = self._run_domain_physics_cross_checks(
+            intent=intent,
+            circuit_data=circuit_data,
+            component_set=component_set,
+        )
+
+        errors = list(result.errors) + list(extra_checks["errors"])
+        suggestions = list(result.suggestions) + list(extra_checks["suggestions"])
+        metrics = dict(result.metrics)
+        metrics.update(extra_checks["metrics"])
+
+        return {
+            "enabled": True,
+            "passed": result.passed and len(extra_checks["errors"]) == 0,
+            "errors": errors,
+            "suggestions": list(dict.fromkeys(suggestions)),
+            "metrics": metrics,
+            "component_set": component_set.to_dict(),
+        }
+
+    def _run_domain_physics_cross_checks(
+        self,
+        intent: CircuitIntent,
+        circuit_data: Dict[str, Any],
+        component_set: ComponentSet,
+    ) -> Dict[str, Any]:
+        """Cross-check domain constraints that are not covered by DC equations only."""
+        errors: List[str] = []
+        suggestions: List[str] = []
+        metrics: Dict[str, Any] = {}
+
+        requested_models = self._extract_requested_models_from_text(intent.raw_text)
+        generated_models = self._extract_generated_models(circuit_data)
+        metrics["requested_models"] = requested_models
+        metrics["generated_models"] = generated_models
+
+        if requested_models:
+            if not generated_models:
+                errors.append(
+                    "Yeu cau model linh kien cu the nhung circuit output khong khai bao model"
+                )
+                suggestions.append("Bo sung model linh kien trong component parameters hoac netlist")
+            else:
+                req_set = {m.upper() for m in requested_models}
+                gen_set = {m.upper() for m in generated_models}
+                if req_set.isdisjoint(gen_set):
+                    errors.append(
+                        f"Model linh kien khong khop yeu cau: can {', '.join(requested_models)}, thuc te {', '.join(generated_models)}"
+                    )
+                    suggestions.append("Tai sinh netlist dung dung model linh kien user da yeu cau")
+
+        supply_values = self._extract_supply_voltages_from_circuit(circuit_data)
+        supply_values.extend(self._extract_supply_voltages_from_netlist(self._extract_netlist(circuit_data)))
+        metrics["supply_voltages"] = supply_values
+
+        expected_vcc = self._extract_numeric(intent.vcc, component_set.VCC)
+        if supply_values and isinstance(expected_vcc, (int, float)):
+            max_supply = max(supply_values)
+            min_supply = min(supply_values)
+            abs_peak_supply = max(abs(float(v)) for v in supply_values)
+            has_pos_supply = any(float(v) > 0.5 for v in supply_values)
+            has_neg_supply = any(float(v) < -0.5 for v in supply_values)
+            dual_supply_requested = self._is_dual_supply_requested(intent, supply_values)
+            metrics["expected_vcc"] = expected_vcc
+            metrics["max_supply"] = max_supply
+            metrics["min_supply"] = min_supply
+            metrics["abs_peak_supply"] = abs_peak_supply
+            metrics["dual_supply_requested"] = dual_supply_requested
+
+            if dual_supply_requested:
+                if has_pos_supply and has_neg_supply:
+                    if abs_peak_supply > expected_vcc + 0.75:
+                        peak_text = self._format_compact_number(abs_peak_supply)
+                        expected_vcc_text = self._format_compact_number(expected_vcc)
+                        errors.append(
+                            f"Bien nguon doi ±{peak_text}V vuot yeu cau ±{expected_vcc_text}V"
+                        )
+                        suggestions.append("Dong bo lai cap nguon doi ±VCC theo yeu cau")
+                else:
+                    # Some templates encode dual rails as a single total supply (e.g., 24V for ±12V).
+                    allowed_total = 2.0 * expected_vcc + 0.75
+                    if max_supply > allowed_total:
+                        max_supply_text = self._format_compact_number(max_supply)
+                        expected_total_text = self._format_compact_number(2.0 * expected_vcc)
+                        errors.append(
+                            f"Tong nguon doi {max_supply_text}V vuot muc cho phep {expected_total_text}V (2*VCC)"
+                        )
+                        suggestions.append("Giam tong bien do nguon doi hoac chuan hoa theo ±VCC")
+            else:
+                if max_supply > expected_vcc + 0.5:
+                    max_supply_text = self._format_compact_number(max_supply)
+                    expected_vcc_text = self._format_compact_number(expected_vcc)
+                    errors.append(
+                        f"Nguon cap toi da {max_supply_text}V vuot yeu cau VCC={expected_vcc_text}V"
+                    )
+                    suggestions.append("Dong bo lai gia tri VCC trong netlist, component va intent")
+
+            if intent.supply_mode == "single_supply" and min_supply < -0.1:
+                min_supply_text = self._format_compact_number(min_supply)
+                errors.append(
+                    f"Yeu cau single-supply nhung netlist dang dung nguon am {min_supply_text}V"
+                )
+                suggestions.append("Loai bo nguon am, chi giu +VCC/GND cho single-supply")
+
+        topology = (intent.circuit_type or intent.topology or component_set.topology or "").strip().lower()
+        is_opamp_topology = topology in {"inverting", "non_inverting"} or intent.device_preference == "opamp"
+        if is_opamp_topology:
+            use_single_supply = intent.supply_mode == "single_supply"
+            if not use_single_supply and supply_values:
+                use_single_supply = min(supply_values) >= -0.1
+
+            if use_single_supply:
+                has_virtual_ref = self._has_virtual_ground_reference(circuit_data)
+                capacitor_count = self._count_components_by_type(circuit_data, "CAPACITOR")
+                metrics["has_virtual_reference"] = has_virtual_ref
+                metrics["capacitor_count"] = capacitor_count
+
+                if not has_virtual_ref:
+                    errors.append(
+                        "Mach op-amp single-supply thieu mang bias Vref~VCC/2 (virtual ground)"
+                    )
+                    suggestions.append("Bo sung cau chia ap/virtual-ground de dat diem bias giua nguon")
+
+                if intent.frequency and capacitor_count == 0:
+                    errors.append(
+                        "Mach co yeu cau AC nhung khong co tu ghep input/output"
+                    )
+                    suggestions.append("Bo sung Cin/Cout de ghep AC va chan thanh phan DC")
+
+        return {
+            "errors": errors,
+            "suggestions": suggestions,
+            "metrics": metrics,
+        }
+
+    def _attempt_local_physics_autofix(
+        self,
+        *,
+        intent: CircuitIntent,
+        solved_values: Dict[str, float],
+        circuit_data: Dict[str, Any],
+        gain_actual: Optional[float],
+        physics_payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Try a deterministic rebias for BJT-style circuits before hard-failing."""
+        if self._is_supply_mismatch_failure(physics_payload) and isinstance(intent.vcc, (int, float)):
+            updated_solved = dict(solved_values or {})
+            updated_solved["VCC"] = float(intent.vcc)
+            updated_circuit = copy.deepcopy(circuit_data)
+            self._apply_supply_fix_to_circuit_data(
+                circuit_data=updated_circuit,
+                target_vcc=float(intent.vcc),
+                supply_mode=intent.supply_mode,
+                allow_dual_supply=self._is_dual_supply_requested(intent),
+            )
+            recheck_supply = self._run_physics_validation(
+                intent=intent,
+                solved_values=updated_solved,
+                circuit_data=updated_circuit,
+                gain_actual=(intent.gain_target if isinstance(intent.gain_target, (int, float)) else gain_actual),
+            )
+            if recheck_supply.get("passed", False):
+                return {
+                    "solved_values": updated_solved,
+                    "circuit_data": updated_circuit,
+                    "physics_validation": recheck_supply,
+                }
+
+        if not self._is_bjt_bias_failure(intent, physics_payload):
+            return None
+
+        component_set, missing_fields = self._build_component_set_for_physics(
+            intent=intent,
+            solved_values=solved_values,
+            circuit_data=circuit_data,
+        )
+        if component_set is None or missing_fields:
+            return None
+
+        patched = self._rebias_bjt_for_midpoint(
+            component_set=component_set,
+            gain_target=(intent.gain_target if isinstance(intent.gain_target, (int, float)) else gain_actual),
+        )
+        if patched is None:
+            return None
+
+        updated_solved = dict(solved_values or {})
+        updated_solved.update(
+            {
+                "R1": float(patched.R1),
+                "R2": float(patched.R2),
+                "RC": float(patched.RC),
+                "RE": float(patched.RE),
+                "VCC": float(patched.VCC),
+            }
+        )
+
+        updated_circuit = copy.deepcopy(circuit_data)
+        self._apply_component_set_to_circuit_data(updated_circuit, patched)
+
+        recheck = self._run_physics_validation(
+            intent=intent,
+            solved_values=updated_solved,
+            circuit_data=updated_circuit,
+            gain_actual=(intent.gain_target if isinstance(intent.gain_target, (int, float)) else gain_actual),
+        )
+
+        if not recheck.get("passed", False):
+            return None
+
+        return {
+            "solved_values": updated_solved,
+            "circuit_data": updated_circuit,
+            "physics_validation": recheck,
+        }
+
+    @staticmethod
+    def _is_bjt_bias_failure(intent: CircuitIntent, physics_payload: Dict[str, Any]) -> bool:
+        topology = (intent.circuit_type or intent.topology or "").strip().lower()
+        if topology not in {"common_emitter", "common_base", "common_collector"}:
+            return False
+
+        errors = [
+            str(item).lower()
+            for item in (physics_payload.get("errors", []) if isinstance(physics_payload, dict) else [])
+            if str(item).strip()
+        ]
+        if not errors:
+            return False
+
+        keywords = ("vce", "bao hoa", "q-point", "swing")
+        return any(any(k in msg for k in keywords) for msg in errors)
+
+    @staticmethod
+    def _is_supply_mismatch_failure(physics_payload: Dict[str, Any]) -> bool:
+        errors = [
+            str(item).lower()
+            for item in (physics_payload.get("errors", []) if isinstance(physics_payload, dict) else [])
+            if str(item).strip()
+        ]
+        if not errors:
+            return False
+        return any(
+            ("nguon cap toi da" in msg)
+            or ("single-supply" in msg and "nguon am" in msg)
+            or ("bien nguon doi" in msg)
+            or ("tong nguon doi" in msg)
+            for msg in errors
+        )
+
+    @staticmethod
+    def _apply_supply_fix_to_circuit_data(
+        circuit_data: Dict[str, Any],
+        target_vcc: float,
+        supply_mode: str,
+        allow_dual_supply: bool = False,
+    ) -> None:
+        if not isinstance(circuit_data, dict):
+            return
+
+        source_values: List[float] = []
+        for comp in circuit_data.get("components", []):
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type") or "").strip().upper() != "VOLTAGE_SOURCE":
+                continue
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+            raw_voltage = params.get("voltage")
+            if isinstance(raw_voltage, dict):
+                raw_voltage = raw_voltage.get("value")
+            if isinstance(raw_voltage, (int, float)):
+                source_values.append(float(raw_voltage))
+
+        has_negative_rail = any(v < -0.1 for v in source_values)
+
+        for comp in circuit_data.get("components", []):
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type") or "").strip().upper() != "VOLTAGE_SOURCE":
+                continue
+
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+
+            raw_voltage = params.get("voltage")
+            if isinstance(raw_voltage, dict):
+                raw_voltage = raw_voltage.get("value")
+            if isinstance(raw_voltage, (int, float)):
+                val = float(raw_voltage)
+                if allow_dual_supply:
+                    # Dual-supply designs can be represented as +/-V rails or a single 2*V source.
+                    if val < 0 and abs(val) > target_vcc + 0.5:
+                        params["voltage"] = -float(target_vcc)
+                    elif val > 0 and has_negative_rail and val > target_vcc + 0.5:
+                        params["voltage"] = float(target_vcc)
+                    elif val > 0 and (not has_negative_rail) and val > (2.0 * target_vcc + 0.5):
+                        params["voltage"] = float(2.0 * target_vcc)
+                    continue
+                if (supply_mode == "single_supply" and val < 0) or (val > target_vcc + 0.5):
+                    params["voltage"] = float(target_vcc)
+
+    @staticmethod
+    def _is_dual_supply_requested(intent: CircuitIntent, supply_values: Optional[List[float]] = None) -> bool:
+        if str(intent.supply_mode or "").strip().lower() == "dual_supply":
+            return True
+
+        raw = (intent.raw_text or "").lower()
+        dual_tokens = (
+            "±",
+            "+/-",
+            "+ / -",
+            "doi xung",
+            "đối xứng",
+            "nguon doi",
+            "nguồn đôi",
+            "split supply",
+            "dual supply",
+            "bipolar supply",
+        )
+        if any(token in raw for token in dual_tokens):
+            return True
+
+        values = supply_values or []
+        has_pos = any(isinstance(v, (int, float)) and float(v) > 0.5 for v in values)
+        has_neg = any(isinstance(v, (int, float)) and float(v) < -0.5 for v in values)
+        return has_pos and has_neg
+
+    def _rebias_bjt_for_midpoint(
+        self,
+        *,
+        component_set: ComponentSet,
+        gain_target: Optional[float],
+    ) -> Optional[ComponentSet]:
+        vcc = float(component_set.VCC)
+        rc = max(float(component_set.RC), 100.0)
+        beta = max(float(component_set.beta), 20.0)
+        re = max(float(component_set.RE), 68.0)
+
+        target_vce = max(vcc * 0.5, self._dc_validator.VCE_SAT + 0.8)
+        if target_vce >= vcc:
+            return None
+
+        ic_target = (vcc - target_vce) / max(rc + re * (1.0 + 1.0 / beta), 1e-9)
+        ic_target = max(ic_target, 0.5e-3)
+
+        if isinstance(gain_target, (int, float)) and gain_target > 0 and ic_target > 0:
+            re_small = 0.026 / ic_target
+            re_gain_target = (rc / float(gain_target)) - re_small
+            if re_gain_target > 0:
+                re = max(re, re_gain_target)
+                ic_target = (vcc - target_vce) / max(rc + re * (1.0 + 1.0 / beta), 1e-9)
+                ic_target = max(ic_target, 0.5e-3)
+
+        ib_target = ic_target / beta
+        divider_current = max(12.0 * ib_target, 50e-6)
+        ie_target = ic_target * (1.0 + 1.0 / beta)
+        vb_target = self._dc_validator.VBE + ie_target * re
+        vb_target = min(max(vb_target, 0.6), max(vcc - 0.8, 0.8))
+
+        r2 = max(vb_target / divider_current, 1e3)
+        r1 = max((vcc - vb_target) / divider_current, 1e3)
+
+        return ComponentSet(
+            R1=float(r1),
+            R2=float(r2),
+            RC=float(rc),
+            RE=float(re),
+            VCC=float(vcc),
+            beta=float(beta),
+            topology=component_set.topology,
+        )
+
+    @staticmethod
+    def _apply_component_set_to_circuit_data(circuit_data: Dict[str, Any], component_set: ComponentSet) -> None:
+        if not isinstance(circuit_data, dict):
+            return
+
+        target_values = {
+            "R1": float(component_set.R1),
+            "R2": float(component_set.R2),
+            "RC": float(component_set.RC),
+            "RD": float(component_set.RC),
+            "RE": float(component_set.RE),
+            "RS": float(component_set.RE),
+            "VCC": float(component_set.VCC),
+            "V1": float(component_set.VCC),
+        }
+
+        for comp in circuit_data.get("components", []) if isinstance(circuit_data, dict) else []:
+            if not isinstance(comp, dict):
+                continue
+
+            cid = str(comp.get("id") or "").strip().upper()
+            ctype = str(comp.get("type") or "").strip().upper()
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+
+            if cid in {"R1", "R2", "RC", "RD", "RE", "RS"} and "resistance" in params:
+                params["resistance"] = target_values.get(cid, params["resistance"])
+
+            if ctype == "VOLTAGE_SOURCE" and "voltage" in params:
+                params["voltage"] = float(component_set.VCC)
+
+    @staticmethod
+    def _extract_requested_models_from_text(text: str) -> List[str]:
+        raw = (text or "").lower()
+        known_patterns = [
+            r"\blm\d{3,4}\b",
+            r"\bop[-_]?0?6\b",
+            r"\btl0\d{2,3}\b",
+            r"\bne5532\b",
+            r"\bua?741\b",
+            r"\bopa\d{3,4}\b",
+        ]
+
+        detected: List[str] = []
+        for pat in known_patterns:
+            for match in re.findall(pat, raw, re.IGNORECASE):
+                token = str(match).upper().replace("_", "-")
+                if token not in detected:
+                    detected.append(token)
+        return detected
+
+    def _extract_generated_models(self, circuit_data: Dict[str, Any]) -> List[str]:
+        models: List[str] = []
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+
+            for key in ("model", "model_name", "part_number", "device"):
+                value = comp.get(key)
+                if isinstance(value, str) and value.strip():
+                    token = value.strip().upper().replace("_", "-")
+                    if token not in models:
+                        models.append(token)
+
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+            for key in ("model", "model_name", "part_number", "device"):
+                value = params.get(key)
+                if isinstance(value, dict):
+                    value = value.get("value")
+                if isinstance(value, str) and value.strip():
+                    token = value.strip().upper().replace("_", "-")
+                    if token not in models:
+                        models.append(token)
+
+        netlist = self._extract_netlist(circuit_data)
+        if isinstance(netlist, str) and netlist.strip():
+            for token in self._extract_requested_models_from_text(netlist):
+                if token not in models:
+                    models.append(token)
+        return models
+
+    @staticmethod
+    def _extract_supply_voltages_from_circuit(circuit_data: Dict[str, Any]) -> List[float]:
+        values: List[float] = []
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type", "")).upper() != "VOLTAGE_SOURCE":
+                continue
+            params = comp.get("parameters", {})
+            raw = params.get("voltage") if isinstance(params, dict) else None
+            if isinstance(raw, dict):
+                raw = raw.get("value")
+            if isinstance(raw, (int, float)):
+                values.append(float(raw))
+        return values
+
+    @staticmethod
+    def _extract_supply_voltages_from_netlist(netlist: Optional[str]) -> List[float]:
+        if not isinstance(netlist, str) or not netlist.strip():
+            return []
+        values: List[float] = []
+        for line in netlist.splitlines():
+            text = line.strip()
+            if not text or text.startswith("*"):
+                continue
+            match = re.match(
+                r"^V\w+\s+\S+\s+\S+\s+([+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?)\s*[a-z]*\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            try:
+                values.append(float(match.group(1)))
+            except (TypeError, ValueError):
+                continue
+        return values
+
+    @staticmethod
+    def _has_virtual_ground_reference(circuit_data: Dict[str, Any]) -> bool:
+        if not isinstance(circuit_data, dict):
+            return False
+
+        tokens = {"vref", "vbias", "mid", "virtual", "bias", "half_vcc", "vcm"}
+        for net in circuit_data.get("nets", []):
+            if not isinstance(net, dict):
+                continue
+            name = str(net.get("name") or net.get("id") or "").strip().lower()
+            if any(tok in name for tok in tokens):
+                return True
+
+        for comp in circuit_data.get("components", []):
+            if not isinstance(comp, dict):
+                continue
+            cid = str(comp.get("id") or "").strip().lower()
+            if any(tok in cid for tok in tokens):
+                return True
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+            for value in params.values():
+                if isinstance(value, dict):
+                    value = value.get("value")
+                if isinstance(value, str) and any(tok in value.lower() for tok in tokens):
+                    return True
+        return False
+
+    @staticmethod
+    def _count_components_by_type(circuit_data: Dict[str, Any], comp_type: str) -> int:
+        if not isinstance(circuit_data, dict):
+            return 0
+        target = str(comp_type or "").strip().upper()
+        count = 0
+        for comp in circuit_data.get("components", []):
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type") or "").strip().upper() == target:
+                count += 1
+        return count
+
+    def _build_component_set_for_physics(
+        self,
+        intent: CircuitIntent,
+        solved_values: Dict[str, float],
+        circuit_data: Dict[str, Any],
+    ) -> Tuple[Optional[ComponentSet], List[str]]:
+        """Map solved values ve ComponentSet de chay DC bias validator."""
+        topology = (
+            (intent.circuit_type or intent.topology)
+            or str(circuit_data.get("topology_type") or "")
+            or "common_emitter"
+        ).strip().lower()
+
+        solved_map: Dict[str, float] = {}
+        for key, value in (solved_values or {}).items():
+            if isinstance(value, (int, float)):
+                solved_map[str(key).upper()] = float(value)
+
+        resistor_map = self._extract_resistor_values_from_circuit_data(circuit_data)
+
+        def pick(*names: str) -> Optional[float]:
+            for name in names:
+                key = name.upper()
+                value = solved_map.get(key)
+                if isinstance(value, (int, float)):
+                    return float(value)
+
+                # Accept common suffixed IDs from generated templates, e.g. R1A/RC1/RE2.
+                solved_candidates = [
+                    float(v) for k, v in solved_map.items()
+                    if isinstance(v, (int, float)) and str(k).startswith(key)
+                ]
+                if solved_candidates:
+                    return float(solved_candidates[0])
+
+                r_value = resistor_map.get(key)
+                if isinstance(r_value, (int, float)):
+                    return float(r_value)
+
+                prefixed = sorted(
+                    [
+                        (k, float(v))
+                        for k, v in resistor_map.items()
+                        if str(k).startswith(key) and isinstance(v, (int, float))
+                    ],
+                    key=lambda item: (len(item[0]), item[0]),
+                )
+                if prefixed:
+                    return float(prefixed[0][1])
+            return None
+
+        vcc = self._extract_numeric(pick("VCC", "VDD", "SUPPLY"), intent.vcc, self._extract_vcc_from_circuit_data(circuit_data))
+        beta = self._extract_numeric(pick("BETA", "BF"), 100.0)
+
+        missing: List[str] = []
+
+        if topology in {"inverting", "non_inverting"}:
+            rf = pick("RF", "R2", "RC")
+            rin = pick("RIN", "RG", "R1", "RE")
+
+            if rf is None or rin is None:
+                inferred_rf, inferred_rin = self._infer_opamp_feedback_pair(resistor_map)
+                rf = self._extract_numeric(rf, inferred_rf)
+                rin = self._extract_numeric(rin, inferred_rin)
+
+            if rf is None:
+                missing.append("RF")
+            if rin is None:
+                missing.append("RIN/RG")
+            if vcc is None:
+                missing.append("VCC")
+            if missing:
+                return None, missing
+
+            return ComponentSet(
+                R1=1.0,
+                R2=1.0,
+                RC=float(rf),
+                RE=float(rin),
+                VCC=float(vcc),
+                beta=float(beta),
+                topology=topology,
+            ), []
+
+        if topology == "multi_stage":
+            r1 = pick("R1")
+            r2 = pick("R2")
+            rc = pick("RC", "RD")
+            re = self._extract_numeric(pick("RE", "RS"), 0.0)
+
+            if r1 is None or r2 is None or rc is None:
+                inferred = self._infer_bjt_bias_resistors(resistor_map)
+                r1 = self._extract_numeric(r1, inferred.get("R1"))
+                r2 = self._extract_numeric(r2, inferred.get("R2"))
+                rc = self._extract_numeric(rc, inferred.get("RC"))
+                re = self._extract_numeric(re, inferred.get("RE"), 0.0)
+
+            if r1 is None:
+                missing.append("R1")
+            if r2 is None:
+                missing.append("R2")
+            if rc is None:
+                missing.append("RC")
+            if vcc is None:
+                missing.append("VCC")
+            if missing:
+                return None, missing
+
+            # Use CE-like equivalent for stage-1 DC sanity checks in multi-stage chains.
+            return ComponentSet(
+                R1=float(r1),
+                R2=float(r2),
+                RC=float(rc),
+                RE=max(float(re), 0.0),
+                VCC=float(vcc),
+                beta=float(beta),
+                topology="common_emitter",
+            ), []
+
+        if topology in {"common_emitter", "common_base", "common_collector"}:
+            r1 = pick("R1")
+            r2 = pick("R2")
+            rc = pick("RC", "RD")
+            re = self._extract_numeric(pick("RE", "RS"), 0.0)
+
+            if r1 is None or r2 is None or rc is None:
+                inferred = self._infer_bjt_bias_resistors(resistor_map)
+                r1 = self._extract_numeric(r1, inferred.get("R1"))
+                r2 = self._extract_numeric(r2, inferred.get("R2"))
+                rc = self._extract_numeric(rc, inferred.get("RC"))
+                re = self._extract_numeric(re, inferred.get("RE"), 0.0)
+
+            if r1 is None:
+                missing.append("R1")
+            if r2 is None:
+                missing.append("R2")
+            if rc is None:
+                missing.append("RC")
+            if vcc is None:
+                missing.append("VCC")
+            if missing:
+                return None, missing
+
+            return ComponentSet(
+                R1=float(r1),
+                R2=float(r2),
+                RC=float(rc),
+                RE=max(float(re), 0.0),
+                VCC=float(vcc),
+                beta=float(beta),
+                topology=topology,
+            ), []
+
+        # Topology chua ho tro day du, tao bo gia tri an toan de validator tra warning pass.
+        fallback_vcc = self._extract_numeric(vcc, 12.0)
+        return ComponentSet(
+            R1=10_000.0,
+            R2=10_000.0,
+            RC=1_000.0,
+            RE=100.0,
+            VCC=float(fallback_vcc),
+            beta=float(beta),
+            topology=topology,
+        ), []
+
+    @staticmethod
+    def _extract_numeric(*values: Any) -> Optional[float]:
+        """Lay gia tri so hop le dau tien tu danh sach gia tri ung vien."""
+        for value in values:
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
+
+    @staticmethod
+    def _format_compact_number(value: float) -> str:
+        """Format so ngan gon de thong diep NLG de doc (12 thay vi 12.000)."""
+        text = f"{float(value):.6f}".rstrip("0").rstrip(".")
+        return text if text else "0"
+
+    @staticmethod
+    def _extract_vcc_from_circuit_data(circuit_data: Dict[str, Any]) -> Optional[float]:
+        """Rut VCC tu circuit_data neu da co voltage source."""
+        for comp in circuit_data.get("components", []) if isinstance(circuit_data, dict) else []:
+            if not isinstance(comp, dict):
+                continue
+            if str(comp.get("type", "")).upper() != "VOLTAGE_SOURCE":
+                continue
+            params = comp.get("parameters", {})
+            voltage = params.get("voltage") if isinstance(params, dict) else None
+            if isinstance(voltage, dict):
+                voltage = voltage.get("value")
+            if isinstance(voltage, (int, float)):
+                return float(voltage)
+        return None
+
+    @staticmethod
+    def _extract_resistor_values_from_circuit_data(circuit_data: Dict[str, Any]) -> Dict[str, float]:
+        """Extract resistor values keyed by component id from generated circuit payload."""
+        values: Dict[str, float] = {}
+        components = circuit_data.get("components", []) if isinstance(circuit_data, dict) else []
+        for comp in components:
+            if not isinstance(comp, dict):
+                continue
+            ctype = str(comp.get("type") or "").strip().upper()
+            if ctype != "RESISTOR":
+                continue
+
+            cid = str(comp.get("id") or "").strip().upper()
+            if not cid:
+                continue
+            params = comp.get("parameters", {})
+            if not isinstance(params, dict):
+                continue
+
+            raw = params.get("resistance")
+            if isinstance(raw, dict):
+                raw = raw.get("value")
+            if isinstance(raw, (int, float)) and float(raw) > 0:
+                values[cid] = float(raw)
+        return values
+
+    @staticmethod
+    def _infer_opamp_feedback_pair(resistor_map: Dict[str, float]) -> Tuple[Optional[float], Optional[float]]:
+        """Infer a plausible Rf/Rin pair when IDs are not standardized."""
+        if not resistor_map:
+            return None, None
+
+        known_rf = resistor_map.get("RF")
+        known_rin = resistor_map.get("RIN") or resistor_map.get("RG")
+        if isinstance(known_rf, (int, float)) and isinstance(known_rin, (int, float)):
+            return float(known_rf), float(known_rin)
+
+        candidates = sorted([float(v) for v in resistor_map.values() if float(v) > 0])
+        if len(candidates) < 2:
+            return None, None
+
+        rin = candidates[0]
+        rf = candidates[-1]
+        return rf, rin
+
+    @staticmethod
+    def _infer_bjt_bias_resistors(resistor_map: Dict[str, float]) -> Dict[str, float]:
+        """Infer likely R1/R2/RC/RE roles for CE/CB/CC when names are non-standard."""
+        inferred: Dict[str, float] = {}
+        if not resistor_map:
+            return inferred
+
+        if "R1" in resistor_map:
+            inferred["R1"] = float(resistor_map["R1"])
+        if "R2" in resistor_map:
+            inferred["R2"] = float(resistor_map["R2"])
+        if "RC" in resistor_map:
+            inferred["RC"] = float(resistor_map["RC"])
+        elif "RD" in resistor_map:
+            inferred["RC"] = float(resistor_map["RD"])
+        if "RE" in resistor_map:
+            inferred["RE"] = float(resistor_map["RE"])
+        elif "RS" in resistor_map:
+            inferred["RE"] = float(resistor_map["RS"])
+
+        remaining = sorted(
+            [(key, float(val)) for key, val in resistor_map.items() if float(val) > 0],
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if not remaining:
+            return inferred
+
+        if "R1" not in inferred or "R2" not in inferred:
+            divider_candidates = [item for item in remaining if item[1] >= 3_300.0]
+            if len(divider_candidates) >= 2:
+                if "R1" not in inferred:
+                    inferred["R1"] = divider_candidates[0][1]
+                if "R2" not in inferred:
+                    inferred["R2"] = divider_candidates[1][1]
+
+        if "RC" not in inferred:
+            for _, value in remaining:
+                if value not in {inferred.get("R1"), inferred.get("R2")}:
+                    inferred["RC"] = value
+                    break
+
+        if "RE" not in inferred:
+            ascending = sorted([val for _, val in remaining])
+            for value in ascending:
+                if value <= 2_200.0:
+                    inferred["RE"] = value
+                    break
+
+        return inferred
+
+    @staticmethod
     def _extract_validation_error_codes(validation_report: Any) -> List[str]:
         codes: List[str] = []
         for violation in getattr(validation_report, "errors", []) or []:
@@ -1268,11 +3010,124 @@ class ChatbotService:
     def _has_hard_constraint_errors(self, validation_report: Any) -> bool:
         return any(code.startswith("HARD_") for code in self._extract_validation_error_codes(validation_report))
 
+    def _inject_feedback_hints(self, intent: CircuitIntent) -> CircuitIntent:
+        """Inject concise hints learned from previous failures into generation prompt text."""
+        if not self._feedback_memory_enabled:
+            return intent
+
+        hints = self._collect_feedback_hints(intent, limit=3)
+        if not hints:
+            return intent
+
+        enriched = copy.deepcopy(intent)
+        hint_text = "; ".join(hints)
+        if "Feedback truoc do:" not in (enriched.raw_text or ""):
+            enriched.raw_text = f"{enriched.raw_text}. Feedback truoc do: {hint_text}."
+
+        if "feedback_memory_hints" not in enriched.extra_requirements:
+            enriched.extra_requirements.append("feedback_memory_hints")
+        return enriched
+
+    def _collect_feedback_hints(self, intent: CircuitIntent, limit: int = 3) -> List[str]:
+        if not self._feedback_memory_enabled:
+            return []
+
+        payload = self._load_feedback_memory()
+        events = payload.get("events", []) if isinstance(payload, dict) else []
+        if not isinstance(events, list) or not events:
+            return []
+
+        matched: List[str] = []
+        intent_type = str(intent.circuit_type or "").strip().lower()
+        for event in reversed(events):
+            if not isinstance(event, dict):
+                continue
+            event_intent = event.get("intent") if isinstance(event.get("intent"), dict) else {}
+            event_type = str(event_intent.get("circuit_type") or "").strip().lower()
+            if intent_type and event_type and event_type != intent_type:
+                continue
+
+            for suggestion in event.get("suggestions", []) or []:
+                text = str(suggestion).strip()
+                if text and text not in matched:
+                    matched.append(text)
+                    if len(matched) >= limit:
+                        return matched
+
+        return matched
+
+    def _record_feedback_event(
+        self,
+        *,
+        intent: CircuitIntent,
+        stage: str,
+        errors: List[str],
+        suggestions: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not self._feedback_memory_enabled:
+            return
+
+        payload = self._load_feedback_memory()
+        events = payload.get("events", []) if isinstance(payload, dict) else []
+        if not isinstance(events, list):
+            events = []
+
+        event = {
+            "timestamp": time.time(),
+            "stage": stage,
+            "intent": {
+                "intent_type": intent.intent_type,
+                "circuit_type": intent.circuit_type,
+                "topology": intent.topology,
+                "vcc": intent.vcc,
+                "gain_target": intent.gain_target,
+                "supply_mode": intent.supply_mode,
+                "device_preference": intent.device_preference,
+            },
+            "errors": list(dict.fromkeys([str(e).strip() for e in errors if str(e).strip()])),
+            "suggestions": list(dict.fromkeys([str(s).strip() for s in suggestions if str(s).strip()])),
+            "metadata": metadata or {},
+        }
+
+        if not event["errors"] and not event["suggestions"]:
+            return
+
+        events.append(event)
+        payload["events"] = events[-200:]
+        self._save_feedback_memory(payload)
+
+    def _load_feedback_memory(self) -> Dict[str, Any]:
+        if not self._feedback_memory_enabled:
+            return {"events": []}
+        try:
+            if not self._feedback_memory_path.exists():
+                return {"events": []}
+            data = json.loads(self._feedback_memory_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception as exc:  # pragma: no cover - IO guard
+            logger.warning("Unable to read feedback memory: %s", exc)
+        return {"events": []}
+
+    def _save_feedback_memory(self, payload: Dict[str, Any]) -> None:
+        if not self._feedback_memory_enabled:
+            return
+        try:
+            self._feedback_memory_path.parent.mkdir(parents=True, exist_ok=True)
+            self._feedback_memory_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # pragma: no cover - IO guard
+            logger.warning("Unable to persist feedback memory: %s", exc)
+
     def _build_regeneration_candidates(self, intent: CircuitIntent, failed_codes: List[str]) -> List[CircuitIntent]:
         hard_constraints = dict(intent.hard_constraints or {})
 
         primary = copy.deepcopy(intent)
         hints: List[str] = []
+        hints.extend(self._collect_feedback_hints(intent, limit=2))
 
         if "HARD_DIRECT_COUPLING" in failed_codes or hard_constraints.get("direct_coupling_required"):
             hard_constraints["direct_coupling_required"] = True
@@ -1294,7 +3149,7 @@ class ChatbotService:
 
         primary.hard_constraints = hard_constraints
         if hints:
-            primary.raw_text = f"{primary.raw_text}. Ràng buộc bắt buộc: {'; '.join(hints)}."
+            primary.raw_text = f"{primary.raw_text}. Rang buoc bat buoc: {'; '.join(dict.fromkeys(hints))}."
 
         candidates = [primary]
 
@@ -1351,10 +3206,181 @@ class ChatbotService:
 
         return None
 
-    def _maybe_auto_simulation(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Try transient simulation when explicitly requested or enabled by env flag."""
-        if not self._should_auto_simulate(intent):
+    def _retry_pipeline_for_physics_failures(
+        self,
+        intent: CircuitIntent,
+        physics_payload: Dict[str, Any],
+        max_attempts: int = 2,
+    ) -> Optional[Dict[str, Any]]:
+        suggestions = [
+            str(item).strip()
+            for item in (physics_payload.get("suggestions", []) if isinstance(physics_payload, dict) else [])
+            if str(item).strip()
+        ]
+        errors = [
+            str(item).strip()
+            for item in (physics_payload.get("errors", []) if isinstance(physics_payload, dict) else [])
+            if str(item).strip()
+        ]
+
+        primary = copy.deepcopy(intent)
+        hint_parts: List[str] = []
+        hint_parts.extend(suggestions[:3])
+        hint_parts.extend(self._collect_feedback_hints(intent, limit=2))
+        if errors:
+            hint_parts.append("Bat buoc sua loi vat ly: " + "; ".join(errors[:2]))
+
+        if hint_parts:
+            primary.raw_text = (
+                f"{primary.raw_text}. Rang buoc kiem tra vat ly bat buoc: "
+                f"{'; '.join(dict.fromkeys(hint_parts))}."
+            )
+
+        candidates: List[CircuitIntent] = [primary]
+
+        secondary = copy.deepcopy(primary)
+        secondary_guidance: List[str] = [
+            "Dat Q-point gan trung tam: VCE xap xi VCC/2",
+            "Duy tri transistor o vung active, tranh bao hoa",
+            "Dung phan cuc chia ap R1-R2 va RE khong qua nho",
+        ]
+        if isinstance(secondary.gain_target, (int, float)) and secondary.gain_target > 0:
+            secondary_guidance.append(
+                f"Toi uu gain theo Av gan {float(secondary.gain_target):g} voi emitter degeneration"
+            )
+        secondary.raw_text = (
+            f"{secondary.raw_text}. Rang buoc bo sung: "
+            f"{'; '.join(dict.fromkeys(secondary_guidance))}."
+        )
+        candidates.append(secondary)
+
+        if any("VCE" in msg or "Q-point" in msg for msg in errors):
+            tertiary = copy.deepcopy(primary)
+            tertiary.raw_text = (
+                f"{tertiary.raw_text}. Uu tien can bang DC: "
+                "chon mang bias de IB du lon, VCE trong vung 0.3*VCC den 0.7*VCC, "
+                "neu can thi tang RE hoac giam RC de thoat bao hoa."
+            )
+            candidates.append(tertiary)
+
+        for candidate in candidates[: max(1, max_attempts)]:
+            spec = self._intent_to_spec(candidate)
+            retry_result = self._ai_core.handle_spec(spec)
+            if not retry_result.success or not retry_result.circuit:
+                continue
+
+            retry_solved_values = retry_result.solved.values if retry_result.solved else {}
+            retry_gain = self._resolve_gain_for_validation(
+                solved_values=retry_solved_values,
+                fallback_gain=(retry_result.solved.actual_gain if retry_result.solved else None),
+            )
+            retry_metrics = self._prepare_validation_metrics(
+                intent=candidate,
+                solved_values=retry_solved_values,
+                gain_actual=retry_gain,
+                stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
+            )
+            retry_report = self._validator.validate(
+                retry_result.circuit.circuit_data,
+                candidate.to_dict(),
+                retry_metrics,
+            )
+            if not retry_report.passed and self._has_hard_constraint_errors(retry_report):
+                continue
+
+            retry_physics = self._run_physics_validation(
+                intent=candidate,
+                solved_values=retry_solved_values,
+                circuit_data=retry_result.circuit.circuit_data,
+                gain_actual=retry_gain,
+            )
+            if retry_physics.get("passed", False):
+                return {
+                    "pipeline_result": retry_result,
+                    "validation_report": retry_report,
+                    "physics_validation": retry_physics,
+                    "intent": candidate,
+                }
+
+        return None
+
+    def _retry_pipeline_for_simulation_feedback(
+        self,
+        intent: CircuitIntent,
+        simulation_feedback: Dict[str, Any],
+        max_attempts: int = 1,
+    ) -> Optional[Dict[str, Any]]:
+        if max_attempts <= 0:
+            return None
+
+        errors = [
+            str(item).strip()
+            for item in (simulation_feedback.get("errors", []) if isinstance(simulation_feedback, dict) else [])
+            if str(item).strip()
+        ]
+        suggestions = [
+            str(item).strip()
+            for item in (simulation_feedback.get("suggestions", []) if isinstance(simulation_feedback, dict) else [])
+            if str(item).strip()
+        ]
+
+        candidate = copy.deepcopy(intent)
+        hint_parts: List[str] = []
+        hint_parts.extend(suggestions[:2])
+        if errors:
+            hint_parts.append("Bat buoc sua theo simulation feedback: " + "; ".join(errors[:2]))
+        hint_parts.extend(self._collect_feedback_hints(intent, limit=2))
+        if hint_parts:
+            candidate.raw_text = f"{candidate.raw_text}. Rang buoc mo phong bat buoc: {'; '.join(dict.fromkeys(hint_parts))}."
+
+        spec = self._intent_to_spec(candidate)
+        retry_result = self._ai_core.handle_spec(spec)
+        if not retry_result.success or not retry_result.circuit:
+            return None
+
+        retry_solved_values = retry_result.solved.values if retry_result.solved else {}
+        retry_gain = self._resolve_gain_for_validation(
+            solved_values=retry_solved_values,
+            fallback_gain=(retry_result.solved.actual_gain if retry_result.solved else None),
+        )
+        retry_metrics = self._prepare_validation_metrics(
+            intent=candidate,
+            solved_values=retry_solved_values,
+            gain_actual=retry_gain,
+            stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
+        )
+        retry_report = self._validator.validate(
+            retry_result.circuit.circuit_data,
+            candidate.to_dict(),
+            retry_metrics,
+        )
+        if not retry_report.passed and self._has_hard_constraint_errors(retry_report):
+            return None
+
+        retry_physics = self._run_physics_validation(
+            intent=candidate,
+            solved_values=retry_solved_values,
+            circuit_data=retry_result.circuit.circuit_data,
+            gain_actual=retry_gain,
+        )
+        if not retry_physics.get("passed", False):
+            return None
+
+        return {
+            "pipeline_result": retry_result,
+            "validation_report": retry_report,
+            "physics_validation": retry_physics,
+            "intent": candidate,
+        }
+
+    def _maybe_auto_simulation(self, circuit_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Try transient simulation from generated output payload only."""
+        if not self._should_auto_simulate(circuit_data):
             return {"status": "skipped", "reason": "not_requested"}
+
+        valid_payload, reason = self._validate_simulation_payload(circuit_data)
+        if not valid_payload:
+            return {"status": "skipped", "reason": reason}
 
         try:
             sim_payload = dict(circuit_data)
@@ -1377,11 +3403,27 @@ class ChatbotService:
         except (SimulationError, Exception) as exc:
             return {"status": "failed", "reason": str(exc)}
 
-    def _should_auto_simulate(self, intent: CircuitIntent) -> bool:
+    def _should_auto_simulate(self, circuit_data: Dict[str, Any]) -> bool:
+        """Quyet dinh co mo phong hay khong dua tren payload output da sinh."""
         force_env = (os.getenv("CHATBOT_AUTO_SIMULATE", "false").strip().lower() in {"1", "true", "yes", "on"})
-        text = (intent.raw_text or "").lower()
-        keyword = any(k in text for k in ["mô phỏng", "mo phong", "simulate", "ngspice", "waveform"])
-        return force_env or keyword
+        analysis_type = str(circuit_data.get("analysis_type") or "").strip().lower()
+        has_nodes = bool(circuit_data.get("nodes_to_monitor"))
+        has_source = isinstance(circuit_data.get("source_params"), dict)
+        requested_by_payload = analysis_type == "transient" and has_nodes and has_source
+        return force_env or requested_by_payload
+
+    @staticmethod
+    def _validate_simulation_payload(circuit_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """Kiem tra simulation stage chi nhan du lieu duoc sinh tu execution stage."""
+        if not isinstance(circuit_data, dict):
+            return False, "invalid_circuit_data"
+        components = circuit_data.get("components", [])
+        if not isinstance(components, list) or not components:
+            return False, "missing_components"
+        analysis_type = str(circuit_data.get("analysis_type") or "").strip().lower()
+        if analysis_type and analysis_type != "transient":
+            return False, f"unsupported_analysis_type:{analysis_type}"
+        return True, "ok"
 
     def _extract_netlist(self, circuit_data: Dict[str, Any]) -> Optional[str]:
         for key in ("spice_netlist", "netlist", "ngspice_netlist"):
