@@ -31,9 +31,20 @@ DATABASE_URL = os.getenv(
     "postgresql://postgres:postgres@localhost:5432/electronic_chatbot"
 )
 
+
+def _normalize_sync_database_url(url: str) -> str:
+    """Convert async SQLAlchemy URLs to sync driver URLs for sync SessionLocal."""
+    value = (url or "").strip()
+    if value.startswith("postgresql+asyncpg://"):
+        return value.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+    return value
+
+
+SYNC_DATABASE_URL = _normalize_sync_database_url(DATABASE_URL)
+
 # Create engine
 engine = create_engine(
-    DATABASE_URL,
+    SYNC_DATABASE_URL,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=20
