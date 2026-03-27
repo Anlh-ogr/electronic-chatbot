@@ -55,10 +55,12 @@ class LLMProvider(str, Enum):
 
 
 class LLMMode(str, Enum):
-    """Che do van hanh toan cuc cua chatbot."""
+    """Che do/tier model cua chatbot."""
 
-    AIR = "air"
+    FAST = "fast"
+    THINK = "think"
     PRO = "pro"
+    ULTRA = "ultra"
 
 
 @dataclass
@@ -105,28 +107,29 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
             timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
         )
 
-    # AIR mode: uu tien toc do va chi phi.
-    air_chain = [
-        _google(["GoogleCloud_Fast_Model", "Google_Cloud_Fast_Model"], "gemini-2.5-flash-lite", 25.0, 8192),
-        _google(["GoogleCloud_Pro_Model", "Google_Cloud_Pro_Model"], "gemini-2.0-flash-001", 25.0, 8192),
-        _google(["GoogleCloud_Think_Model", "Google_Cloud_Think_Model"], "gemini-2.5-flash", 30.0, 8192),
-    ]
+    fast_model = _google(["GoogleCloud_Fast_Model", "Google_Cloud_Fast_Model"], "gemini-2.5-flash-lite", 25.0, 8192)
+    think_model = _google(["GoogleCloud_Think_Model", "Google_Cloud_Think_Model"], "gemini-2.5-flash", 35.0, 12288)
+    pro_model = _google(["GoogleCloud_Pro_Model", "Google_Cloud_Pro_Model"], "gemini-2.0-flash-001", 45.0, 16384)
+    ultra_model = _google(["GoogleCloud_Ultra_Model", "Google_Cloud_Ultra_Model"], "gemini-flash-latest", 55.0, 16384)
 
-    air: Dict[LLMRole, RoleConfig] = {
-        LLMRole.GENERAL: RoleConfig(primary=air_chain[0], fallbacks=[air_chain[1], air_chain[2]]),
+    fast: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(primary=fast_model, fallbacks=[think_model, pro_model, ultra_model]),
     }
-
-    # PRO mode: uu tien chat luong va suy luan sau.
-    pro_chain = [
-        _google(["GoogleCloud_Think_Model", "Google_Cloud_Think_Model"], "gemini-2.5-flash", 45.0, 16384),
-        _google(["GoogleCloud_Pro_Model", "Google_Cloud_Pro_Model"], "gemini-2.0-flash-001", 45.0, 16384),
-        _google(["GoogleCloud_Ultra_Model", "Google_Cloud_Ultra_Model"], "gemini-flash-latest", 45.0, 16384),
-    ]
-
+    think: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(primary=think_model, fallbacks=[pro_model, ultra_model, fast_model]),
+    }
     pro: Dict[LLMRole, RoleConfig] = {
-        LLMRole.GENERAL: RoleConfig(primary=pro_chain[0], fallbacks=[pro_chain[1], pro_chain[2]]),
+        LLMRole.GENERAL: RoleConfig(primary=pro_model, fallbacks=[ultra_model, think_model, fast_model]),
     }
-    return {LLMMode.AIR: air, LLMMode.PRO: pro}
+    ultra: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(primary=ultra_model, fallbacks=[pro_model, think_model, fast_model]),
+    }
+    return {
+        LLMMode.FAST: fast,
+        LLMMode.THINK: think,
+        LLMMode.PRO: pro,
+        LLMMode.ULTRA: ultra,
+    }
 
 
 class LLMRouter:
@@ -137,9 +140,16 @@ class LLMRouter:
         mode_str = (
             _env("GoogleCloud_Default_Mode")
             or _env("Google_Cloud_Default_Mode")
-            or _env("DEFAULT_MODE", "air")
+            or _env("DEFAULT_MODE", "fast")
         ).lower()
-        self._default_mode = LLMMode.PRO if mode_str == "pro" else LLMMode.AIR
+        mode_alias = {
+            "air": LLMMode.FAST,
+            "fast": LLMMode.FAST,
+            "think": LLMMode.THINK,
+            "pro": LLMMode.PRO,
+            "ultra": LLMMode.ULTRA,
+        }
+        self._default_mode = mode_alias.get(mode_str, LLMMode.FAST)
         self._gemini_available = bool(
             _env("Google_Cloud_API_Key") or _env("GOOGLE_CLOUD_API_KEY") or _env("GEMINI_API_KEY")
         )
