@@ -78,6 +78,36 @@ class CircuitIR:
 """
 @dataclass(frozen=True)
 class CircuitIRSerializer:
+    @staticmethod
+    def _normalize_port_direction(direction: Any) -> Optional[PortDirection]:
+        """Normalize legacy/variant direction values to PortDirection or None.
+
+        Legacy IR can contain values such as "virtual" for internal-only ports.
+        These should not fail deserialization/export flows.
+        """
+        if direction is None:
+            return None
+
+        value = str(direction).strip().lower()
+        if not value:
+            return None
+
+        # Legacy/internal aliases that should be treated as no explicit direction.
+        if value in {"virtual", "internal", "none", "null", "na", "n/a"}:
+            return None
+
+        alias_map = {
+            "in": PortDirection.INPUT,
+            "out": PortDirection.OUTPUT,
+            "pwr": PortDirection.POWER,
+            "vcc": PortDirection.POWER,
+            "gnd": PortDirection.GROUND,
+        }
+        if value in alias_map:
+            return alias_map[value]
+
+        return PortDirection(value)
+
     """ Chuyển đổi một đối tượng CircuitIR thành dict (dạng JSON-serializable) để lưu trữ hoặc truyền tải.
         Input:
          - ir: CircuitIR (đối tượng trung gian chứa thông tin mạch điện, meta, intent, các thành phần mạch)
@@ -339,7 +369,7 @@ class CircuitIRSerializer:
             # kiểm tra direction nếu có
             if "direction" in port and port["direction"] is not None:
                 try:
-                    PortDirection(port["direction"])
+                    CircuitIRSerializer._normalize_port_direction(port["direction"])
                 except ValueError:
                     errors.append(f"port[{i}].direction='{port['direction']}' không hợp lệ. "
                                   f"Phải là một trong: {[e.value for e in PortDirection]}")
@@ -490,7 +520,7 @@ class CircuitIRSerializer:
             port = Port(
                 name=data["name"],
                 net_name=data["net_name"],
-                direction=PortDirection(direction) if direction else None
+                direction=CircuitIRSerializer._normalize_port_direction(direction)
             )
             ports[port.name] = port
         return ports
@@ -604,7 +634,7 @@ class CircuitIRSerializer:
             port = Port(
                 name=port_data["name"],
                 net_name=port_data["net_name"],
-                direction=PortDirection(direction) if direction else None
+                direction=CircuitIRSerializer._normalize_port_direction(direction)
             )
             ports[port.name] = port
         return ports
