@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .spec_parser import UserSpec
 from .metadata_repo import MetadataRepository
-from .ml_topology_selector import XGBoostTopologySelector
+from .ml_topology_selector import RandomForestTopologySelector
 
 """ lý do sử dụng thư viện
 _future__ annotations: tham chiếu đến biến/thamsố/giátrị trước khi tạo xong.
@@ -96,7 +96,7 @@ class TopologyPlanner:
     """
     def __init__(self) -> None:
         # ML advisor là optional: nếu model chưa có thì planner vẫn chạy rule-based.
-        self._ml_selector = XGBoostTopologySelector()
+        self._ml_selector = RandomForestTopologySelector()
 
     def plan(self, spec: UserSpec, repo: MetadataRepository) -> TopologyPlan:
         """ pipeline: validate circuit type
@@ -136,7 +136,13 @@ class TopologyPlanner:
             plan.mode = "no_match"
             plan.rationale.append("Cannot identify circuit type from request")
             return False
-        return plan
+            
+        # Nâng cấp lên multi_stage nếu gain >= 100 cho TẤT CẢ các loại mạch
+        if spec.circuit_type != "multi_stage" and spec.gain is not None and spec.gain >= 100:
+            plan.rationale.append(f"Gain req {spec.gain} >= 100, upgrading '{spec.circuit_type}' to 'multi_stage' to balance bandwidth, noise, and stability")
+            spec.circuit_type = "multi_stage"
+            
+        return True
     
     # 3. resolve grammar rule từ repo (pattern block structure, gain formula)
     def _resolve_grammar(self, spec: UserSpec, plan: TopologyPlan, repo: MetadataRepository) -> None:
