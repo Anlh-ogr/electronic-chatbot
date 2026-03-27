@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Electronic Circuit Chatbot</title>
-    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260218">
+    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260327a">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -43,33 +43,17 @@
                         </div>
                         <div class="message-content">
                             <div class="message-text">
-                                <p>👋 Xin chào! Tôi là AI thiết kế mạch.</p>
-                                <p>Tôi có thể giúp:</p>
+                                <p>Xin chào! Tôi là AI thiết kế mạch.</p>
+                                <p>Tôi có thể:</p>
                                 <ul>
                                     <li>Thiết kế mạch khuếch đại (BJT, OpAmp, Mosfet ...)</li>
                                     <li>Tính toán giá trị linh kiện</li>
                                     <li>Hiển thị schematic/PCB</li>
                                 </ul>
-                                <p><strong>Thử:</strong> "Thiết kế mạch CE gain 50 dùng 12V"</p>
+                                <p><strong>Thử:</strong> "Thiết kế mạch class AB push-pull cho tải 8 ohm, nguồn đối xứng ±12V."</p>
                             </div>
                         </div>
                     </div>
-                </div>
-
-                <!-- Suggestions -->
-                <div class="suggestions" id="suggestions">
-                    <button class="suggestion-chip" onclick="sendSuggestion('Thiết kế mạch CE gain 50 dùng 12V')">
-                        <i class="fas fa-bolt"></i> Mạch CE gain 50
-                    </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('OpAmp inverting gain 10')">
-                        <i class="fas fa-bolt"></i> OpAmp inverting gain 10
-                    </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('Common collector emitter follower 12V')">
-                        <i class="fas fa-bolt"></i> CC emitter follower
-                    </button>
-                    <button class="suggestion-chip" onclick="sendSuggestion('Mạch class AB push-pull 12V')">
-                        <i class="fas fa-bolt"></i> Class AB push-pull
-                    </button>
                 </div>
 
                 <!-- Input area -->
@@ -77,9 +61,27 @@
                     <div class="input-wrapper">
                         <textarea
                             id="chatInput"
-                            placeholder="Nhập yêu cầu thiết kế mạch ... (Enter để gửi)"
+                            placeholder="Nhập yêu cầu thiết kế ... (Enter để gửi)"
                             rows="1"
                         ></textarea>
+                        <div class="mode-dropdown" id="modelSelector" title="Chọn model xử lý">
+                            <button
+                                type="button"
+                                class="mode-dropdown-toggle"
+                                id="modelDropdownToggle"
+                                aria-haspopup="listbox"
+                                aria-expanded="false"
+                            >
+                                <span id="modelDropdownLabel">Fast</span>
+                                <i class="fas fa-chevron-down"></i>
+                            </button>
+                            <div class="mode-dropdown-menu" id="modelDropdownMenu" role="listbox" aria-label="Model xử lý">
+                                <button type="button" class="mode-option is-active" data-mode="fast" role="option" aria-selected="true">Fast</button>
+                                <button type="button" class="mode-option" data-mode="think" role="option" aria-selected="false">Think</button>
+                                <button type="button" class="mode-option" data-mode="pro" role="option" aria-selected="false">Pro</button>
+                                <button type="button" class="mode-option" data-mode="ultra" role="option" aria-selected="false">Ultra</button>
+                            </div>
+                        </div>
                         <button class="btn-send" id="btnSend" title="Gửi">
                             <i class="fas fa-paper-plane"></i>
                         </button>
