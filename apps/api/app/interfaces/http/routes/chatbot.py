@@ -52,7 +52,7 @@ def _env_flag(name: str) -> bool:
 class ChatRequest(BaseModel):
     """Request body cho chat endpoint."""
     message: str = Field(..., min_length=1, max_length=2000, description="User message")
-    mode: Optional[str] = Field(None, description="Chat mode: air (fast) | pro (think)")
+    mode: Optional[str] = Field(None, description="Model tier: fast | think | pro | ultra")
     session_id: Optional[str] = Field(None, description="Session ID for conversation tracking")
     user_id: Optional[str] = Field(None, description="User ID for memory/context tracking")
 
