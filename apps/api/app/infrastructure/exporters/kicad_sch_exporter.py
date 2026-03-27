@@ -307,30 +307,38 @@ class KiCadSchExporter(ExporterPort):
     
     def _get_pin_offsets(self) -> Dict[str, list]:
         """Get pin offset definitions for all component types.
-        
-        Returns:
-            Map of component_type to list of (dx, dy, orientation) offsets
+        Uses definitions from KiCadSymbolLibrary to ensure wires route exactly to the pins.
         """
-        return {
-            "resistor": [(-3.0, 0.0, 0), (3.0, 0.0, 180)],
-            "capacitor": [(-3.0, 0.0, 0), (3.0, 0.0, 180)],
-            "capacitor_polarized": [(-3.0, 0.0, 0), (3.0, 0.0, 180)],
-            "inductor": [(-3.0, 0.0, 0), (3.0, 0.0, 180)],
-            "bjt": [(-2.54, 0.0, 0), (2.54, 2.54, 90), (2.54, -2.54, 270)],
-            "bjt_npn": [(-2.54, 0.0, 0), (2.54, 2.54, 90), (2.54, -2.54, 270)],
-            "bjt_pnp": [(-2.54, 0.0, 0), (2.54, 2.54, 90), (2.54, -2.54, 270)],
-            "mosfet": [(2.54, 2.54, 90), (-2.54, 0.0, 0), (2.54, -2.54, 270)],
-            "mosfet_n": [(2.54, 2.54, 90), (-2.54, 0.0, 0), (2.54, -2.54, 270)],
-            "mosfet_p": [(2.54, -2.54, 270), (-2.54, 0.0, 0), (2.54, 2.54, 90)],
-            "diode": [(-3.0, 0.0, 0), (3.0, 0.0, 180)],
-            "opamp": [(5.08, 0.0, 180), (-5.08, 2.54, 0), (-5.08, -2.54, 0), (0.0, 7.62, 270), (0.0, -7.62, 90)],
-            "voltage_source": [(0.0, 3.0, 270), (0.0, -3.0, 90)],
-            "current_source": [(0.0, 3.0, 270), (0.0, -3.0, 90)],
-            "ground": [(0.0, 0.0, 270)],
-            "port": [(-2.54, 0.0, 0)],
-            "connector": [(-2.54, 0.0, 0)],
+        from app.infrastructure.exporters.kicad_symbol_library import KiCadSymbolLibrary
+        
+        # Mapping component types to symbol definitions
+        mapping = {
+            "resistor": "resistor",
+            "capacitor": "capacitor",
+            "capacitor_polarized": "capacitor",
+            "inductor": "inductor",
+            "bjt": "npn",
+            "bjt_npn": "npn",
+            "bjt_pnp": "pnp",
+            "mosfet": "nmos",
+            "mosfet_n": "nmos",
+            "mosfet_p": "pmos",
+            "diode": "diode",
+            "opamp": "opamp",
+            "voltage_source": "vsource",
+            "current_source": "isource",
+            "ground": "gnd",
+            "port": "port",
+            "connector": "connector"
         }
-    
+        
+        offsets = {}
+        for comp_type, sym_type in mapping.items():
+            sym_def = KiCadSymbolLibrary.get_symbol_def(sym_type)
+            if sym_def and 'pins' in sym_def:
+                offsets[comp_type] = sym_def['pins']
+                
+        return offsets
     def _plan_wires(
         self,
         circuit: Circuit,
