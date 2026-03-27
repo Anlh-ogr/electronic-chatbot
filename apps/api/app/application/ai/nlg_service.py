@@ -145,7 +145,7 @@ class NLGService:
         lines.append(f"**Đã thiết kế mạch {self._format_type(circuit_type)}** (template: {template_id})")
         lines.append("")
 
-        lines.append("## 1. Hệ phương trình hệ số khuếch đại (Av là chìa khóa)")
+        lines.append("## 1. Hệ phương trình hệ số khuếch đại")
         if gain_formula:
             lines.append(f"- Phương trình Av dùng để thiết kế: **{gain_formula}**")
         else:
