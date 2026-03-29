@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from app.domain.validators import ComponentSet, DCBiasValidator
+from app.domains.validators import ComponentSet, DCBiasValidator
 from app.infrastructure.simulation import NgspiceRunner, SimulationConfig
 
 if TYPE_CHECKING:
