@@ -4,6 +4,7 @@ Tests full workflow: config → build → validate → serialize
 """
 
 import pytest
+from app.domains.circuits.builder.common import BuildOptions
 from app.domains.circuits.template_builder import (
     AmplifierFactory,
     BJTAmplifierConfig,
@@ -29,7 +30,7 @@ class TestBJTAmplifierIntegration:
         )
         
         assert circuit is not None
-        assert circuit.name.startswith("CE Amplifier")
+        assert circuit.name.startswith("BJT_Common_Emitter")
         assert len(circuit.components) > 0
         
         # Step 2: Validate
@@ -95,11 +96,11 @@ class TestBJTAmplifierIntegration:
             topology="CE",
             vcc=12.0,
             gain_target=20.0,
-            bjt_model="2N3904",
+            transistor_model="2N3904",
             beta=150.0,
             ic_target=2e-3,
             bias_type="voltage_divider",
-            include_coupling=True
+            build=BuildOptions(include_input_coupling=True, include_output_coupling=True)
         )
         
         builder = BJTAmplifierBuilder(config)
@@ -208,9 +209,9 @@ class TestOpAmpAmplifierIntegration:
             topology="inverting",
             gain=-15.0,
             opamp_model="LM741",
-            r1=10000,
-            r2=150000,
-            include_coupling=True
+            resistors={"R1": 10000, "R2": 150000},
+            
+            build=BuildOptions(include_input_coupling=True, include_output_coupling=True)
         )
         
         builder = OpAmpAmplifierBuilder(config)
@@ -389,3 +390,5 @@ class TestConstraintPreservation:
             # Gain preserved
             assert "gain" in restored.constraints
             assert restored.constraints["gain"].value == original_gain
+
+

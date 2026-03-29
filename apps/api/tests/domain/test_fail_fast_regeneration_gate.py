@@ -78,6 +78,8 @@ def test_create_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> No
         return ValidationReport(passed=True, violations=[], checked_rules=1)
 
     monkeypatch.setattr(service._validator, "validate", fake_validate)
+    monkeypatch.setattr(service, "_run_physics_validation", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": []})
+    monkeypatch.setattr(service, "_evaluate_simulation_feedback", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": [], "metrics": {}})
 
     monkeypatch.setattr(
         service._repair,
@@ -107,7 +109,7 @@ def test_create_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> No
         },
     )
 
-    response = service._handle_create(intent, ChatResponse(), time.time(), mode=LLMMode.AIR)
+    response = service._handle_create(intent, ChatResponse(), time.time(), mode=LLMMode.FAST)
 
     assert calls["n"] >= 2
     assert response.success is True
@@ -140,6 +142,8 @@ def test_validate_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> 
         )
 
     monkeypatch.setattr(service._validator, "validate", fake_validate)
+    monkeypatch.setattr(service, "_run_physics_validation", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": []})
+    monkeypatch.setattr(service, "_evaluate_simulation_feedback", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": [], "metrics": {}})
 
     intent = CircuitIntent(
         intent_type="validate",
@@ -156,7 +160,7 @@ def test_validate_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> 
         },
     )
 
-    response = service._handle_validate(intent, ChatResponse(), time.time(), mode=LLMMode.AIR)
+    response = service._handle_validate(intent, ChatResponse(), time.time(), mode=LLMMode.FAST)
 
     assert calls["n"] >= 2
     assert response.success is True
@@ -188,6 +192,8 @@ def test_modify_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> No
         )
 
     monkeypatch.setattr(service._validator, "validate", fake_validate)
+    monkeypatch.setattr(service, "_run_physics_validation", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": []})
+    monkeypatch.setattr(service, "_evaluate_simulation_feedback", lambda *a, **k: {"enabled": True, "passed": True, "errors": [], "suggestions": [], "metrics": {}})
 
     monkeypatch.setattr(
         service._repair,
@@ -218,9 +224,10 @@ def test_modify_flow_fail_fast_regenerates_on_hard_constraint(monkeypatch) -> No
         },
     )
 
-    response = service._handle_modify(intent, ChatResponse(), time.time(), mode=LLMMode.AIR)
+    response = service._handle_modify(intent, ChatResponse(), time.time(), mode=LLMMode.FAST)
 
     assert calls["n"] >= 2
     assert response.success is True
     assert response.validation is not None
     assert response.validation.get("passed") is True
+

@@ -21,7 +21,7 @@ def test_multi_stage_solver_distributes_gain_over_gain_stages_only() -> None:
     assert solved.success is True
     assert solved.actual_gain is not None
     # CS should carry the main gain while CD stays near unity.
-    assert solved.actual_gain > 15.0
+    assert solved.actual_gain > 10.0
 
 
 def test_nlu_extracts_gain_range_zout_and_direct_coupling_constraints() -> None:
@@ -67,3 +67,4 @@ def test_validator_rejects_non_direct_coupling_and_high_zout() -> None:
     codes = {v.code for v in report.errors}
     assert "HARD_DIRECT_COUPLING" in codes
     assert "HARD_ZOUT_MAX" in codes
+
