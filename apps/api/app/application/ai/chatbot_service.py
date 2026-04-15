@@ -26,9 +26,12 @@ import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from sqlalchemy import text
 
 from app.application.ai.llm_router import LLMMode, LLMRole, get_router
 from app.application.ai.context_router_service import (
@@ -41,7 +44,7 @@ from app.application.ai.constraint_validator import ConstraintValidator
 from app.application.ai.repair_engine import RepairEngine
 from app.application.ai.simulation_service import NgSpiceSimulationService, SimulationError
 from app.db.database import Base, SessionLocal, engine
-from app.domain.validators import ComponentSet, DCBiasValidator, DCValidationResult
+from app.domains.validators import ComponentSet, DCBiasValidator, DCValidationResult
 from app.domains.circuits.ai_core import AICore
 from app.domains.circuits.ai_core.spec_parser import UserSpec
 from app.domains.circuits.ai_core.parameter_solver import ParameterSolver
@@ -78,6 +81,9 @@ class ChatResponse:
     validation: Optional[Dict] = None  # validation report
     repair: Optional[Dict] = None      # repair result (nếu đã sửa)
     physics_validation: Optional[Dict] = None
+    session_id: Optional[str] = None
+    user_message_id: Optional[str] = None
+    assistant_message_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -106,6 +112,12 @@ class ChatResponse:
             d["repair"] = self.repair
         if self.physics_validation:
             d["physics_validation"] = self.physics_validation
+        if self.session_id:
+            d["session_id"] = self.session_id
+        if self.user_message_id:
+            d["user_message_id"] = self.user_message_id
+        if self.assistant_message_id:
+            d["assistant_message_id"] = self.assistant_message_id
         return d
 
 
@@ -175,16 +187,19 @@ class ChatbotService:
 
         try:
             effective_text = user_text
+            user_message_id: Optional[str] = None
             if self._context_db_enabled:
                 try:
                     chat_id = self._ensure_chat_session(chat_id=chat_id, user_id=resolved_user_id)
+                    response.session_id = chat_id
                     effective_text = self._build_effective_user_text(
                         chat_id=chat_id,
                         user_text=user_text,
                         user_id=resolved_user_id,
                     )
                     if chat_id:
-                        self._persist_user_message(chat_id=chat_id, user_text=user_text)
+                        user_message_id = self._persist_user_message(chat_id=chat_id, user_text=user_text)
+                        response.user_message_id = user_message_id
                     context_available_for_request = True
                 except Exception as exc:  # pragma: no cover - runtime guard
                     logger.warning("Chat context unavailable for current request: %s", exc)
@@ -232,8 +247,24 @@ class ChatbotService:
 
             response.mode = selected_mode.value
 
+            assistant_message_id: Optional[str] = None
             if context_available_for_request and chat_id and response.message:
-                self._persist_assistant_message(chat_id=chat_id, assistant_text=response.message)
+                assistant_message_id = self._persist_assistant_message(
+                    chat_id=chat_id,
+                    assistant_text=response.message,
+                )
+                response.assistant_message_id = assistant_message_id
+
+            if context_available_for_request and chat_id and response.success and response.circuit_data:
+                self._persist_generated_circuit_snapshot(
+                    chat_id=chat_id,
+                    circuit_data=response.circuit_data,
+                    message_id=assistant_message_id,
+                    fallback_name=response.template_id,
+                )
+
+            if context_available_for_request and chat_id:
+                self._persist_summary_and_memory_facts(chat_id=chat_id, response=response)
 
             return response
 
@@ -272,6 +303,7 @@ class ChatbotService:
             ChatSummaryModel,
             MemoryFactModel,
             MessageModel,
+            SessionModel,
         )
 
         Base.metadata.create_all(
@@ -281,6 +313,7 @@ class ChatbotService:
                 MessageModel.__table__,
                 ChatSummaryModel.__table__,
                 MemoryFactModel.__table__,
+                SessionModel.__table__,
             ],
         )
 
@@ -332,6 +365,12 @@ class ChatbotService:
             )
         except Exception as exc:  # pragma: no cover - runtime guard
             logger.warning("Context router unavailable for this request: %s", exc)
+            session = getattr(self._chat_repo, "session", None)
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
             return user_text
 
         if not bundle.summary and not bundle.memory_facts:
@@ -347,11 +386,11 @@ class ChatbotService:
         context_text = "\n\n".join(context_blocks)
         return f"{context_text}\n\nUser request: {user_text}"
 
-    def _persist_user_message(self, chat_id: str, user_text: str) -> None:
+    def _persist_user_message(self, chat_id: str, user_text: str) -> Optional[str]:
         if not self._chat_repo:
-            return
+            return None
         try:
-            self._chat_repo.append_message(
+            return self._chat_repo.append_message(
                 chat_id=chat_id,
                 role="user",
                 content=user_text,
@@ -359,12 +398,13 @@ class ChatbotService:
             )
         except Exception as exc:  # pragma: no cover - runtime guard
             logger.warning("Failed to persist user message: %s", exc)
+            return None
 
-    def _persist_assistant_message(self, chat_id: str, assistant_text: str) -> None:
+    def _persist_assistant_message(self, chat_id: str, assistant_text: str) -> Optional[str]:
         if not self._chat_repo:
-            return
+            return None
         try:
-            self._chat_repo.append_message(
+            return self._chat_repo.append_message(
                 chat_id=chat_id,
                 role="assistant",
                 content=assistant_text,
@@ -372,6 +412,129 @@ class ChatbotService:
             )
         except Exception as exc:  # pragma: no cover - runtime guard
             logger.warning("Failed to persist assistant message: %s", exc)
+            return None
+
+    def _persist_generated_circuit_snapshot(
+        self,
+        chat_id: str,
+        circuit_data: Dict[str, Any],
+        message_id: Optional[str],
+        fallback_name: Optional[str] = None,
+    ) -> None:
+        db = SessionLocal()
+        try:
+            if not isinstance(circuit_data, dict) or not circuit_data:
+                return
+
+            meta = circuit_data.get("meta") if isinstance(circuit_data.get("meta"), dict) else {}
+            circuit_name = (
+                (meta.get("name") if isinstance(meta.get("name"), str) else None)
+                or (circuit_data.get("name") if isinstance(circuit_data.get("name"), str) else None)
+                or fallback_name
+                or "Generated Circuit"
+            )
+            description = (
+                meta.get("description") if isinstance(meta.get("description"), str) else None
+            )
+
+            circuit_id = str(uuid.uuid4())
+            snapshot_id = str(uuid.uuid4())
+
+            # Expose persisted circuit id back to response payload so frontend
+            # can call industrial export endpoints that require circuit_id.
+            meta_payload = circuit_data.get("meta")
+            if not isinstance(meta_payload, dict):
+                meta_payload = {}
+            meta_payload["circuit_id"] = circuit_id
+            circuit_data["meta"] = meta_payload
+            circuit_data["circuit_id"] = circuit_id
+
+            payload_json = json.dumps(circuit_data, ensure_ascii=False)
+
+            db.execute(
+                text(
+                    """
+                    INSERT INTO circuits (circuit_id, session_id, message_id, name, description)
+                    VALUES (:circuit_id, :session_id, :message_id, :name, :description)
+                    """
+                ),
+                {
+                    "circuit_id": circuit_id,
+                    "session_id": chat_id,
+                    "message_id": message_id,
+                    "name": circuit_name,
+                    "description": description,
+                },
+            )
+
+            db.execute(
+                text(
+                    """
+                    INSERT INTO snapshots (snapshot_id, circuit_id, message_id, circuit_data)
+                    VALUES (:snapshot_id, :circuit_id, :message_id, CAST(:circuit_data AS jsonb))
+                    """
+                ),
+                {
+                    "snapshot_id": snapshot_id,
+                    "circuit_id": circuit_id,
+                    "message_id": message_id,
+                    "circuit_data": payload_json,
+                },
+            )
+
+            db.commit()
+        except Exception as exc:  # pragma: no cover - runtime guard
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning("Failed to persist generated circuit/snapshot: %s", exc)
+        finally:
+            db.close()
+
+    def _persist_summary_and_memory_facts(self, chat_id: str, response: ChatResponse) -> None:
+        if not self._chat_repo or not self._summary_repo:
+            return
+
+        try:
+            messages = self._chat_repo.list_messages(chat_id=chat_id, limit=20)
+            if messages:
+                tail = messages[-8:]
+                summary_lines = [f"{m.role}: {str(m.content)[:240]}" for m in tail]
+                summary_text = "\n".join(summary_lines)
+                token_estimate = max(len(summary_text) // 4, 1)
+                self._summary_repo.upsert_summary(
+                    chat_id=chat_id,
+                    summary_text=summary_text,
+                    token_estimate=token_estimate,
+                    source_message_count=len(messages),
+                    version=len(messages),
+                )
+        except Exception as exc:  # pragma: no cover - runtime guard
+            logger.warning("Failed to persist chat summary: %s", exc)
+
+        facts: Dict[str, str] = {}
+        if isinstance(response.intent, dict):
+            for key in ("intent_type", "circuit_type", "topology"):
+                value = response.intent.get(key)
+                if value is not None and str(value).strip():
+                    facts[f"last_{key}"] = str(value)
+
+        if response.template_id:
+            facts["last_template_id"] = response.template_id
+        facts["last_chat_success"] = "true" if response.success else "false"
+
+        for fact_key, fact_value in facts.items():
+            try:
+                self._summary_repo.upsert_memory_fact(
+                    fact_key=fact_key,
+                    fact_value=fact_value,
+                    chat_id=chat_id,
+                    confidence=0.7,
+                    source="chatbot",
+                )
+            except Exception as exc:  # pragma: no cover - runtime guard
+                logger.warning("Failed to persist memory fact '%s': %s", fact_key, exc)
 
     # ------------------------------------------------------------------ #
     #  Intent handlers
@@ -2161,7 +2324,8 @@ class ChatbotService:
             }
 
         gain_target = intent.gain_target if intent.gain_target is not None else gain_actual
-        if (intent.circuit_type or "").strip().lower() == "multi_stage":
+        topology_from_circuit = str(circuit_data.get("topology_type") or "").lower()
+        if (intent.circuit_type or "").strip().lower() == "multi_stage" or "multi_stage" in (intent.topology or "").lower() or "two_stage" in topology_from_circuit:
             # For multi-stage chains, CE-equivalent DC check is for bias sanity only;
             # total gain target is enforced by constraint validator/simulation gate.
             gain_target = None
