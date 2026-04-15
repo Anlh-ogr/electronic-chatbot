@@ -22,13 +22,49 @@ English:
 from app.core.config import settings
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from collections.abc import AsyncGenerator
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+
+def _normalize_async_database_url(url: str) -> str:
+    """Normalize Neon/Postgres URL so SQLAlchemy asyncpg engine can consume it."""
+    value = (url or "").strip()
+    if not value:
+        return value
+
+    if value.startswith("postgresql://"):
+        value = value.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+    if not value.startswith("postgresql+asyncpg://"):
+        return value
+
+    try:
+        parsed = urlparse(value)
+        query_params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
+        if "sslmode" in query_params and "ssl" not in query_params:
+            query_params["ssl"] = query_params["sslmode"]
+
+        query_params.pop("sslmode", None)
+        query_params.pop("channel_binding", None)
+
+        normalized_query = urlencode(query_params, doseq=True)
+        return urlunparse(parsed._replace(query=normalized_query))
+    except Exception:
+        # Keep original value if URL normalization fails unexpectedly.
+        return value
 
 
 # ====== Async Engine Configuration ======
 # Thiết lập bất đồng bộ (async) engine cho kết nối DB
 # Echo = True để in các câu lệnh SQL ra console khi thực thi (DEBUG)
+raw_database_url = (
+    settings.database_url.get_secret_value()
+    if hasattr(settings, "database_url")
+    else "postgresql+asyncpg://localhost/db"
+)
+
 engine = create_async_engine(
-    settings.database_url.get_secret_value() if hasattr(settings, 'database_url') else "postgresql+asyncpg://localhost/db",
+    _normalize_async_database_url(raw_database_url),
     future=True,
     echo=False
 )

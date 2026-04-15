@@ -22,7 +22,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from typing import Generator
+from pathlib import Path
+from dotenv import load_dotenv
 import os
+
+
+# Load .env.local from apps/api root so SessionLocal uses the same env as app runtime.
+_ENV_LOCAL_PATH = Path(__file__).resolve().parents[2] / ".env.local"
+if _ENV_LOCAL_PATH.exists():
+    load_dotenv(_ENV_LOCAL_PATH)
 
 # ====== Database Configuration ======
 # Database URL from environment
