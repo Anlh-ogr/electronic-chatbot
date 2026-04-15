@@ -364,6 +364,10 @@ class CircuitGenerator:
                     params["inductance"] = val
                     applied.append(f"{comp_id}.inductance = {val}")
 
+                elif comp_type == "VOLTAGE_SOURCE" or "voltage" in params:
+                    params["voltage"] = val
+                    applied.append(f"{comp_id}.voltage = {val}")
+
             # luôn ưu tiên mapping theo comp_id đã xử lý ở trên, tránh ghi đè nếu trùng tên
             for key, val in values.items():
                 if key.upper() == comp_id.upper():

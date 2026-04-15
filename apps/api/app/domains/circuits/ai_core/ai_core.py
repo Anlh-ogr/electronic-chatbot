@@ -72,6 +72,7 @@ class PipelineResult:
         if self.spec:
             d["spec"] = {
                 "circuit_type": self.spec.circuit_type,
+                "topology_candidates": self.spec.topology_candidates,
                 "gain": self.spec.gain,
                 "high_cmr": self.spec.high_cmr,
                 "input_mode": self.spec.input_mode,
@@ -82,6 +83,8 @@ class PipelineResult:
                 "device_preference": self.spec.device_preference,
                 "requested_stage_blocks": self.spec.requested_stage_blocks,
                 "extra_requirements": self.spec.extra_requirements,
+                "functional_features": self.spec.functional_features,
+                "keyword_hits": self.spec.keyword_hits,
             }
             
         # nếu có plan về topology -> thêm thông tin về template đã chọn, mode, độ chính xác, blocks, công thức gain, lý do chọn, đề xuất mở rộng từ plan

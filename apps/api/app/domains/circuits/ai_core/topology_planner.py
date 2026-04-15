@@ -133,14 +133,33 @@ class TopologyPlanner:
     # 2. kiểm tra mạch hợp lệ? - không xác định đc -> no_match
     def _validate_circuit_type(self, spec: UserSpec, plan: TopologyPlan) -> bool:
         if spec.circuit_type == "unknown":
-            plan.mode = "no_match"
-            plan.rationale.append("Cannot identify circuit type from request")
-            return False
+            fallback = next(
+                (
+                    family
+                    for family in getattr(spec, "topology_candidates", [])
+                    if family and family != "unknown"
+                ),
+                "",
+            )
+            if fallback:
+                spec.circuit_type = fallback
+                plan.rationale.append(
+                    f"Fallback circuit type from functional keyword mapping: '{fallback}'"
+                )
+            else:
+                plan.mode = "no_match"
+                plan.rationale.append("Cannot identify circuit type from request")
+                return False
             
         # Nâng cấp lên multi_stage nếu gain >= 100 cho TẤT CẢ các loại mạch
-        if spec.circuit_type != "multi_stage" and spec.gain is not None and spec.gain >= 100:
+        is_opamp = spec.circuit_type in {"inverting", "non_inverting", "differential", "instrumentation"}
+        if not is_opamp and spec.circuit_type != "multi_stage" and spec.gain is not None and spec.gain >= 100:
             plan.rationale.append(f"Gain req {spec.gain} >= 100, upgrading '{spec.circuit_type}' to 'multi_stage' to balance bandwidth, noise, and stability")
             spec.circuit_type = "multi_stage"
+            spec.topology_candidates = self._merge_candidate_families(
+                primary="multi_stage",
+                candidates=getattr(spec, "topology_candidates", []),
+            )
             
         return True
     
@@ -173,7 +192,9 @@ class TopologyPlanner:
     
     # 4. Thu thập mẫu từ (family, pattern) -> merge theo id (family -> pattern)
     def _collect_candidates(self, spec: UserSpec, plan: TopologyPlan, repo: MetadataRepository, required_caps: Dict[str, Any]) -> List[Dict[str, Any]]:
-        family_matches = self._filter_by_supply(repo.find_by_family(spec.circuit_type), spec)
+        family_matches: List[Dict[str, Any]] = []
+        for family in self._candidate_family_order(spec):
+            family_matches.extend(self._filter_by_supply(repo.find_by_family(family), spec))
         
         pattern_matches: List[Dict[str, Any]] = []
         if plan.blocks:
@@ -395,6 +416,14 @@ class TopologyPlanner:
         pattern_score = self._compute_pattern_score(fs, planned_blocks)
         priority_score = self._compute_priority_score(hints)
         ml_score = self._ml_selector.score_candidate(meta, ml_context)
+        ml_weighted_contribution = 0.15 * ml_score
+
+        logger.debug(
+            "RF score debug | template=%s raw_ml=%.4f weighted_contribution=%.4f",
+            str(meta.get("template_id", "")),
+            ml_score,
+            ml_weighted_contribution,
+        )
 
         total_score = self._combine_weighted_score(
             family=family_score,
@@ -412,12 +441,37 @@ class TopologyPlanner:
             "pattern": pattern_score,
             "priority": priority_score,
             "ml": ml_score,
+            "ml_weighted": ml_weighted_contribution,
         }
         return total_score, meta, breakdown
     
     # Tính điểm family: 1 - trùng, 0 - khác
     def _compute_family_score(self, domain: Dict[str, Any], spec: UserSpec) -> float:
-        return 1.0 if domain.get("family") == spec.circuit_type else 0.0
+        family = str(domain.get("family") or "")
+        if family == spec.circuit_type:
+            return 1.0
+
+        ranked = self._candidate_family_order(spec)
+        if family in ranked:
+            idx = ranked.index(family)
+            return max(0.45, 0.88 - 0.12 * idx)
+        return 0.0
+
+    @staticmethod
+    def _merge_candidate_families(primary: str, candidates: List[str]) -> List[str]:
+        ordered: List[str] = []
+        if primary and primary != "unknown":
+            ordered.append(primary)
+        for family in candidates:
+            if family and family != "unknown" and family not in ordered:
+                ordered.append(family)
+        return ordered
+
+    def _candidate_family_order(self, spec: UserSpec) -> List[str]:
+        return self._merge_candidate_families(
+            primary=spec.circuit_type,
+            candidates=getattr(spec, "topology_candidates", []),
+        )
     
     # Tính điểm supply: 1 - phù hợp, 0 - không phù hợp, 0.5 - không rõ
     def _compute_supply_score(self, domain: Dict[str, Any], spec: UserSpec) -> float:

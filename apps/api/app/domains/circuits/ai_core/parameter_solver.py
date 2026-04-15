@@ -282,16 +282,20 @@ class ParameterSolver:
 
     def _bjt_voltage_divider_bias(self, vcc: float, ic_ma: float, rc: float = 0.0, re: float = 0.0) -> tuple[float, float]:
         rc_dc = max(rc, 1.0)
-        re_dc = max(re, 0.1 * vcc / (ic_ma / 1000.0))
-        ve = ic_ma / 1000.0 * re_dc
+        re_dc = re if re > 0 else (0.1 * vcc / (ic_ma / 1000.0))
+        ve = (ic_ma / 1000.0) * re_dc
         vb = ve + 0.7
-        # I_divider ≈ 10 * Ib
-        beta = 100
+        beta = 100.0
         ib = (ic_ma / 1000.0) / beta
-        i_div = 10 * ib
-        R2 = vb / i_div
-        R1 = (vcc - vb) / (i_div + ib)
-        return self._snap(R1), self._snap(R2)
+        
+        i_div_initial = 20.0 * ib
+        r2_ideal = vb / i_div_initial
+        R2 = self._snap(r2_ideal)
+        
+        i_div_actual = vb / R2
+        R1 = self._snap((vcc - vb) / (i_div_actual + ib))
+        
+        return float(R1), float(R2)
 
     def _fet_voltage_divider_bias(self, vcc: float, id_ma: float, rd: float = 0.0, rs: float = 0.0) -> tuple[float, float]:
         rs_dc = max(rs, 0.1 * vcc / (id_ma / 1000.0))
@@ -452,9 +456,15 @@ class ParameterSolver:
         topology = hints.get("topology", "CE+CC").upper()
 
         # Mỗi tầng khuếch đại gain^(1/num_stages), trừ follower (CC/CD) → 1
-        per_stage_gain = gain ** (1.0 / num_stages)
+        stage_names = [s.strip() for s in topology.split("+")][:num_stages]
+        while len(stage_names) < num_stages:
+            stage_names.append(stage_names[-1])
 
-        # Chọn solver cho từng tầng theo topology
+        num_amp_stages = sum(1 for name in stage_names if name not in ("CC", "CD"))
+        if num_amp_stages == 0:
+            num_amp_stages = 1
+        per_stage_gain = gain ** (1.0 / num_amp_stages)
+
         _solver_map = {
             "CE": self._solve_ce,
             "CB": self._solve_cb,
@@ -463,12 +473,10 @@ class ParameterSolver:
             "CD": self._solve_cd,
             "CG": self._solve_cg,
         }
-        stage_names = [s.strip() for s in topology.split("+")][:num_stages]
-        # Điền đầy nếu topology có ít tên hơn num_stages
-        while len(stage_names) < num_stages:
-            stage_names.append(stage_names[-1])
 
         combined_values: Dict[str, float] = {}
+        vcc = float((meta or {}).get("vcc") or 12.0)
+        combined_values["VCC"] = vcc
         total_gain = 1.0
         all_equations: List[str] = []
         stage_analysis: List[Dict[str, Any]] = []
@@ -740,3 +748,4 @@ class ParameterSolver:
                 "note": "Constraint noted, full validation pending in CircuitGenerator",
             }
             result.constraints_report.append(report_entry)
+

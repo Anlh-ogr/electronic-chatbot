@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 
 _API_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 _DEFAULT_MODEL_DIR = _API_ROOT / "resources" / "ml_models"
+_MIN_GROUP_WEIGHTED_F1 = 0.92
+_MIN_FOLD_F1 = 0.92
 
 
 def _normalize_token(value: str) -> str:
@@ -30,12 +32,13 @@ class RandomForestTopologySelector:
     SUPPLY_MODES = ("auto", "single_supply", "dual_supply")
     DEVICE_PREFS = ("auto", "bjt", "mosfet", "opamp")
     COUPLING_PREFS = ("auto", "capacitor", "direct", "transformer")
+    FEEDBACK_TOPOLOGIES = ("resistive_divider", "long_tail_pair", "none")
+    INPUT_STAGE_TYPES = ("fully_differential", "single_ended")
 
     def __init__(self, model_dir: Optional[Path] = None) -> None:
         self._model_dir = model_dir or _DEFAULT_MODEL_DIR
         self._enabled = False
 
-        self._xgb = None
         self._topology_model = None
         self._block_model = None
 
@@ -65,6 +68,13 @@ class RandomForestTopologySelector:
             "output_buffer",
             "power_output",
             "is_differential_input",
+            "num_input_terminals",
+            "feedback_topology",
+            "feedback_resistive_divider",
+            "feedback_long_tail_pair",
+            "feedback_none",
+            "input_fully_differential",
+            "input_single_ended",
         ]
 
         names.extend([f"input_mode__{mode}" for mode in cls.INPUT_MODES])
@@ -76,6 +86,65 @@ class RandomForestTopologySelector:
             for key in sorted(set(extra_requirement_keys)):
                 names.append(f"extra_req__{_normalize_token(key)}")
         return names
+
+    @classmethod
+    def derive_structural_feature_map(
+        cls,
+        *,
+        circuit_family: Optional[str],
+        primary_block: Optional[str],
+        input_mode: str,
+        input_channels: int,
+    ) -> Dict[str, float]:
+        family_token = _normalize_token(circuit_family or "")
+        block_token = _normalize_token(primary_block or "")
+
+        differential_tokens = {
+            "differential",
+            "instrumentation",
+            "differential_block",
+        }
+        resistive_feedback_tokens = {
+            "non_inverting",
+            "inverting",
+            "non_inverting_block",
+            "inverting_block",
+        }
+
+        is_known_differential = family_token in differential_tokens or block_token in differential_tokens
+        has_differential_signature = is_known_differential or input_mode == "differential" or int(input_channels) >= 2
+
+        if family_token in resistive_feedback_tokens or block_token in resistive_feedback_tokens:
+            feedback_topology = "resistive_divider"
+        elif is_known_differential:
+            feedback_topology = "long_tail_pair"
+        else:
+            feedback_topology = "none"
+
+        num_input_terminals = 2.0 if is_known_differential else 1.0
+        if not (family_token or block_token) and has_differential_signature:
+            num_input_terminals = 2.0
+
+        input_stage_type = "fully_differential" if is_known_differential else "single_ended"
+        if not (family_token or block_token) and has_differential_signature:
+            input_stage_type = "fully_differential"
+
+        feedback_code = {
+            "none": 0.0,
+            "resistive_divider": 1.0,
+            "long_tail_pair": 2.0,
+        }[feedback_topology]
+
+        fmap: Dict[str, float] = {
+            "num_input_terminals": float(num_input_terminals),
+            "feedback_topology": float(feedback_code),
+            "feedback_resistive_divider": 1.0 if feedback_topology == "resistive_divider" else 0.0,
+            "feedback_long_tail_pair": 1.0 if feedback_topology == "long_tail_pair" else 0.0,
+            "feedback_none": 1.0 if feedback_topology == "none" else 0.0,
+            "input_fully_differential": 1.0 if input_stage_type == "fully_differential" else 0.0,
+            "input_single_ended": 1.0 if input_stage_type == "single_ended" else 0.0,
+        }
+        return fmap
 
     @classmethod
     def build_feature_map(
@@ -94,6 +163,8 @@ class RandomForestTopologySelector:
         device_preference: str,
         extra_requirements: Sequence[str],
         extra_requirement_keys: Optional[Sequence[str]] = None,
+        circuit_family: Optional[str] = None,
+        primary_block: Optional[str] = None,
     ) -> Dict[str, float]:
         safe_gain = float(gain) if gain is not None else 1.0
         safe_vcc = float(vcc) if vcc is not None else 12.0
@@ -110,6 +181,15 @@ class RandomForestTopologySelector:
             "power_output": 1.0 if power_output else 0.0,
             "is_differential_input": 1.0 if input_mode == "differential" else 0.0,
         }
+
+        fmap.update(
+            cls.derive_structural_feature_map(
+                circuit_family=circuit_family,
+                primary_block=primary_block,
+                input_mode=input_mode,
+                input_channels=input_channels,
+            )
+        )
 
         for mode in cls.INPUT_MODES:
             fmap[f"input_mode__{mode}"] = 1.0 if input_mode == mode else 0.0
@@ -142,6 +222,8 @@ class RandomForestTopologySelector:
             device_preference=spec.device_preference,
             extra_requirements=spec.extra_requirements,
             extra_requirement_keys=self._extra_requirement_keys,
+            circuit_family=spec.circuit_type,
+            primary_block=(spec.requested_stage_blocks[0] if spec.requested_stage_blocks else None),
         )
         return [float(fmap.get(name, 0.0)) for name in self._feature_names]
 
@@ -284,22 +366,24 @@ class RandomForestTopologySelector:
         ]
 
         if not block_types:
-            return max(0.0, min(family_prob, 1.0))
+            clamped_family_prob = max(0.0, min(family_prob, 1.0))
+            return max(clamped_family_prob, 1e-6)
 
         block_probs = [context.get("block", {}).get(block_type, 0.0) for block_type in block_types]
         max_block_prob = max(block_probs) if block_probs else 0.0
 
         score = 0.7 * family_prob + 0.3 * max_block_prob
-        return max(0.0, min(score, 1.0))
+        clamped_score = max(0.0, min(score, 1.0))
+        return max(clamped_score, 1e-6)
 
-    def _load(self) -> None:
-        schema_path = self._model_dir / "rf_feature_schema.json"
-        topology_model_path = self._model_dir / "rf_topology_model.joblib"
-        block_model_path = self._model_dir / "rf_block_model.joblib"
-
+    def _load_bundle(
+        self,
+        schema_path: Path,
+        topology_model_path: Path,
+        block_model_path: Path,
+    ) -> bool:
         if not schema_path.exists() or not topology_model_path.exists() or not block_model_path.exists():
-            logger.info("ML topology models not found at %s; fallback to rule-based", self._model_dir)
-            return
+            return False
 
         try:
             import json
@@ -315,13 +399,116 @@ class RandomForestTopologySelector:
 
             if not self._feature_names or not self._topology_classes or not self._block_classes:
                 logger.warning("ML schema is incomplete; fallback to rule-based")
-                return
+                return False
 
             self._topology_model = joblib.load(topology_model_path)
             self._block_model = joblib.load(block_model_path)
-
-            self._enabled = True
-            logger.info("Loaded Random Forest topology/block models from %s", self._model_dir)
+            return True
         except Exception as exc:
-            logger.warning("Cannot load Random Forest models, fallback to rule-based: %s", exc)
-            self._enabled = False
+            logger.warning("Cannot load Random Forest bundle: %s", exc)
+            return False
+
+    def _quality_gate_passed(self, evaluation_path: Path) -> bool:
+        if not evaluation_path.exists():
+            logger.error("RF evaluation report not found at %s", evaluation_path)
+            return False
+
+        try:
+            import json
+
+            with open(evaluation_path, "r", encoding="utf-8") as f:
+                report = json.load(f)
+
+            # Primary v4 gate prefers strict fold-level checks from diagnostic report when available.
+            diagnostic_path = evaluation_path.with_name("rf_diagnostic_report.json")
+            diagnostic_report: Dict[str, Any] = {}
+            if diagnostic_path.exists():
+                with open(diagnostic_path, "r", encoding="utf-8") as f:
+                    diagnostic_report = json.load(f)
+
+            topology_weighted_f1_group_cv = float(report.get("topology", {}).get("weighted_f1_group_cv", 0.0))
+            block_weighted_f1_group_cv = float(report.get("block", {}).get("weighted_f1_group_cv", 0.0))
+
+            topology_fold_scores = [
+                float(value)
+                for value in (
+                    diagnostic_report.get("topology", {})
+                    .get("cv_group_f1", {})
+                    .get("fold_scores", [])
+                )
+                if isinstance(value, (int, float))
+            ]
+            block_fold_scores = [
+                float(value)
+                for value in (
+                    diagnostic_report.get("block", {})
+                    .get("cv_group_f1", {})
+                    .get("fold_scores", [])
+                )
+                if isinstance(value, (int, float))
+            ]
+
+            topology_gate = (
+                bool(topology_fold_scores) and all(score >= _MIN_FOLD_F1 for score in topology_fold_scores)
+            ) or topology_weighted_f1_group_cv > _MIN_GROUP_WEIGHTED_F1
+            block_gate = (
+                bool(block_fold_scores) and all(score >= _MIN_FOLD_F1 for score in block_fold_scores)
+            ) or block_weighted_f1_group_cv > _MIN_GROUP_WEIGHTED_F1
+
+            assert topology_gate and block_gate
+            return True
+        except AssertionError:
+            logger.critical(
+                "RF v4 quality gate failed: "
+                "topology fold_scores=%s, topology weighted_f1_group_cv=%.4f, "
+                "block fold_scores=%s, block weighted_f1_group_cv=%.4f, "
+                "required: all folds >= %.2f OR weighted_f1_group_cv > %.2f",
+                topology_fold_scores,
+                topology_weighted_f1_group_cv,
+                block_fold_scores,
+                block_weighted_f1_group_cv,
+                _MIN_FOLD_F1,
+                _MIN_GROUP_WEIGHTED_F1,
+            )
+            return False
+        except Exception as exc:
+            logger.error("Failed to validate RF evaluation report: %s", exc)
+            return False
+
+    def _load(self) -> None:
+        primary_schema_path = self._model_dir / "rf_feature_schema.json"
+        primary_topology_model_path = self._model_dir / "rf_topology_model.joblib"
+        primary_block_model_path = self._model_dir / "rf_block_model.joblib"
+        primary_evaluation_path = self._model_dir / "rf_evaluation_report.json"
+
+        legacy_schema_path = self._model_dir / "rf_feature_schema_legacy.json"
+        legacy_topology_model_path = self._model_dir / "rf_topology_model_legacy.joblib"
+        legacy_block_model_path = self._model_dir / "rf_block_model_legacy.joblib"
+        legacy_evaluation_path = self._model_dir / "rf_evaluation_report_legacy.json"
+
+        if self._quality_gate_passed(primary_evaluation_path):
+            if self._load_bundle(
+                schema_path=primary_schema_path,
+                topology_model_path=primary_topology_model_path,
+                block_model_path=primary_block_model_path,
+            ):
+                self._enabled = True
+                logger.info("Loaded Random Forest topology/block models from %s", self._model_dir)
+                return
+            logger.error("Primary RF bundle failed to load despite quality report passing")
+        else:
+            logger.critical("Primary RF model v4 quality gate failed; attempting legacy fallback")
+
+        if self._quality_gate_passed(legacy_evaluation_path):
+            if self._load_bundle(
+                schema_path=legacy_schema_path,
+                topology_model_path=legacy_topology_model_path,
+                block_model_path=legacy_block_model_path,
+            ):
+                self._enabled = True
+                logger.info("Loaded legacy Random Forest topology/block models from %s", self._model_dir)
+                return
+            logger.error("Legacy RF bundle exists but failed to load")
+
+        logger.error("No valid RF model available after quality gate checks; fallback to rule-based")
+        self._enabled = False

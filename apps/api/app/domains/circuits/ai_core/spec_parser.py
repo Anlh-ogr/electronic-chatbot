@@ -46,6 +46,9 @@ class UserSpec:
     device_preference: str = "auto"         # auto | bjt | mosfet | opamp
     requested_stage_blocks: List[str] = field(default_factory=list)
     extra_requirements: List[str] = field(default_factory=list)
+    functional_features: List[str] = field(default_factory=list)
+    topology_candidates: List[str] = field(default_factory=list)
+    keyword_hits: List[str] = field(default_factory=list)
     confidence: float = 0.0                 # 0.0 - 1.0
     source: str = "rule_based"              # rule_based | llm | hybrid
     raw_text: str = ""                      # văn bản gốc
@@ -63,6 +66,9 @@ class UserSpec:
             "device_preference": self.device_preference,
             "requested_stage_blocks": self.requested_stage_blocks,
             "extra_requirements": self.extra_requirements,
+            "functional_features": self.functional_features,
+            "topology_candidates": self.topology_candidates,
+            "keyword_hits": self.keyword_hits,
             "confidence": round(self.confidence, 3), "source": self.source,
             "raw_text": self.raw_text,
         }
@@ -191,6 +197,109 @@ CIRCUIT_TYPE_KEYWORDS = {
 }
 
 
+# ── Rule-based functional keyword mapping: feature -> candidate topologies ──
+# Các rule này dùng khi user mô tả đặc tính chức năng (ít méo, công suất, buffer,...)
+# thay vì nêu trực tiếp tên topology.
+FUNCTIONAL_KEYWORD_RULES: List[Dict[str, Any]] = [
+    {
+        "feature": "low_distortion",
+        "keyword": "ít méo / low distortion",
+        "patterns": [
+            r"ít\s*méo", r"it\s*meo", r"low\s*distortion", r"high\s*fidelity",
+            r"audio\s*quality", r"linearity", r"linear\b", r"preamp",
+        ],
+        "candidates": ["class_a", "class_ab"],
+        "extra_requirements": ["low_distortion"],
+        "weight": 3.0,
+    },
+    {
+        "feature": "power_amplification",
+        "keyword": "công suất / power",
+        "patterns": [
+            r"công\s*suất", r"cong\s*suat", r"power", r"speaker", r"loa",
+            r"pwm", r"low\s*heat", r"high\s*efficiency",
+        ],
+        "candidates": ["class_ab", "class_d"],
+        "extra_requirements": ["power_amplification", "high_efficiency"],
+        "weight": 3.0,
+    },
+    {
+        "feature": "simple_voltage_gain",
+        "keyword": "đơn giản / simple amplifier",
+        "patterns": [
+            r"đơn\s*giản", r"don\s*gian", r"simple\s*amplifier",
+        ],
+        "candidates": ["common_emitter", "common_source"],
+        "extra_requirements": ["voltage_gain"],
+        "weight": 2.8,
+    },
+    {
+        "feature": "buffering",
+        "keyword": "buffer / impedance matching",
+        "patterns": [
+            r"\bbuffer\b", r"impedance\s*matching", r"driver", r"voltage\s*follower",
+            r"đệm\s*tín\s*hiệu", r"dem\s*tin\s*hieu",
+        ],
+        "candidates": ["common_collector", "common_drain"],
+        "extra_requirements": ["buffering", "low_output_impedance"],
+        "weight": 2.8,
+    },
+    {
+        "feature": "noise_rejection",
+        "keyword": "nhiễu thấp / noise rejection",
+        "patterns": [
+            r"nhiễu\s*thấp", r"nhieu\s*thap", r"noise\s*rejection", r"low\s*noise",
+            r"sensor", r"cảm\s*biến", r"cam\s*bien",
+        ],
+        "candidates": ["differential", "instrumentation"],
+        "extra_requirements": ["high_cmrr", "precision_gain"],
+        "weight": 3.0,
+    },
+    {
+        "feature": "high_gain",
+        "keyword": "gain lớn / very high gain",
+        "patterns": [
+            r"gain\s*lớn", r"gain\s*lon", r"very\s*high\s*gain", r"weak\s*signal",
+            r"khuếch\s*đại\s*lớn", r"khuech\s*dai\s*lon", r"cascade", r"multi[\s_-]*stage",
+        ],
+        "candidates": ["multi_stage", "darlington"],
+        "extra_requirements": ["voltage_gain", "high_current_gain"],
+        "weight": 3.1,
+    },
+    {
+        "feature": "rf_high_frequency",
+        "keyword": "RF / high frequency",
+        "patterns": [
+            r"\brf\b", r"high\s*frequency", r"wide\s*bandwidth", r"resonant", r"tuned\s*circuit",
+        ],
+        "candidates": ["class_c", "common_gate", "common_base"],
+        "extra_requirements": ["rf_amplification", "high_bandwidth", "low_input_impedance"],
+        "weight": 2.6,
+    },
+    {
+        "feature": "phase_inversion_control",
+        "keyword": "inverting / negative gain",
+        "patterns": [
+            r"\binverting\b", r"negative\s*gain", r"đảo\s*pha", r"dao\s*pha",
+        ],
+        "candidates": ["inverting", "common_emitter", "common_source"],
+        "extra_requirements": ["phase_inversion"],
+        "weight": 2.5,
+    },
+    {
+        "feature": "high_input_impedance",
+        "keyword": "high impedance / voltage follower",
+        "patterns": [
+            r"high\s*input\s*impedance", r"trở\s*kháng\s*vào\s*cao", r"tro\s*khang\s*vao\s*cao",
+            r"voltage\s*follower", r"không\s*đảo", r"khong\s*dao",
+        ],
+        "candidates": ["non_inverting", "common_drain", "common_collector"],
+        "extra_requirements": ["high_input_impedance", "buffering"],
+        "weight": 2.3,
+    },
+]
+
+
 class NLPSpecParser:
     """ Phân tích nntn yêu cầu NLP → UserSpecification nhận diện ý định.
     Fl1: Regex-based extraction (luôn chạy, nhanh).
@@ -223,10 +332,15 @@ class NLPSpecParser:
         self._parse_device_preference(text, spec)
         self._parse_requested_stage_blocks(text, spec)
         self._parse_extra_requirements(text, spec)
+        self._parse_functional_topology_hints(text, spec)
 
         # If user explicitly requested a stage chain (e.g., CS-CD), force multi-stage planning.
         if len(spec.requested_stage_blocks) >= 2:
             spec.circuit_type = "multi_stage"
+            spec.topology_candidates = self._merge_topology_candidates(
+                primary=spec.circuit_type,
+                mapped=spec.topology_candidates,
+            )
 
         self._calc_confidence(spec)
         spec.source = "rule_based"
@@ -302,6 +416,57 @@ class NLPSpecParser:
         spec.extra_requirements = obj.get("extra_requirements", [])
         spec.confidence = float(obj.get("confidence", 0.5))
         return spec
+
+    def _parse_functional_topology_hints(self, text: str, spec: UserSpec) -> None:
+        score_map: Dict[str, float] = {}
+        features: List[str] = []
+        keyword_hits: List[str] = []
+
+        for rule in FUNCTIONAL_KEYWORD_RULES:
+            patterns = rule.get("patterns", [])
+            if not any(re.search(pat, text, re.IGNORECASE) for pat in patterns):
+                continue
+
+            feature = str(rule.get("feature", "")).strip()
+            if feature and feature not in features:
+                features.append(feature)
+
+            keyword_label = str(rule.get("keyword", feature)).strip()
+            if keyword_label and keyword_label not in keyword_hits:
+                keyword_hits.append(keyword_label)
+
+            weight = float(rule.get("weight", 1.0))
+            for idx, family in enumerate(rule.get("candidates", [])):
+                bonus = max(0.1, weight - idx * 0.15)
+                score_map[family] = score_map.get(family, 0.0) + bonus
+
+            for req in rule.get("extra_requirements", []):
+                req_text = str(req).strip()
+                if req_text and req_text not in spec.extra_requirements:
+                    spec.extra_requirements.append(req_text)
+
+        ranked = sorted(score_map.items(), key=lambda item: (-item[1], item[0]))
+        mapped = [family for family, _score in ranked]
+
+        spec.functional_features = features
+        spec.keyword_hits = keyword_hits
+        spec.topology_candidates = self._merge_topology_candidates(
+            primary=spec.circuit_type,
+            mapped=mapped,
+        )
+
+        if spec.circuit_type == "unknown" and spec.topology_candidates:
+            spec.circuit_type = spec.topology_candidates[0]
+
+    @staticmethod
+    def _merge_topology_candidates(primary: str, mapped: List[str]) -> List[str]:
+        ordered: List[str] = []
+        if primary and primary != "unknown":
+            ordered.append(primary)
+        for family in mapped:
+            if family and family != "unknown" and family not in ordered:
+                ordered.append(family)
+        return ordered
 
     def _parse_requested_stage_blocks(self, text: str, spec: UserSpec) -> None:
         compact = re.sub(r"[^a-z]", "", text.lower())
@@ -414,7 +579,9 @@ class NLPSpecParser:
         ])
         
         spec.output_buffer = self._has_pattern(text, [
-            r"\boutput\s*buffer\b", r"\bbuffer\s*output\b", r"\bbuffer\s*stage\b", r"\bbuffered\s*output\b", r"\bemitter\s*follower\b", r"\bsource\s*follower\b",
+            r"\boutput\s*buffer\b", r"\bbuffer\s*output\b", r"\bbuffer\s*stage\b", r"\bbuffered\s*output\b",
+            r"\bbuffer\b", r"đệm\s*tín\s*hiệu", r"dem\s*tin\s*hieu",
+            r"\bemitter\s*follower\b", r"\bsource\s*follower\b",
         ])
         
         spec.power_output = self._has_pattern(text, [
@@ -477,6 +644,42 @@ class NLPSpecParser:
         # Low noise
         if self._has_pattern(text, [r"low[\s_-]*noise", r"nhiễu\s*thấp", r"ít\s*nhiễu", r"noise[\s_-]*performance", r"noise[\s_-]*optimized", r"noise[\s_-]*reduction", r"noise[\s_-]*minimized", r"noise[\s_-]*figure",]):
             extras.append("low_noise")
+
+        if self._has_pattern(text, [r"low\s*distortion", r"ít\s*méo", r"it\s*meo", r"high\s*fidelity", r"linear\b"]):
+            extras.append("low_distortion")
+
+        if self._has_pattern(text, [r"high\s*efficiency", r"hiệu\s*suất\s*cao", r"hieu\s*suat\s*cao", r"low\s*heat"]):
+            extras.append("high_efficiency")
+
+        if self._has_pattern(text, [r"power", r"công\s*suất", r"cong\s*suat", r"speaker", r"loa"]):
+            extras.append("power_amplification")
+
+        if self._has_pattern(text, [r"\bbuffer\b", r"impedance\s*matching", r"đệm\s*tín\s*hiệu", r"dem\s*tin\s*hieu"]):
+            extras.append("buffering")
+
+        if self._has_pattern(text, [r"phase\s*inversion", r"inverting", r"đảo\s*pha", r"dao\s*pha", r"negative\s*gain"]):
+            extras.append("phase_inversion")
+
+        if self._has_pattern(text, [r"high\s*input\s*impedance", r"trở\s*kháng\s*vào\s*cao", r"tro\s*khang\s*vao\s*cao"]):
+            extras.append("high_input_impedance")
+
+        if self._has_pattern(text, [r"low\s*input\s*impedance", r"trở\s*kháng\s*vào\s*thấp", r"tro\s*khang\s*vao\s*thap"]):
+            extras.append("low_input_impedance")
+
+        if self._has_pattern(text, [r"low\s*output\s*impedance", r"trở\s*kháng\s*ra\s*thấp", r"tro\s*khang\s*ra\s*thap"]):
+            extras.append("low_output_impedance")
+
+        if self._has_pattern(text, [r"high\s*cmrr", r"noise\s*rejection", r"common[\s-]*mode\s*rejection"]):
+            extras.append("high_cmrr")
+
+        if self._has_pattern(text, [r"precision", r"measurement", r"đo\s*lường", r"do\s*luong"]):
+            extras.append("precision_gain")
+
+        if self._has_pattern(text, [r"rf", r"high\s*frequency", r"resonant", r"tuned\s*circuit"]):
+            extras.append("rf_amplification")
+
+        if self._has_pattern(text, [r"gain\s*lớn", r"gain\s*lon", r"very\s*high\s*gain", r"weak\s*signal", r"cascade", r"multi[\s_-]*stage"]):
+            extras.append("voltage_gain")
         
         # High bandwidth
         if self._has_pattern(text, [r"high[\s_-]*bandwidth", r"băng\s*thông\s*rộng", r"wide[\s_-]*bandwidth", r"băng\s*tần\s*rộng", r"bandwidth[\s_-]*optimized", r"bandwidth[\s_-]*performance", r"tốc\s*độ\s*cao",]):
@@ -490,7 +693,12 @@ class NLPSpecParser:
         if self._has_pattern(text, [r"ac[\s_-]*coupled", r"ac[\s_-]*coupling", r"ghép\s*ac", r"ghép\s*tụ", r"ac[\s_-]*input", r"ac[\s_-]*output",]):
             extras.append("ac_coupled")
         
-        spec.extra_requirements = extras
+        # giữ thứ tự stable và loại trùng
+        deduped: List[str] = []
+        for item in extras:
+            if item not in deduped:
+                deduped.append(item)
+        spec.extra_requirements = deduped
 
     # def _calc_confidence(self, spec: UserSpec) -> None:
     #     """ Tính điểm tin cậy dựa trên kết quả phân tích regex. """

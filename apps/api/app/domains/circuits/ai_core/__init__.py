@@ -41,5 +41,5 @@ __all__ = [
     "SolvedParams",
     "CircuitGenerator",
     "GeneratedCircuit",
-    "XGBoostTopologySelector",
+    "RandomForestTopologySelector",
 ]
