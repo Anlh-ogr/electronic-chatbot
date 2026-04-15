@@ -109,7 +109,8 @@ class ContextRouterService:
         if latest_summary is not None:
             bundle.summary = latest_summary.summary_text
 
-        facts = self._summary_repo.list_active_memory(user_id=user_id, limit=20)
+        # Neon schema stores durable facts per session_id, which maps to current chat_id.
+        facts = self._summary_repo.list_active_memory(user_id=chat_id, limit=20)
         bundle.memory_facts = [
             {"key": f.fact_key, "value": f.fact_value, "source": f.source}
             for f in facts
