@@ -2,7 +2,7 @@
 """LLM Router - Bộ điều phối model cho chatbot theo 2 chế độ toàn cục.
 
 Module này chịu trách nhiệm:
- 1. Quản lý LLM API keys (Gemini) từ environment
+ 1. Quản lý cấu hình Gemini/Vertex AI từ environment
  2. Định nghĩa LLM roles (GENERAL cho tất cả tasks)
  3. Định nghĩa LLM modes (AIR: nhanh | PRO: deep reasoning)
  4. Cung cấp get_router() singleton
@@ -11,14 +11,14 @@ Module này chịu trách nhiệm:
 Nguyên tắc:
  - Singleton pattern: router dùng chung toàn hệ thống
  - Mode-first: mode quyết định chain, role chỉ để tương thích
- - Graceful degradation: nếu API key missing → None, fallback rule-based
+ - Graceful degradation: nếu Vertex AI lỗi → fallback rule-based
 """
 
 from __future__ import annotations
 
 # ====== Lý do sử dụng thư viện ======
 # logging: ghi log router initialization, API availability
-# os: đọc API keys từ environment variables
+# os: đọc cấu hình từ environment variables
 # dataclass + field: định nghĩa ModelConfig, RouterConfig value objects
 # enum: định nghĩa LLMRole, LLMProvider, LLMMode enums
 # typing: type safe router API, generic models support
@@ -70,6 +70,8 @@ class ModelConfig:
     provider: LLMProvider
     model_id: str
     api_key: str = ""
+    project_id: str = ""
+    location: str = ""
     base_url: str = ""
     timeout_sec: float = 30.0
     max_tokens: int = 1024
@@ -85,6 +87,19 @@ class RoleConfig:
 
 def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
     """Tao cau hinh chain model cho tung mode."""
+
+    project_id = (
+        _env("Google_Cloud_Project_ID")
+        or _env("GOOGLE_CLOUD_PROJECT")
+        or _env("GCP_PROJECT")
+    )
+    location = (
+        _env("Google_Cloud_Location")
+        or _env("GOOGLE_CLOUD_LOCATION")
+        or _env("GOOGLE_CLOUD_REGION")
+        or _env("VERTEX_AI_LOCATION")
+        or "asia-southeast1"
+    )
 
     google_key = (
         _env("Google_Cloud_API_Key")
@@ -104,6 +119,8 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
             provider=LLMProvider.GEMINI,
             model_id=_first_env(model_envs, default),
             api_key=google_key,
+            project_id=project_id,
+            location=location,
             timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
         )
 
@@ -151,7 +168,12 @@ class LLMRouter:
         }
         self._default_mode = mode_alias.get(mode_str, LLMMode.FAST)
         self._gemini_available = bool(
-            _env("Google_Cloud_API_Key") or _env("GOOGLE_CLOUD_API_KEY") or _env("GEMINI_API_KEY")
+            _env("Google_Cloud_Project_ID")
+            or _env("GOOGLE_CLOUD_PROJECT")
+            or _env("GCP_PROJECT")
+            or _env("Google_Cloud_API_Key")
+            or _env("GOOGLE_CLOUD_API_KEY")
+            or _env("GEMINI_API_KEY")
         )
         logger.info(
             f"LLMRouter initialized: mode={self._default_mode.value}, "
@@ -201,9 +223,7 @@ class LLMRouter:
         config = self._get_config(role, mode)
         if not config:
             return False
-        if config.primary.api_key:
-            return True
-        return any(fallback.api_key for fallback in config.fallbacks)
+        return bool(config.primary.model_id)
 
     def get_status(self) -> Dict[str, Any]:
         status: Dict[str, Any] = {
@@ -220,6 +240,8 @@ class LLMRouter:
                         {
                             "model": f"{m.provider.value}/{m.model_id}",
                             "has_key": bool(m.api_key),
+                            "project_configured": bool(m.project_id),
+                            "location": m.location or "asia-southeast1",
                             "tier": "primary" if i == 0 else f"fallback_{i}",
                         }
                         for i, m in enumerate([config.primary] + config.fallbacks)
@@ -236,9 +258,6 @@ class LLMRouter:
 
     def _try_call_json(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[Dict[str, Any]]:
-        if not model.api_key:
-            return None
-
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
         
@@ -250,9 +269,6 @@ class LLMRouter:
 
     def _try_call_text(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[str]:
-        if not model.api_key:
-            return None
-
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
         
@@ -269,7 +285,9 @@ class LLMRouter:
         
         client = GoogleCloudClient(api_key=model.api_key,
                                    model=model.model_id,
-                                   timeout_sec=model.timeout_sec,)
+                                   timeout_sec=model.timeout_sec,
+                                   project_id=model.project_id,
+                                   location=model.location,)
         
         messages = [GoogleCloudMessage(role="user", content=user_content)]
         
@@ -283,7 +301,9 @@ class LLMRouter:
         
         client = GoogleCloudClient(api_key=model.api_key,
                                    model=model.model_id,
-                                   timeout_sec=model.timeout_sec,)
+                                   timeout_sec=model.timeout_sec,
+                                   project_id=model.project_id,
+                                   location=model.location,)
         
         messages = [GoogleCloudMessage(role="user", content=user_content)]
         
