@@ -306,7 +306,8 @@ class KiCadSchSerializer:
         """
         lines = [
             '  (junction',
-            f'    (at {x} {y} 0)',
+            # KiCad junction uses 2D coordinates only: (at x y)
+            f'    (at {x} {y})',
             '    (diameter 0) (color 0 0 0 0)',
             f'    (uuid "{self._generate_uuid()}")',
             '  )',

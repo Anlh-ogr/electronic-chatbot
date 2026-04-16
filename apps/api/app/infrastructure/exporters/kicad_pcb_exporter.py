@@ -46,11 +46,13 @@ class KiCadPCBExporter(ExporterPort):
         """Initialize PCB exporter with planner and serializer."""
         self.layout_planner = PCBLayoutPlanner()
         self.serializer = KiCadPCBSerializer()
+        self._last_routing_report: Dict[str, Any] = {}
     
     async def export(
         self,
         circuit: Circuit,
-        format_type: ExportFormat
+        format_type: ExportFormat,
+        options: Dict[str, Any] | None = None,
     ) -> str:
         """Export circuit to KiCad PCB format.
         
@@ -74,14 +76,18 @@ class KiCadPCBExporter(ExporterPort):
             # Convert to IR first
             ir = self._create_ir(circuit)
             
+            export_options = dict(options or {})
+
             # Plan PCB layout
-            placements = self.layout_planner.place_components(circuit)
+            placements = self.layout_planner.place_components(circuit, options=export_options)
             
             # Extract nets from circuit connections
             nets = self.layout_planner.plan_nets(circuit)
             
             # Plan track routing
-            tracks = self.layout_planner.plan_tracks(circuit, placements, nets)
+            tracks = self.layout_planner.plan_tracks(circuit, placements, nets, options=export_options)
+
+            self._last_routing_report = self.layout_planner.get_last_routing_report()
             
             # Serialize to KiCad PCB format
             pcb_content = self.serializer.serialize(
@@ -107,3 +113,6 @@ class KiCadPCBExporter(ExporterPort):
         """
         # Build IR directly from the Circuit entity
         return CircuitIRSerializer.build_ir(circuit)
+
+    def get_last_routing_report(self) -> Dict[str, Any]:
+        return dict(self._last_routing_report)

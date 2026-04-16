@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict, deque
-from typing import Dict, Tuple, List, Set
+from typing import Any, Dict, Optional, Tuple, List, Set
 
 from app.domains.circuits.entities import Circuit, ComponentType
 from app.infrastructure.exporters.kicad_footprint_library import KiCadFootprintLibrary
+from app.infrastructure.exporters.industrial_pcb_router import IndustrialPCBRouter
 
 
 class PCBLayoutPlanner:
@@ -33,6 +34,18 @@ class PCBLayoutPlanner:
     BOARD_HEIGHT = 80.0
     MARGIN = 15.0
     COMP_SPACING = 15.0  # minimum spacing between component centres
+    RELATED_MIN_SPACING = 3.0
+    RELATED_MAX_SPACING = 5.0
+
+    def __init__(self) -> None:
+        self._industrial_router = IndustrialPCBRouter(
+            board_width=self.BOARD_WIDTH,
+            board_height=self.BOARD_HEIGHT,
+            margin=self.MARGIN,
+            grid_step=1.27,
+        )
+        self._last_route_report: Dict[str, Any] = {}
+        self._last_zones: List[Dict[str, Any]] = []
 
     @staticmethod
     def _component_type_value(component) -> str:
@@ -94,7 +107,8 @@ class PCBLayoutPlanner:
 
     # ── Public API ─────────────────────────────────────────────
 
-    def place_components(self, circuit, hints=None):
+    def place_components(self, circuit, hints=None, options: Optional[Dict[str, Any]] = None):
+        options = dict(options or {})
         comp_ids = list(circuit.components.keys())
         if not comp_ids:
             return {}
@@ -149,6 +163,26 @@ class PCBLayoutPlanner:
         # Restore fixed positions
         placements.update(fixed_positions)
 
+        if bool(options.get("enforce_related_spacing", True)):
+            min_spacing = self._safe_float(
+                options.get("related_spacing_min_mm", self.RELATED_MIN_SPACING),
+                self.RELATED_MIN_SPACING,
+            )
+            max_spacing = self._safe_float(
+                options.get("related_spacing_max_mm", self.RELATED_MAX_SPACING),
+                self.RELATED_MAX_SPACING,
+            )
+            if min_spacing > max_spacing:
+                min_spacing, max_spacing = max_spacing, min_spacing
+
+            placements = self._enforce_related_component_spacing(
+                placements=placements,
+                adjacency=adjacency,
+                fixed_ids=set(fixed_positions.keys()),
+                min_mm=max(0.5, min_spacing),
+                max_mm=max(0.5, max_spacing),
+            )
+
         return {cid: (self._snap(x), self._snap(y))
                 for cid, (x, y) in placements.items()}
 
@@ -173,15 +207,62 @@ class PCBLayoutPlanner:
         circuit: Circuit,
         placements: Dict[str, Tuple[float, float]],
         nets: Dict[str, List[str]],
+        options: Optional[Dict[str, Any]] = None,
     ) -> List[Dict]:
         """Plan PCB track routing (point-to-point between actual pad positions).
 
         Adds footprint pad offsets to component origins for accurate routing.
         """
-        tracks: List[Dict] = []
+        options = dict(options or {})
+        routing_mode = str(options.get("routing_mode", "draft")).strip().lower()
 
-        # Pre-compute absolute pad positions per component
         pad_positions = self._compute_pad_positions(circuit, placements)
+
+        if routing_mode == "industrial":
+            tracks, report, zones = self._industrial_router.route(
+                placements=placements,
+                nets=nets,
+                pad_positions=pad_positions,
+                options=options,
+            )
+            self._last_route_report = report
+            self._last_zones = zones
+            return tracks
+
+        tracks = self._plan_tracks_draft(circuit, pad_positions)
+        self._last_zones = []
+        self._last_route_report = {
+            "routing_mode": "draft",
+            "phases": {
+                "phase1_drc_astar": {
+                    "name": "phase1_drc_astar",
+                    "status": "not_enabled_in_draft",
+                },
+                "phase2_ripup_reroute": {
+                    "name": "phase2_ripup_reroute",
+                    "status": "not_enabled_in_draft",
+                },
+                "phase3_diff_pair_tuning": {
+                    "name": "phase3_diff_pair_tuning",
+                    "status": "not_enabled_in_draft",
+                },
+                "phase4_power_integrity": {
+                    "name": "phase4_power_integrity",
+                    "status": "not_enabled_in_draft",
+                },
+            },
+            "metrics": {
+                "track_count": len(tracks),
+            },
+        }
+        return tracks
+
+    def _plan_tracks_draft(
+        self,
+        circuit: Circuit,
+        pad_positions: Dict[str, Tuple[float, float]],
+    ) -> List[Dict]:
+        tracks: List[Dict] = []
 
         for net_name, net in circuit.nets.items():
             pins = list(net.connected_pins)
@@ -217,6 +298,12 @@ class PCBLayoutPlanner:
                         "width": 0.25,
                     })
         return tracks
+
+    def get_last_routing_report(self) -> Dict[str, Any]:
+        return dict(self._last_route_report)
+
+    def get_last_zones(self) -> List[Dict[str, Any]]:
+        return [dict(zone) for zone in self._last_zones]
 
     # ── Internal helpers ───────────────────────────────────────
 
@@ -644,11 +731,124 @@ class PCBLayoutPlanner:
 
             # Build pad_number -> offset
             pad_offsets = {p["number"]: p["at"] for p in pads}
+            pin_count = len(comp.pins)
+            force_fallback = pin_count > 1 and len(pad_offsets) <= 1
 
             # For each pin the circuit knows about, resolve to pad offset
-            for pin_name in comp.pins:
+            for pin_index, pin_name in enumerate(comp.pins):
                 pad_num = pin_map.get(pin_name, pin_name)
-                offset = pad_offsets.get(pad_num, (0, 0))
+                if force_fallback:
+                    offset = self._fallback_pad_offset(pin_index, pin_count)
+                else:
+                    offset = pad_offsets.get(pad_num)
+                    if offset is None:
+                        offset = self._fallback_pad_offset(pin_index, pin_count)
                 result[f"{cid}.{pin_name}"] = (ox + offset[0], oy + offset[1])
 
         return result
+
+    @staticmethod
+    def _fallback_pad_offset(pin_index: int, pin_count: int) -> Tuple[float, float]:
+        """Provide stable synthetic pad offsets for incomplete footprint maps."""
+        if pin_count <= 1:
+            return (0.0, 0.0)
+
+        radius = 1.5
+        angle = (2.0 * math.pi * (pin_index % pin_count)) / pin_count
+        return (round(radius * math.cos(angle), 6), round(radius * math.sin(angle), 6))
+
+    @staticmethod
+    def _safe_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _clamp_to_board(self, x: float, y: float) -> Tuple[float, float]:
+        clamped_x = max(self.MARGIN, min(self.BOARD_WIDTH - self.MARGIN, x))
+        clamped_y = max(self.MARGIN, min(self.BOARD_HEIGHT - self.MARGIN, y))
+        return clamped_x, clamped_y
+
+    def _enforce_related_component_spacing(
+        self,
+        *,
+        placements: Dict[str, Tuple[float, float]],
+        adjacency: Dict[str, Dict[str, int]],
+        fixed_ids: Set[str],
+        min_mm: float,
+        max_mm: float,
+    ) -> Dict[str, Tuple[float, float]]:
+        """Ensure connected components stay within [min_mm, max_mm] center distance.
+
+        This is a best-effort iterative relaxation. It preserves fixed components
+        and keeps all updated coordinates inside the board area.
+        """
+        if not placements:
+            return placements
+
+        target = (min_mm + max_mm) / 2.0
+        mutable = {cid: [xy[0], xy[1]] for cid, xy in placements.items()}
+
+        pairs: List[Tuple[str, str]] = []
+        seen: Set[frozenset] = set()
+        for a, neighbors in adjacency.items():
+            if a not in mutable:
+                continue
+            for b, weight in neighbors.items():
+                if weight <= 0 or b not in mutable:
+                    continue
+                key = frozenset((a, b))
+                if key in seen:
+                    continue
+                seen.add(key)
+                pairs.append((a, b))
+
+        if not pairs:
+            return placements
+
+        for _ in range(32):
+            changed = False
+            for a, b in pairs:
+                ax, ay = mutable[a]
+                bx, by = mutable[b]
+                dx = bx - ax
+                dy = by - ay
+                dist = math.hypot(dx, dy)
+
+                if dist < 1e-6:
+                    dx, dy = 1.0, 0.0
+                    dist = 1.0
+
+                if min_mm <= dist <= max_mm:
+                    continue
+
+                desired = min_mm if dist < min_mm else target
+                move = (desired - dist) / 2.0
+                ux = dx / dist
+                uy = dy / dist
+                mx = ux * move
+                my = uy * move
+
+                if a in fixed_ids and b in fixed_ids:
+                    continue
+                if a in fixed_ids:
+                    nbx, nby = self._clamp_to_board(bx + 2.0 * mx, by + 2.0 * my)
+                    mutable[b] = [nbx, nby]
+                    changed = True
+                    continue
+                if b in fixed_ids:
+                    nax, nay = self._clamp_to_board(ax - 2.0 * mx, ay - 2.0 * my)
+                    mutable[a] = [nax, nay]
+                    changed = True
+                    continue
+
+                nax, nay = self._clamp_to_board(ax - mx, ay - my)
+                nbx, nby = self._clamp_to_board(bx + mx, by + my)
+                mutable[a] = [nax, nay]
+                mutable[b] = [nbx, nby]
+                changed = True
+
+            if not changed:
+                break
+
+        return {cid: (xy[0], xy[1]) for cid, xy in mutable.items()}

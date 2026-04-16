@@ -1162,15 +1162,18 @@ class LayoutPlanner:
             comp_type = self._component_type_value(component)
         except Exception:
             comp_type = "unknown"
-        
-        if comp_type not in pin_offsets:
-            return (x, y)
-        
-        offsets = pin_offsets[comp_type]
-        if pin_index >= len(offsets):
-            pin_index = min(pin_index, len(offsets) - 1)
-        
-        dx, dy, _ = offsets[pin_index]
+
+        pin_count = len(getattr(component, "pins", ()) or ())
+        offsets = pin_offsets.get(comp_type, [])
+        if offsets:
+            if pin_index >= len(offsets):
+                pin_index = min(pin_index, len(offsets) - 1)
+            dx, dy, _ = offsets[pin_index]
+            # Degenerate offset (0,0) on multi-pin parts routes wires to symbol centre.
+            if pin_count > 1 and abs(dx) < 1e-9 and abs(dy) < 1e-9:
+                dx, dy = self._fallback_pin_offset(pin_index, pin_count)
+        else:
+            dx, dy = self._fallback_pin_offset(pin_index, pin_count)
 
         # Apply symbol rotation so routing uses real pin geometry after auto-rotation.
         rot = int((rotations or {}).get(comp_id, 0)) % 360
@@ -1182,6 +1185,20 @@ class LayoutPlanner:
             dx, dy = dy, -dx
         
         return (x + dx, y + dy)
+
+    def _fallback_pin_offset(self, pin_index: int, pin_count: int) -> Tuple[float, float]:
+        """Provide deterministic non-center pin offsets when library data is missing."""
+        if pin_count <= 1:
+            return (0.0, 0.0)
+
+        radius = max(1.27, self.grid_snap * 1.5)
+        angle = (2.0 * math.pi * (pin_index % pin_count)) / pin_count
+        dx = round(radius * math.cos(angle), 6)
+        dy = round(radius * math.sin(angle), 6)
+
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            dx = radius
+        return (dx, dy)
 
     def infer_component_rotations(
         self,

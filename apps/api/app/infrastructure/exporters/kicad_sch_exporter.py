@@ -25,6 +25,7 @@ from datetime import datetime
 # ====== Domain & Application layers ======
 from app.domains.circuits.entities import Circuit
 from app.domains.circuits.ir import CircuitIR, CircuitIRSerializer
+from app.domains.circuits.placement import LayoutQualityEvaluator, LayoutQualityReport
 from app.application.circuits.ports import ExporterPort
 from app.application.circuits.dtos import ExportFormat
 from app.application.circuits.errors import ExportError
@@ -47,6 +48,8 @@ class KiCadSchExporter(ExporterPort):
         """Initialize exporter with layout planner and serializer."""
         self.layout_planner = LayoutPlanner()
         self.serializer = KiCadSchSerializer()
+        self.quality_evaluator = LayoutQualityEvaluator()
+        self._last_layout_quality_report: LayoutQualityReport | None = None
     
     async def export(
         self,
@@ -72,6 +75,8 @@ class KiCadSchExporter(ExporterPort):
             )
         
         try:
+            self._last_layout_quality_report = None
+
             # Convert to IR first
             ir = self._create_ir(circuit)
 
@@ -84,6 +89,14 @@ class KiCadSchExporter(ExporterPort):
                 circuit,
                 pin_offsets,
                 placements,
+                rotations,
+            )
+
+            self._last_layout_quality_report = self._evaluate_layout_quality(
+                circuit,
+                placements,
+                wires,
+                pin_offsets,
                 rotations,
             )
 
@@ -102,6 +115,11 @@ class KiCadSchExporter(ExporterPort):
                 format_type=format_type.value,
                 reason=f"KiCad export failed: {str(e)}"
             ) from e
+
+    def get_last_layout_quality_report(self) -> Dict[str, Any] | None:
+        if self._last_layout_quality_report is None:
+            return None
+        return self._last_layout_quality_report.to_dict()
 
     def _finalize_layout_and_validate(
         self,
@@ -127,17 +145,41 @@ class KiCadSchExporter(ExporterPort):
 
         fixed_rotations = dict(rotations)
         fixed_wires = self._plan_wires(circuit, fixed_placements, pin_offsets, fixed_rotations)
+        fixed_quality = self._evaluate_layout_quality(
+            circuit,
+            fixed_placements,
+            fixed_wires,
+            pin_offsets,
+            fixed_rotations,
+        )
 
-        if self._validate_pin_net_consistency(circuit, fixed_placements, pin_offsets, fixed_rotations):
+        if (
+            self._validate_pin_net_consistency(circuit, fixed_placements, pin_offsets, fixed_rotations)
+            and fixed_quality.is_hard_valid
+        ):
             return fixed_placements, fixed_wires, fixed_rotations
 
         # Fallback attempt: keep placements but reset rotations to defaults and reroute.
         fallback_rotations = {comp_id: 0 for comp_id in circuit.components.keys()}
         fallback_wires = self._plan_wires(circuit, fixed_placements, pin_offsets, fallback_rotations)
-        if self._validate_pin_net_consistency(circuit, fixed_placements, pin_offsets, fallback_rotations):
+        fallback_quality = self._evaluate_layout_quality(
+            circuit,
+            fixed_placements,
+            fallback_wires,
+            pin_offsets,
+            fallback_rotations,
+        )
+        if (
+            self._validate_pin_net_consistency(circuit, fixed_placements, pin_offsets, fallback_rotations)
+            and fallback_quality.is_hard_valid
+        ):
             return fixed_placements, fallback_wires, fallback_rotations
 
-        raise RuntimeError("Layout auto-fix failed: pin-net consistency could not be preserved")
+        raise RuntimeError(
+            "Layout auto-fix failed: hard constraints not satisfied "
+            f"(overlap={fallback_quality.component_overlap_count}, "
+            f"center_attach={fallback_quality.center_attachment_count})"
+        )
 
     def _validate_pin_net_consistency(
         self,
@@ -173,29 +215,97 @@ class KiCadSchExporter(ExporterPort):
         best_placements: Dict[str, tuple] = {}
         best_wires: list = []
         best_rotations: Dict[str, int] = {}
-        best_score: Tuple[int, int, float] | None = None
+        best_score: float | None = None
+        best_quality: LayoutQualityReport | None = None
 
         for idx, scale in enumerate(scales):
             placements = self.layout_planner.place_components(circuit, spacing_scale=scale)
             rotations = self.layout_planner.infer_component_rotations(circuit, placements)
             wires = self._plan_wires(circuit, placements, pin_offsets, rotations)
 
-            crossings = self._count_wire_crossings(wires)
-            bends = self._count_wire_bends(wires)
-            readability = self._readability_score(placements)
-            score = (crossings, bends, -readability)
+            quality = self._evaluate_layout_quality(
+                circuit,
+                placements,
+                wires,
+                pin_offsets,
+                rotations,
+            )
+            score = quality.objective
 
             if best_score is None or score < best_score:
                 best_score = score
+                best_quality = quality
                 best_placements = placements
                 best_wires = wires
                 best_rotations = rotations
 
             # Early stop: no crossings, low bends and sufficiently readable spacing.
-            if crossings == 0 and bends <= max(1, len(wires) // 4) and readability >= 11.0 and idx > 0:
+            if (
+                quality.is_hard_valid
+                and quality.wire_crossing_count == 0
+                and quality.wire_label_overlap_count == 0
+                and idx > 0
+            ):
                 break
 
+        if best_quality is not None and not best_quality.is_hard_valid:
+            # Keep best candidate even if not perfect; finalize pass will attempt recovery.
+            pass
+
         return best_placements, best_wires, best_rotations
+
+    def _evaluate_layout_quality(
+        self,
+        circuit: Circuit,
+        placements: Dict[str, tuple],
+        wires: list,
+        pin_offsets: Dict[str, list],
+        rotations: Dict[str, int],
+    ) -> LayoutQualityReport:
+        pin_positions = self._build_pin_position_map(
+            circuit,
+            placements,
+            pin_offsets,
+            rotations,
+        )
+        label_positions = self._build_default_label_positions(circuit)
+
+        return self.quality_evaluator.evaluate_schematic(
+            circuit=circuit,
+            placements=placements,
+            wires=wires,
+            pin_positions=pin_positions,
+            label_positions=label_positions,
+            min_component_spacing=self.layout_planner.min_component_spacing,
+        )
+
+    def _build_pin_position_map(
+        self,
+        circuit: Circuit,
+        placements: Dict[str, tuple],
+        pin_offsets: Dict[str, list],
+        rotations: Dict[str, int],
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        pin_positions: Dict[Tuple[str, str], Tuple[float, float]] = {}
+        for net in circuit.nets.values():
+            for pin in net.connected_pins:
+                pos = self.layout_planner.get_pin_position(
+                    pin,
+                    placements,
+                    circuit,
+                    pin_offsets,
+                    rotations,
+                )
+                if pos is not None:
+                    pin_positions[(pin.component_id, pin.pin_name)] = pos
+        return pin_positions
+
+    def _build_default_label_positions(self, circuit: Circuit) -> List[Tuple[float, float]]:
+        x_label, y_label = 20.0, 50.0
+        return [
+            (x_label, y_label + idx * 10.0)
+            for idx, _ in enumerate(circuit.ports.values())
+        ]
 
     def _count_wire_bends(self, wires: list) -> int:
         """Count bend points across all routed wires."""
