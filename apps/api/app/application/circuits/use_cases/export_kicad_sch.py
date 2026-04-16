@@ -7,11 +7,10 @@ KiCad .kicad_sch format and storing artifacts.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 import uuid
 
 from app.domains.circuits.entities import Circuit
-from app.domains.circuits.ir import CircuitIRSerializer
 from app.application.circuits.ports import (
     CircuitRepositoryPort,
     ExporterPort,
@@ -44,6 +43,7 @@ class ExportKiCadSchUseCase:
         repository: CircuitRepositoryPort,
         exporter: ExporterPort,
         storage_path: Path,
+        oracle_validator: Optional[Any] = None,
     ):
         """Initialize use case with dependencies.
         
@@ -55,6 +55,7 @@ class ExportKiCadSchUseCase:
         self.repository = repository
         self.exporter = exporter
         self.storage_path = storage_path
+        self.oracle_validator = oracle_validator
         
         # Ensure storage path exists
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -98,9 +99,25 @@ class ExportKiCadSchUseCase:
             
             # Save to storage
             file_path = await self._save_artifact(filename, kicad_content)
+
+            oracle_report = await self._run_oracle_validation(
+                file_path=file_path,
+                options=request.options,
+            )
+
+            layout_quality = self._extract_layout_quality_metadata()
             
             # Calculate file size
             file_size = len(kicad_content.encode('utf-8'))
+
+            metadata: dict[str, Any] = {
+                "circuit_name": circuit.name or "Unnamed",
+                "component_count": len(circuit.components),
+                "kicad_version": "8.0",  # Target KiCad version
+                "oracle": oracle_report,
+            }
+            if layout_quality is not None:
+                metadata["layout_quality"] = layout_quality
             
             return ExportCircuitResponse(
                 circuit_id=request.circuit_id,
@@ -108,11 +125,7 @@ class ExportKiCadSchUseCase:
                 file_path=str(file_path),
                 file_size=file_size,
                 download_url=f"/api/circuits/{request.circuit_id}/exports/{filename}",
-                metadata={
-                    "circuit_name": circuit.name or "Unnamed",
-                    "component_count": len(circuit.components),
-                    "kicad_version": "8.0",  # Target KiCad version
-                }
+                metadata=metadata,
             )
             
         except CircuitNotFoundError:
@@ -158,6 +171,9 @@ class ExportKiCadSchUseCase:
         """
         # Use circuit name or ID
         base_name = circuit.name or circuit.id
+
+        if not base_name:
+            base_name = request.circuit_id
         
         # Sanitize filename
         safe_name = "".join(c for c in base_name if c.isalnum() or c in "._- ")
@@ -165,8 +181,9 @@ class ExportKiCadSchUseCase:
         
         # Add format extension
         extension = ".kicad_sch"
-        
-        return f"{safe_name}_{circuit.id[:8]}{extension}"
+
+        suffix = (circuit.id or request.circuit_id or str(uuid.uuid4()))[:8]
+        return f"{safe_name}_{suffix}{extension}"
     
     async def _save_artifact(
         self,
@@ -199,3 +216,94 @@ class ExportKiCadSchUseCase:
                 path=str(file_path),
                 reason=str(e)
             ) from e
+
+    async def _run_oracle_validation(
+        self,
+        file_path: Path,
+        options: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enabled = bool(options.get("oracle_validate", False))
+        strict = bool(options.get("oracle_strict", False))
+
+        if not enabled:
+            return {
+                "target": "schematic",
+                "enabled": False,
+                "strict": strict,
+                "status": "skipped",
+                "available": False,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": "oracle validation disabled",
+            }
+
+        if self.oracle_validator is None:
+            report = {
+                "target": "schematic",
+                "enabled": True,
+                "strict": strict,
+                "status": "unavailable",
+                "available": False,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": "oracle validator not configured",
+            }
+            if strict:
+                raise ExportError(
+                    format_type=ExportFormat.KICAD.value,
+                    reason="Oracle validation failed in strict mode: validator unavailable",
+                )
+            return report
+
+        try:
+            result = await self.oracle_validator.validate_schematic(file_path)
+            report = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            report["enabled"] = True
+            report["strict"] = strict
+
+            if strict and report.get("status") != "passed":
+                raise ExportError(
+                    format_type=ExportFormat.KICAD.value,
+                    reason=(
+                        "Oracle validation failed in strict mode: "
+                        f"{report.get('message', 'unknown error')}"
+                    ),
+                )
+
+            return report
+        except ExportError:
+            raise
+        except Exception as exc:
+            report = {
+                "target": "schematic",
+                "enabled": True,
+                "strict": strict,
+                "status": "error",
+                "available": True,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": f"oracle validation error: {exc}",
+            }
+            if strict:
+                raise ExportError(
+                    format_type=ExportFormat.KICAD.value,
+                    reason=(
+                        "Oracle validation failed in strict mode: "
+                        f"{report['message']}"
+                    ),
+                )
+            return report
+
+    def _extract_layout_quality_metadata(self) -> Optional[Dict[str, Any]]:
+        getter = getattr(self.exporter, "get_last_layout_quality_report", None)
+        if not callable(getter):
+            return None
+
+        result = getter()
+        if result is None:
+            return None
+        if hasattr(result, "to_dict"):
+            return result.to_dict()
+        if isinstance(result, dict):
+            return dict(result)
+        return None

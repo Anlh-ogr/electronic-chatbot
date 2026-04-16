@@ -10,11 +10,10 @@ KiCad .kicad_pcb format and storing artifacts.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 import uuid
 
 from app.domains.circuits.entities import Circuit
-from app.domains.circuits.ir import CircuitIRSerializer
 from app.application.circuits.ports import (
     CircuitRepositoryPort,
     ExporterPort,
@@ -46,6 +45,7 @@ class ExportKiCadPCBUseCase:
         repository: CircuitRepositoryPort,
         exporter: ExporterPort,
         storage_path: Path,
+        oracle_validator: Optional[Any] = None,
     ):
         """Initialize use case with dependencies.
         
@@ -57,6 +57,7 @@ class ExportKiCadPCBUseCase:
         self.repository = repository
         self.exporter = exporter
         self.storage_path = storage_path
+        self.oracle_validator = oracle_validator
         
         # Ensure storage path exists
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -92,7 +93,8 @@ class ExportKiCadPCBUseCase:
             # Export to KiCad PCB format
             pcb_content = await self.exporter.export(
                 circuit=circuit,
-                format_type=ExportFormat.KICAD_PCB
+                format_type=ExportFormat.KICAD_PCB,
+                options=request.options,
             )
             
             # Generate filename
@@ -100,9 +102,25 @@ class ExportKiCadPCBUseCase:
             
             # Save to storage
             file_path = await self._save_artifact(filename, pcb_content)
+
+            oracle_report = await self._run_oracle_validation(
+                file_path=file_path,
+                options=request.options,
+            )
             
             # Calculate file size
             file_size = len(pcb_content.encode('utf-8'))
+
+            routing_report = self._extract_routing_metadata()
+
+            metadata: Dict[str, Any] = {
+                "circuit_name": circuit.name or "Unnamed",
+                "component_count": len(circuit.components),
+                "kicad_version": "8.0",  # Target KiCad version
+                "oracle": oracle_report,
+            }
+            if routing_report is not None:
+                metadata["routing"] = routing_report
             
             return ExportCircuitResponse(
                 circuit_id=request.circuit_id,
@@ -110,11 +128,7 @@ class ExportKiCadPCBUseCase:
                 file_path=str(file_path),
                 file_size=file_size,
                 download_url=f"/api/circuits/{request.circuit_id}/exports/pcb/{filename}",
-                metadata={
-                    "circuit_name": circuit.name or "Unnamed",
-                    "component_count": len(circuit.components),
-                    "kicad_version": "8.0",  # Target KiCad version
-                }
+                metadata=metadata,
             )
             
         except CircuitNotFoundError:
@@ -193,3 +207,94 @@ class ExportKiCadPCBUseCase:
                 operation="save_pcb_artifact",
                 reason=str(e)
             ) from e
+
+    async def _run_oracle_validation(
+        self,
+        file_path: Path,
+        options: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        enabled = bool(options.get("oracle_validate", False))
+        strict = bool(options.get("oracle_strict", False))
+
+        if not enabled:
+            return {
+                "target": "pcb",
+                "enabled": False,
+                "strict": strict,
+                "status": "skipped",
+                "available": False,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": "oracle validation disabled",
+            }
+
+        if self.oracle_validator is None:
+            report = {
+                "target": "pcb",
+                "enabled": True,
+                "strict": strict,
+                "status": "unavailable",
+                "available": False,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": "oracle validator not configured",
+            }
+            if strict:
+                raise ExportError(
+                    format_type=ExportFormat.KICAD_PCB.value,
+                    reason="Oracle validation failed in strict mode: validator unavailable",
+                )
+            return report
+
+        try:
+            result = await self.oracle_validator.validate_pcb(file_path)
+            report = result.to_dict() if hasattr(result, "to_dict") else dict(result)
+            report["enabled"] = True
+            report["strict"] = strict
+
+            if strict and report.get("status") != "passed":
+                raise ExportError(
+                    format_type=ExportFormat.KICAD_PCB.value,
+                    reason=(
+                        "Oracle validation failed in strict mode: "
+                        f"{report.get('message', 'unknown error')}"
+                    ),
+                )
+
+            return report
+        except ExportError:
+            raise
+        except Exception as exc:
+            report = {
+                "target": "pcb",
+                "enabled": True,
+                "strict": strict,
+                "status": "error",
+                "available": True,
+                "passed": False,
+                "backend": "kicad-cli",
+                "message": f"oracle validation error: {exc}",
+            }
+            if strict:
+                raise ExportError(
+                    format_type=ExportFormat.KICAD_PCB.value,
+                    reason=(
+                        "Oracle validation failed in strict mode: "
+                        f"{report['message']}"
+                    ),
+                )
+            return report
+
+    def _extract_routing_metadata(self) -> Optional[Dict[str, Any]]:
+        getter = getattr(self.exporter, "get_last_routing_report", None)
+        if not callable(getter):
+            return None
+
+        result = getter()
+        if result is None:
+            return None
+        if hasattr(result, "to_dict"):
+            return result.to_dict()
+        if isinstance(result, dict):
+            return dict(result)
+        return None
