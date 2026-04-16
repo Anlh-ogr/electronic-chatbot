@@ -23,6 +23,7 @@ from typing import Optional, List
 # sqlalchemy.desc: Sắp xếp giảm dần (descending) cho revision queries
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy import and_, or_
 
 # ====== Domain & Application layers ======
 from app.application.snapshots.ports import SnapshotRepositoryPort
@@ -57,15 +58,11 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
     async def save(self, snapshot: CircuitSnapshot) -> None:
         """Save snapshot to database."""
         model = SnapshotModel(
-            id=snapshot.metadata.snapshot_id,
+            snapshot_id=snapshot.metadata.snapshot_id,
             circuit_id=snapshot.metadata.circuit_id,
-            revision=snapshot.metadata.revision,
-            timestamp=snapshot.metadata.timestamp,
-            author=snapshot.metadata.author,
-            message=snapshot.metadata.message,
-            parent_snapshot_id=snapshot.metadata.parent_snapshot_id,
-            change_type=snapshot.metadata.change_type.value,
-            ir_data=snapshot.ir_data
+            message_id=None,
+            circuit_data=snapshot.ir_data,
+            created_at=snapshot.metadata.timestamp,
         )
         self.session.add(model)
         self.session.commit()
@@ -73,7 +70,7 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
     async def get_by_id(self, snapshot_id: str) -> Optional[CircuitSnapshot]:
         """Get snapshot by ID."""
         model = self.session.query(SnapshotModel).filter(
-            SnapshotModel.id == snapshot_id
+            SnapshotModel.snapshot_id == snapshot_id
         ).first()
         
         if not model:
@@ -89,7 +86,7 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
         """Get snapshots for circuit."""
         models = self.session.query(SnapshotModel).filter(
             SnapshotModel.circuit_id == circuit_id
-        ).order_by(desc(SnapshotModel.revision)).limit(limit).all()
+        ).order_by(desc(SnapshotModel.created_at), desc(SnapshotModel.snapshot_id)).limit(limit).all()
         
         return [self._to_entity(m) for m in models]
     
@@ -97,7 +94,7 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
         """Get latest snapshot."""
         model = self.session.query(SnapshotModel).filter(
             SnapshotModel.circuit_id == circuit_id
-        ).order_by(desc(SnapshotModel.revision)).first()
+        ).order_by(desc(SnapshotModel.created_at), desc(SnapshotModel.snapshot_id)).first()
         
         if not model:
             return None
@@ -111,9 +108,8 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
     ) -> Optional[CircuitSnapshot]:
         """Get snapshot at revision."""
         model = self.session.query(SnapshotModel).filter(
-            SnapshotModel.circuit_id == circuit_id,
-            SnapshotModel.revision == revision
-        ).first()
+            SnapshotModel.circuit_id == circuit_id
+        ).order_by(SnapshotModel.created_at.asc(), SnapshotModel.snapshot_id.asc()).offset(max(revision - 1, 0)).limit(1).first()
         
         if not model:
             return None
@@ -123,21 +119,56 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
     async def delete(self, snapshot_id: str) -> bool:
         """Delete snapshot."""
         result = self.session.query(SnapshotModel).filter(
-            SnapshotModel.id == snapshot_id
+            SnapshotModel.snapshot_id == snapshot_id
         ).delete()
         self.session.commit()
         return result > 0
+
+    def _revision_of(self, model: SnapshotModel) -> int:
+        return (
+            self.session.query(SnapshotModel)
+            .filter(
+                SnapshotModel.circuit_id == model.circuit_id,
+                or_(
+                    SnapshotModel.created_at < model.created_at,
+                    and_(
+                        SnapshotModel.created_at == model.created_at,
+                        SnapshotModel.snapshot_id <= model.snapshot_id,
+                    ),
+                ),
+            )
+            .count()
+        )
+
+    def _parent_snapshot_id(self, model: SnapshotModel) -> Optional[str]:
+        parent = (
+            self.session.query(SnapshotModel)
+            .filter(
+                SnapshotModel.circuit_id == model.circuit_id,
+                or_(
+                    SnapshotModel.created_at < model.created_at,
+                    and_(
+                        SnapshotModel.created_at == model.created_at,
+                        SnapshotModel.snapshot_id < model.snapshot_id,
+                    ),
+                ),
+            )
+            .order_by(desc(SnapshotModel.created_at), desc(SnapshotModel.snapshot_id))
+            .first()
+        )
+        return parent.snapshot_id if parent else None
     
     def _to_entity(self, model: SnapshotModel) -> CircuitSnapshot:
         """Convert model to entity."""
+        revision = self._revision_of(model)
         metadata = SnapshotMetadata(
-            snapshot_id=model.id,
+            snapshot_id=model.snapshot_id,
             circuit_id=model.circuit_id,
-            revision=model.revision,
-            timestamp=model.timestamp,
-            author=model.author,
-            message=model.message,
-            parent_snapshot_id=model.parent_snapshot_id,
-            change_type=ChangeType(model.change_type)
+            revision=revision,
+            timestamp=model.created_at,
+            author="system",
+            message="",
+            parent_snapshot_id=self._parent_snapshot_id(model),
+            change_type=ChangeType.CREATED if revision == 1 else ChangeType.UPDATED,
         )
-        return CircuitSnapshot(metadata=metadata, ir_data=model.ir_data)
+        return CircuitSnapshot(metadata=metadata, ir_data=model.circuit_data)

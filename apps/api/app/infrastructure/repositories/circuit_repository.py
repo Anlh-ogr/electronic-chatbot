@@ -25,13 +25,17 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import uuid
+import logging
 
 # ====== Domain & Application layers ======
 from app.domains.circuits.entities import Circuit
 from app.domains.circuits.ir import CircuitIRSerializer
 
 # ====== Database models ======
-from app.db.models import CircuitModel
+from app.db.models import CircuitModel, SnapshotModel
+
+
+logger = logging.getLogger(__name__)
 
 
 # ====== PostgreSQL Circuit Repository Implementation ======
@@ -82,26 +86,34 @@ class PostgresCircuitRepository:
         ir = CircuitIRSerializer.build_ir(circuit, circuit_id=cid)
         ir_data = CircuitIRSerializer.to_dict(ir)
         
+        _ = created_by  # compatibility placeholder
+
         # Check if exists
         existing = self.session.query(CircuitModel).filter(
-            CircuitModel.id == cid
+            CircuitModel.circuit_id == cid
         ).first()
         
         if existing:
             # Update
             existing.name = name or circuit.name or existing.name
             existing.description = description or existing.description
-            existing.ir_data = ir_data
         else:
             # Create
             model = CircuitModel(
-                id=cid,
+                circuit_id=cid,
                 name=name or circuit.name or "Unnamed Circuit",
                 description=description or "",
-                created_by=created_by,
-                ir_data=ir_data
             )
             self.session.add(model)
+
+        # Persist latest circuit IR into snapshots table (Neon schema source of truth).
+        snapshot_model = SnapshotModel(
+            snapshot_id=str(uuid.uuid4()),
+            circuit_id=cid,
+            message_id=None,
+            circuit_data=ir_data,
+        )
+        self.session.add(snapshot_model)
         
         self.session.commit()
         return cid
@@ -116,15 +128,28 @@ class PostgresCircuitRepository:
             Circuit entity if found, None otherwise
         """
         model = self.session.query(CircuitModel).filter(
-            CircuitModel.id == circuit_id
+            CircuitModel.circuit_id == circuit_id
         ).first()
         
         if not model:
             return None
+
+        latest_snapshot = (
+            self.session.query(SnapshotModel)
+            .filter(SnapshotModel.circuit_id == circuit_id)
+            .order_by(desc(SnapshotModel.created_at), desc(SnapshotModel.snapshot_id))
+            .first()
+        )
+        if not latest_snapshot:
+            return None
         
-        # Deserialize
-        ir = CircuitIRSerializer.from_dict(model.ir_data)
-        return ir.circuit
+        # Deserialize (best-effort because some runtime payloads are non-canonical IR).
+        try:
+            ir = CircuitIRSerializer.from_dict(latest_snapshot.circuit_data)
+            return ir.circuit
+        except Exception as exc:
+            logger.warning("Circuit %s has non-canonical snapshot payload: %s", circuit_id, exc)
+            return None
     
     async def list_all(self, limit: int = 100, offset: int = 0) -> List[dict]:
         """List all circuits with metadata.
@@ -142,12 +167,12 @@ class PostgresCircuitRepository:
         
         return [
             {
-                "id": m.id,
+                "id": m.circuit_id,
                 "name": m.name,
                 "description": m.description,
                 "created_at": m.created_at.isoformat(),
                 "updated_at": m.updated_at.isoformat(),
-                "created_by": m.created_by
+                "created_by": "system"
             }
             for m in models
         ]
@@ -162,7 +187,7 @@ class PostgresCircuitRepository:
             True if deleted, False if not found
         """
         result = self.session.query(CircuitModel).filter(
-            CircuitModel.id == circuit_id
+            CircuitModel.circuit_id == circuit_id
         ).delete()
         self.session.commit()
         return result > 0

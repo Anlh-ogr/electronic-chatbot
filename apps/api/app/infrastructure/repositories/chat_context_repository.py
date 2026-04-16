@@ -18,6 +18,7 @@ from app.db.chat_context_models import (
     DocumentModel,
     MemoryFactModel,
     MessageModel,
+    SessionModel,
 )
 
 
@@ -56,9 +57,34 @@ class ChatHistoryRepository(RetryableRepository):
 
     def create_chat(self, user_id: str, title: str = "New Chat", chat_id: Optional[str] = None) -> str:
         cid = chat_id or str(uuid.uuid4())
+        sid = cid
 
         def _op() -> str:
-            model = ChatModel(id=cid, user_id=user_id, title=title)
+            _ = user_id  # kept for backward compatibility with existing service signature
+            now = datetime.utcnow()
+
+            session_model = (
+                self.session.query(SessionModel)
+                .filter(SessionModel.id == sid)
+                .first()
+            )
+            if session_model is None:
+                self.session.add(SessionModel(id=sid, last_active=now))
+            else:
+                session_model.last_active = now
+
+            existing_chat = (
+                self.session.query(ChatModel)
+                .filter(ChatModel.id == cid)
+                .first()
+            )
+            if existing_chat is not None:
+                existing_chat.title = title or existing_chat.title
+                existing_chat.updated_at = now
+                self.session.commit()
+                return cid
+
+            model = ChatModel(id=cid, session_id=sid, title=title)
             self.session.add(model)
             self.session.commit()
             return cid
@@ -83,6 +109,15 @@ class ChatHistoryRepository(RetryableRepository):
         mid = message_id or str(uuid.uuid4())
 
         def _op() -> str:
+            now = datetime.utcnow()
+            chat = (
+                self.session.query(ChatModel)
+                .filter(ChatModel.id == chat_id)
+                .first()
+            )
+            if chat is None:
+                raise ValueError(f"Chat '{chat_id}' not found")
+
             msg = MessageModel(
                 id=mid,
                 chat_id=chat_id,
@@ -92,7 +127,10 @@ class ChatHistoryRepository(RetryableRepository):
             )
             self.session.add(msg)
             self.session.query(ChatModel).filter(ChatModel.id == chat_id).update(
-                {"updated_at": datetime.utcnow()}
+                {"updated_at": now}
+            )
+            self.session.query(SessionModel).filter(SessionModel.id == chat.session_id).update(
+                {"last_active": now}
             )
             self.session.commit()
             return mid
@@ -107,6 +145,54 @@ class ChatHistoryRepository(RetryableRepository):
             .limit(limit)
             .all()
         )
+
+    def get_message(self, message_id: str) -> Optional[MessageModel]:
+        return (
+            self.session.query(MessageModel)
+            .filter(MessageModel.id == message_id)
+            .first()
+        )
+
+    def update_message_content(
+        self,
+        *,
+        message_id: str,
+        chat_id: Optional[str],
+        new_content: str,
+        status: str = "edited",
+    ) -> Optional[MessageModel]:
+        def _op() -> Optional[MessageModel]:
+            query = self.session.query(MessageModel).filter(MessageModel.id == message_id)
+            if chat_id:
+                query = query.filter(MessageModel.chat_id == chat_id)
+
+            model = query.first()
+            if model is None:
+                return None
+
+            model.content = new_content
+            model.status = status
+
+            now = datetime.utcnow()
+            self.session.query(ChatModel).filter(ChatModel.id == model.chat_id).update(
+                {"updated_at": now}
+            )
+
+            chat = (
+                self.session.query(ChatModel)
+                .filter(ChatModel.id == model.chat_id)
+                .first()
+            )
+            if chat is not None:
+                self.session.query(SessionModel).filter(SessionModel.id == chat.session_id).update(
+                    {"last_active": now}
+                )
+
+            self.session.commit()
+            self.session.refresh(model)
+            return model
+
+        return self._with_retry(_op)
 
 
 class SummaryMemoryRepository(RetryableRepository):
@@ -126,21 +212,7 @@ class SummaryMemoryRepository(RetryableRepository):
         sid = str(uuid.uuid4())
 
         def _op() -> str:
-            existing = (
-                self.session.query(ChatSummaryModel)
-                .filter(
-                    ChatSummaryModel.chat_id == chat_id,
-                    ChatSummaryModel.version == version,
-                )
-                .first()
-            )
-            if existing:
-                existing.summary_text = summary_text
-                existing.token_estimate = token_estimate
-                existing.source_message_count = source_message_count
-                existing.updated_at = datetime.utcnow()
-                self.session.commit()
-                return existing.id
+            _ = version  # compatibility: Neon schema does not store explicit version column
 
             model = ChatSummaryModel(
                 id=sid,
@@ -148,7 +220,6 @@ class SummaryMemoryRepository(RetryableRepository):
                 summary_text=summary_text,
                 token_estimate=token_estimate,
                 source_message_count=source_message_count,
-                version=version,
             )
             self.session.add(model)
             self.session.commit()
@@ -160,7 +231,7 @@ class SummaryMemoryRepository(RetryableRepository):
         return (
             self.session.query(ChatSummaryModel)
             .filter(ChatSummaryModel.chat_id == chat_id)
-            .order_by(ChatSummaryModel.version.desc())
+            .order_by(ChatSummaryModel.created_at.desc())
             .first()
         )
 
@@ -168,7 +239,7 @@ class SummaryMemoryRepository(RetryableRepository):
         return (
             self.session.query(ChatSummaryModel)
             .filter(ChatSummaryModel.chat_id == chat_id)
-            .order_by(ChatSummaryModel.version.desc())
+            .order_by(ChatSummaryModel.created_at.desc())
             .limit(limit)
             .all()
         )
@@ -183,31 +254,46 @@ class SummaryMemoryRepository(RetryableRepository):
         source: str = "model",
     ) -> str:
         fid = str(uuid.uuid4())
+        session_id = (chat_id or user_id or "").strip()
+        _ = source
 
         def _op() -> str:
+            if not session_id:
+                raise ValueError("session_id is required to persist memory fact")
+
+            session_model = (
+                self.session.query(SessionModel)
+                .filter(SessionModel.id == session_id)
+                .first()
+            )
+            if session_model is None:
+                self.session.add(SessionModel(id=session_id, last_active=datetime.utcnow()))
+
             query = self.session.query(MemoryFactModel).filter(
-                MemoryFactModel.user_id == user_id,
+                MemoryFactModel.session_id == session_id,
                 MemoryFactModel.fact_key == fact_key,
             )
+            if chat_id is not None:
+                query = query.filter(MemoryFactModel.chat_id == chat_id)
+            else:
+                query = query.filter(MemoryFactModel.chat_id.is_(None))
+
             existing = query.first()
             if existing:
                 existing.fact_value = fact_value
                 existing.chat_id = chat_id
                 existing.confidence = confidence
-                existing.source = source
                 existing.is_active = True
-                existing.updated_at = datetime.utcnow()
                 self.session.commit()
                 return existing.id
 
             model = MemoryFactModel(
                 id=fid,
-                user_id=user_id,
+                session_id=session_id,
                 chat_id=chat_id,
                 fact_key=fact_key,
                 fact_value=fact_value,
                 confidence=confidence,
-                source=source,
             )
             self.session.add(model)
             self.session.commit()
@@ -218,8 +304,9 @@ class SummaryMemoryRepository(RetryableRepository):
     def list_active_memory(self, user_id: Optional[str], limit: int = 50) -> List[MemoryFactModel]:
         query = self.session.query(MemoryFactModel).filter(MemoryFactModel.is_active.is_(True))
         if user_id is not None:
-            query = query.filter(MemoryFactModel.user_id == user_id)
-        return query.order_by(MemoryFactModel.updated_at.desc()).limit(limit).all()
+            # Backward-compatible: treat user_id argument as session_id for Neon schema.
+            query = query.filter(MemoryFactModel.session_id == user_id)
+        return query.order_by(MemoryFactModel.id.desc()).limit(limit).all()
 
 
 class KnowledgeRepository(RetryableRepository):
