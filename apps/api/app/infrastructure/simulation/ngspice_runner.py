@@ -15,7 +15,7 @@ from statistics import median
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from app.domain.validators.dc_bias_validator import ComponentSet
+    from app.domains.validators.dc_bias_validator import ComponentSet
 
 logger = logging.getLogger(__name__)
 
