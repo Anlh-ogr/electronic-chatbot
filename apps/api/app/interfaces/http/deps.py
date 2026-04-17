@@ -22,6 +22,7 @@ from __future__ import annotations
 # pathlib: Cross-platform path handling
 # functools.lru_cache: Cache dependencies across requests
 # fastapi.Depends: Dependency injection for handlers
+import os
 from pathlib import Path
 from functools import lru_cache
 from fastapi import Depends
@@ -33,6 +34,9 @@ from app.application.circuits.use_cases import (
     ExportKiCadSchUseCase,
 )
 from app.application.circuits.use_cases.export_kicad_pcb import ExportKiCadPCBUseCase
+from app.application.circuits.services.industrial_routing_job_queue import (
+    IndustrialRoutingJobQueue,
+)
 from app.application.snapshots.services import SnapshotService
 
 # ====== Infrastructure - Repositories ======
@@ -41,6 +45,7 @@ from app.infrastructure.repositories.circuit_repository import PostgresCircuitRe
 from app.infrastructure.repositories.snapshot_repository import PostgresSnapshotRepository
 from app.infrastructure.exporters.kicad_sch_exporter import KiCadSchExporter
 from app.infrastructure.exporters.kicad_pcb_exporter import KiCadPCBExporter
+from app.infrastructure.exporters.kicad_oracle_validator import KiCadOracleValidator
 from app.infrastructure.validation.validation_service import DomainValidationService
 from app.db.database import get_db
 
@@ -49,7 +54,9 @@ from app.db.database import get_db
 _repository_instance = None
 _exporter_instance = None
 _pcb_exporter_instance = None
+_oracle_validator_instance = None
 _validation_service_instance = None
+_industrial_job_queue_instance = None
 
 
 @lru_cache
@@ -89,6 +96,15 @@ def get_pcb_exporter() -> KiCadPCBExporter:
     if _pcb_exporter_instance is None:
         _pcb_exporter_instance = KiCadPCBExporter()
     return _pcb_exporter_instance
+
+
+@lru_cache
+def get_kicad_oracle_validator() -> KiCadOracleValidator:
+    """Get singleton KiCad oracle validator instance."""
+    global _oracle_validator_instance
+    if _oracle_validator_instance is None:
+        _oracle_validator_instance = KiCadOracleValidator()
+    return _oracle_validator_instance
 
 
 @lru_cache
@@ -139,7 +155,8 @@ def get_export_kicad_sch_use_case() -> ExportKiCadSchUseCase:
     return ExportKiCadSchUseCase(
         repository=get_repository(),
         exporter=get_exporter(),
-        storage_path=storage_path
+        storage_path=storage_path,
+        oracle_validator=get_kicad_oracle_validator(),
     )
 
 
@@ -155,8 +172,41 @@ def get_export_kicad_pcb_use_case() -> ExportKiCadPCBUseCase:
     return ExportKiCadPCBUseCase(
         repository=get_repository(),
         exporter=get_pcb_exporter(),
-        storage_path=storage_path
+        storage_path=storage_path,
+        oracle_validator=get_kicad_oracle_validator(),
     )
+
+
+@lru_cache
+def get_industrial_routing_job_queue() -> IndustrialRoutingJobQueue:
+    """Get singleton persistent job queue for industrial PCB routing."""
+    global _industrial_job_queue_instance
+    if _industrial_job_queue_instance is None:
+        redis_url = (
+            (os.getenv("INDUSTRIAL_ROUTING_REDIS_URL") or "").strip()
+            or (os.getenv("REDIS_URL") or "").strip()
+            or None
+        )
+        redis_queue_key = (
+            (os.getenv("INDUSTRIAL_ROUTING_REDIS_QUEUE_KEY") or "").strip()
+            or "industrial_routing_jobs:queue"
+        )
+
+        queue = IndustrialRoutingJobQueue(
+            max_concurrency=1,
+            redis_url=redis_url,
+            redis_queue_key=redis_queue_key,
+        )
+
+        async def _default_runner(request):
+            use_case = get_export_kicad_pcb_use_case()
+            return await use_case.execute(request)
+
+        queue.set_default_runner(_default_runner)
+        _industrial_job_queue_instance = queue
+
+    _industrial_job_queue_instance.ensure_started()
+    return _industrial_job_queue_instance
 
 
 def get_circuit_repository(db = Depends(get_db)) -> PostgresCircuitRepository:
