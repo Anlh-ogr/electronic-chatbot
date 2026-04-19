@@ -9,6 +9,13 @@
     "output_buffer",
     "power_output",
     "is_differential_input",
+    "num_input_terminals",
+    "feedback_topology",
+    "feedback_resistive_divider",
+    "feedback_long_tail_pair",
+    "feedback_none",
+    "input_fully_differential",
+    "input_single_ended",
     "input_mode__single_ended",
     "input_mode__differential",
     "supply_mode__auto",
@@ -95,5 +102,5 @@
     "inverting_block",
     "non_inverting_block"
   ],
-  "trained_at": "2026-03-24T07:58:30Z"
+  "trained_at": "2026-04-13T20:26:35Z"
 }
