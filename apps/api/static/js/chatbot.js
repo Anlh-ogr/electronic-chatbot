@@ -11,8 +11,11 @@ let currentTab = 'schematic';
 let waveformChart = null;
 let lastWaveformPayload = null;
 const FRONTEND_BUILD = '20260320a';
+let currentSessionId = null;
+let activePcbProgressCloser = null;
 
 function clearCircuitArtifacts() {
+    closeActivePcbProgressStream();
     lastCircuitData = null;
     window._lastCircuitData = null;
     window._lastKicadSch = null;
@@ -187,18 +190,19 @@ async function checkHealth() {
 }
 
 // ── Send Message ──
-async function sendMessage() {
-    const text = chatInput.value.trim();
-    if (!text || isProcessing) return;
+async function requestChatReply(text, options = {}) {
+    const messageText = String(text || '').trim();
+    if (!messageText || isProcessing) return null;
 
-    // Add user message
-    addMessage(text, 'user');
-    chatInput.value = '';
-    autoResize(chatInput);
+    const includeUserMessage = options.includeUserMessage !== false;
+    const sessionIdOverride = String(options.sessionIdOverride || '').trim();
+    const sessionIdForRequest = sessionIdOverride || currentSessionId || undefined;
 
-    // Show typing indicator
+    const userMessageEl = includeUserMessage
+        ? addMessage(messageText, 'user', { editable: true })
+        : null;
+
     const typingId = showTyping();
-
     isProcessing = true;
     btnSend.disabled = true;
 
@@ -207,30 +211,51 @@ async function sendMessage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                message: text,
+                message: messageText,
                 mode: selectedModelTier,
+                session_id: sessionIdForRequest,
             }),
         });
 
-        const data = await resp.json();
-
-        // Remove typing indicator
+        const data = await resp.json().catch(() => ({}));
         removeTyping(typingId);
 
         if (resp.ok) {
+            if (data && typeof data.session_id === 'string' && data.session_id.trim()) {
+                currentSessionId = data.session_id.trim();
+            }
+            if (userMessageEl) {
+                bindUserMessageMetadata(userMessageEl, {
+                    messageId: data.user_message_id,
+                    sessionId: data.session_id || currentSessionId,
+                    chatId: data.chat_id || data.session_id || currentSessionId,
+                });
+            }
             handleBotResponse(data);
-        } else {
-            const errMsg = data.detail?.message || data.detail || 'Lỗi server';
-            addMessage(`❌ Lỗi: ${errMsg}`, 'bot');
+            return data;
         }
+
+        const errMsg = data.detail?.message || data.detail || 'Lỗi server';
+        addMessage(`❌ Lỗi: ${errMsg}`, 'bot');
+        return null;
     } catch (e) {
         removeTyping(typingId);
         addMessage(`❌ Không thể kết nối đến server: ${e.message}`, 'bot');
+        return null;
+    } finally {
+        isProcessing = false;
+        btnSend.disabled = false;
+        chatInput.focus();
     }
+}
 
-    isProcessing = false;
-    btnSend.disabled = false;
-    chatInput.focus();
+async function sendMessage() {
+    const text = chatInput.value.trim();
+    if (!text || isProcessing) return;
+
+    chatInput.value = '';
+    autoResize(chatInput);
+    await requestChatReply(text, { includeUserMessage: true });
 }
 
 async function sendSimulation(rawText) {
@@ -873,26 +898,163 @@ function addMessage(text, type, options = {}) {
     const msgText = document.createElement('div');
     msgText.className = 'message-text';
 
+    let modeMeta = null;
+    let actions = null;
+
     if (type === 'bot') {
         msgText.innerHTML = renderMarkdown(text);
         if (typeof renderLatexInElement === 'function') {
             renderLatexInElement(msgText);
         }
 
-        const modeMeta = document.createElement('div');
+        modeMeta = document.createElement('div');
         modeMeta.className = 'message-meta';
         modeMeta.textContent = `Mode: ${toModeLabel(options.mode)}`;
-        content.appendChild(modeMeta);
     } else {
         msgText.textContent = text;
+
+        actions = document.createElement('div');
+        actions.className = 'message-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'message-edit-btn';
+        editBtn.type = 'button';
+        editBtn.title = 'Chỉnh sửa yêu cầu đã gửi';
+        editBtn.innerHTML = '<i class="fas fa-pen"></i> Edit';
+        editBtn.disabled = true;
+        editBtn.addEventListener('click', () => editUserMessage(div, msgText, editBtn));
+
+        actions.appendChild(editBtn);
     }
 
     content.appendChild(msgText);
+    if (modeMeta) {
+        content.appendChild(modeMeta);
+    }
+    if (actions) {
+        content.appendChild(actions);
+    }
     div.appendChild(avatar);
     div.appendChild(content);
 
+    if (type === 'user') {
+        bindUserMessageMetadata(div, {
+            messageId: options.messageId,
+            sessionId: options.sessionId || currentSessionId,
+            chatId: options.chatId,
+        });
+        if (options.edited) {
+            markMessageEdited(div);
+        }
+    }
+
     chatMessages.appendChild(div);
     scrollToBottom();
+    return div;
+}
+
+function bindUserMessageMetadata(messageEl, options = {}) {
+    if (!messageEl) return;
+
+    const messageId = String(options.messageId || '').trim();
+    const sessionId = String(options.sessionId || '').trim();
+    const chatId = String(options.chatId || '').trim();
+
+    if (messageId) messageEl.dataset.messageId = messageId;
+    if (sessionId) messageEl.dataset.sessionId = sessionId;
+    if (chatId) {
+        messageEl.dataset.chatId = chatId;
+    } else if (sessionId && !messageEl.dataset.chatId) {
+        messageEl.dataset.chatId = sessionId;
+    }
+
+    if (sessionId) {
+        currentSessionId = sessionId;
+    }
+
+    const editBtn = messageEl.querySelector('.message-edit-btn');
+    if (editBtn) {
+        editBtn.disabled = !messageEl.dataset.messageId;
+    }
+}
+
+function markMessageEdited(messageEl) {
+    if (!messageEl) return;
+    const actions = messageEl.querySelector('.message-actions');
+    if (!actions) return;
+    let badge = actions.querySelector('.message-edited-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'message-edited-badge';
+        badge.textContent = 'edited';
+        actions.appendChild(badge);
+    }
+}
+
+async function editUserMessage(messageEl, textEl, buttonEl) {
+    if (!messageEl || !textEl || !buttonEl) return;
+
+    if (isProcessing) {
+        addMessage('⏳ Hệ thống đang xử lý yêu cầu khác. Vui lòng thử lại sau vài giây.', 'bot');
+        return;
+    }
+
+    const messageId = String(messageEl.dataset.messageId || '').trim();
+    const chatId = String(messageEl.dataset.chatId || '').trim()
+        || String(messageEl.dataset.sessionId || '').trim()
+        || currentSessionId
+        || '';
+    const sessionId = String(messageEl.dataset.sessionId || '').trim() || currentSessionId || '';
+
+    if (!messageId) {
+        addMessage('❌ Không thể chỉnh sửa: thiếu message_id.', 'bot');
+        return;
+    }
+
+    const oldText = String(textEl.textContent || '').trim();
+    const nextText = window.prompt('Chỉnh sửa yêu cầu hội thoại', oldText);
+    if (nextText === null) return;
+
+    const editedText = String(nextText || '').trim();
+    if (!editedText || editedText === oldText) return;
+
+    buttonEl.disabled = true;
+    try {
+        const resp = await fetch(`${API_BASE}/api/chat/messages/${encodeURIComponent(messageId)}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(
+                chatId
+                    ? { session_id: chatId, content: editedText }
+                    : { content: editedText }
+            ),
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            const errMsg = data.detail?.message || data.detail || 'Không thể cập nhật message';
+            addMessage(`❌ ${errMsg}`, 'bot');
+            return;
+        }
+
+        textEl.textContent = data.content || editedText;
+        bindUserMessageMetadata(messageEl, {
+            messageId: data.message_id || messageId,
+            sessionId: data.session_id || sessionId,
+            chatId: data.chat_id || chatId || data.session_id,
+        });
+        markMessageEdited(messageEl);
+
+        // Re-run chatbot immediately with the edited prompt so UI receives a fresh answer.
+        await requestChatReply(editedText, {
+            includeUserMessage: false,
+            sessionIdOverride: data.session_id || sessionId || currentSessionId,
+        });
+    } catch (e) {
+        addMessage(`❌ Cập nhật yêu cầu thất bại: ${e.message}`, 'bot');
+    } finally {
+        buttonEl.disabled = false;
+    }
 }
 
 function showTyping() {
@@ -1252,6 +1414,365 @@ function showFallbackSchematic(container, circuitData) {
     container.appendChild(fallback);
 }
 
+function closeActivePcbProgressStream() {
+    if (typeof activePcbProgressCloser === 'function') {
+        try {
+            activePcbProgressCloser();
+        } catch (_) {
+            // no-op
+        }
+    }
+    activePcbProgressCloser = null;
+}
+
+function registerActivePcbProgressCloser(closer) {
+    closeActivePcbProgressStream();
+    activePcbProgressCloser = typeof closer === 'function' ? closer : null;
+}
+
+function resolveIndustrialCircuitId(templateData, circuitData) {
+    const candidates = [
+        circuitData?.circuit_id,
+        circuitData?.meta?.circuit_id,
+        circuitData?.circuit_data?.circuit_id,
+        circuitData?.circuit_data?.meta?.circuit_id,
+        templateData?.circuit_id,
+        templateData?.meta?.circuit_id,
+    ];
+
+    for (const candidate of candidates) {
+        const value = String(candidate || '').trim();
+        if (value) return value;
+    }
+
+    return '';
+}
+
+function escapeHtml(raw) {
+    return String(raw ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function toAbsoluteWebSocketUrl(rawUrl) {
+    if (!rawUrl) return '';
+    const absolute = new URL(rawUrl, window.location.origin);
+    if (absolute.protocol === 'https:') {
+        absolute.protocol = 'wss:';
+    } else if (absolute.protocol === 'http:') {
+        absolute.protocol = 'ws:';
+    }
+    return absolute.toString();
+}
+
+function toProgressState(payload) {
+    const status = String(payload?.status || '').trim().toLowerCase() || 'queued';
+    const progress = payload?.progress && typeof payload.progress === 'object' ? payload.progress : {};
+    const totalPhases = Math.max(1, Number(progress.total_phases || 4) || 4);
+    const phaseIndex = Math.max(0, Number(progress.phase_index || 0) || 0);
+    const phase = String(progress.phase || status || 'queued').trim() || 'queued';
+    const rawPercent = Number(progress.progress);
+    const percent = Number.isFinite(rawPercent)
+        ? Math.max(0, Math.min(100, rawPercent))
+        : Math.max(0, Math.min(100, (phaseIndex / totalPhases) * 100));
+    const message = String(progress.message || payload?.error || '').trim();
+
+    return {
+        status,
+        phase,
+        phaseIndex,
+        totalPhases,
+        percent,
+        message,
+    };
+}
+
+function renderPcbProgressPlaceholder(placeholder, payload) {
+    if (!placeholder) return;
+
+    const state = toProgressState(payload);
+    const safePhase = escapeHtml(state.phase);
+    const safeMessage = escapeHtml(state.message || 'Đang xử lý PCB industrial routing...');
+    const safePercent = Math.max(0, Math.min(100, state.percent));
+    const phaseLabel = `Phase ${Math.min(state.phaseIndex, state.totalPhases)}/${state.totalPhases}`;
+    const statusClass = state.status === 'failed'
+        ? 'is-error'
+        : (state.status === 'completed' ? 'is-done' : 'is-running');
+
+    placeholder.style.display = 'block';
+    placeholder.innerHTML = `
+        <div class="pcb-progress ${statusClass}">
+            <div class="pcb-progress-head">
+                <span class="pcb-progress-phase">${escapeHtml(phaseLabel)} • ${safePhase}</span>
+                <span class="pcb-progress-percent">${safePercent.toFixed(0)}%</span>
+            </div>
+            <div class="pcb-progress-bar">
+                <div class="pcb-progress-fill" style="width:${safePercent}%"></div>
+            </div>
+            <p class="pcb-progress-message">${safeMessage}</p>
+        </div>
+    `;
+}
+
+function createIndustrialJobError(message, jobStatus = '') {
+    const err = new Error(message);
+    err.jobStatus = String(jobStatus || '').trim().toLowerCase();
+    return err;
+}
+
+async function submitIndustrialPcbExport(circuitId) {
+    const resp = await fetch(`/api/circuits/export/${encodeURIComponent(circuitId)}/pcb/industrial/submit`, {
+        method: 'POST',
+    });
+
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+        const message = payload?.detail?.message || payload?.message || `HTTP ${resp.status}`;
+        throw createIndustrialJobError(`Không thể submit industrial PCB job: ${message}`, payload?.status);
+    }
+
+    return payload;
+}
+
+async function fetchIndustrialJobResult(jobInfo) {
+    if (!jobInfo?.result_url) {
+        throw createIndustrialJobError('Thiếu result_url cho industrial PCB job', 'result_missing');
+    }
+
+    const resp = await fetch(jobInfo.result_url, { cache: 'no-store' });
+    const payload = await resp.json().catch(() => ({}));
+    if (!resp.ok && resp.status !== 202) {
+        const message = payload?.error || payload?.detail?.message || `HTTP ${resp.status}`;
+        throw createIndustrialJobError(`Không thể lấy kết quả industrial PCB: ${message}`, payload?.status);
+    }
+    return payload;
+}
+
+function monitorIndustrialJobViaWebSocket(jobInfo, onProgress, isCancelled) {
+    return new Promise((resolve, reject) => {
+        const wsUrl = toAbsoluteWebSocketUrl(jobInfo?.ws_url);
+        if (!wsUrl) {
+            reject(createIndustrialJobError('Thiếu ws_url cho industrial PCB stream', 'ws_unavailable'));
+            return;
+        }
+
+        let settled = false;
+        const ws = new WebSocket(wsUrl);
+
+        const finalize = (err, payload) => {
+            if (settled) return;
+            settled = true;
+            if (activePcbProgressCloser === cleanup) {
+                activePcbProgressCloser = null;
+            }
+            cleanup();
+            if (err) reject(err);
+            else resolve(payload);
+        };
+
+        const cleanup = () => {
+            try {
+                ws.close();
+            } catch (_) {
+                // no-op
+            }
+        };
+
+        registerActivePcbProgressCloser(cleanup);
+
+        ws.onmessage = (event) => {
+            if (isCancelled()) {
+                finalize(createIndustrialJobError('PCB export stream cancelled', 'cancelled'));
+                return;
+            }
+
+            let payload;
+            try {
+                payload = JSON.parse(event.data);
+            } catch {
+                return;
+            }
+
+            const eventName = String(payload?.event || '').trim().toLowerCase();
+            const data = payload?.data || {};
+
+            if (eventName === 'progress') {
+                onProgress(data);
+                return;
+            }
+
+            if (eventName === 'result') {
+                finalize(null, data);
+                return;
+            }
+
+            if (eventName === 'error') {
+                const message = data?.message || data?.error || 'Industrial routing stream error';
+                finalize(createIndustrialJobError(String(message), data?.status || 'failed'));
+            }
+        };
+
+        ws.onerror = () => {
+            if (isCancelled()) {
+                finalize(createIndustrialJobError('PCB export stream cancelled', 'cancelled'));
+                return;
+            }
+            finalize(createIndustrialJobError('WebSocket stream error', 'ws_error'));
+        };
+
+        ws.onclose = () => {
+            if (settled) return;
+            if (isCancelled()) {
+                finalize(createIndustrialJobError('PCB export stream cancelled', 'cancelled'));
+                return;
+            }
+            finalize(createIndustrialJobError('WebSocket closed before completion', 'ws_closed'));
+        };
+    });
+}
+
+function monitorIndustrialJobViaSse(jobInfo, onProgress, isCancelled) {
+    return new Promise((resolve, reject) => {
+        if (!jobInfo?.events_url || typeof EventSource === 'undefined') {
+            reject(createIndustrialJobError('SSE is unavailable in this browser', 'sse_unavailable'));
+            return;
+        }
+
+        let settled = false;
+        const source = new EventSource(jobInfo.events_url);
+
+        const cleanup = () => {
+            try {
+                source.close();
+            } catch (_) {
+                // no-op
+            }
+        };
+
+        const finalize = (err, payload) => {
+            if (settled) return;
+            settled = true;
+            if (activePcbProgressCloser === cleanup) {
+                activePcbProgressCloser = null;
+            }
+            cleanup();
+            if (err) reject(err);
+            else resolve(payload);
+        };
+
+        registerActivePcbProgressCloser(cleanup);
+
+        const parsePayload = (event) => {
+            try {
+                return JSON.parse(event.data || '{}');
+            } catch {
+                return null;
+            }
+        };
+
+        source.addEventListener('progress', (event) => {
+            if (isCancelled()) {
+                finalize(createIndustrialJobError('PCB export stream cancelled', 'cancelled'));
+                return;
+            }
+            const payload = parsePayload(event);
+            if (payload) onProgress(payload);
+        });
+
+        source.addEventListener('result', (event) => {
+            const payload = parsePayload(event) || {};
+            finalize(null, payload);
+        });
+
+        source.addEventListener('error', (event) => {
+            const payload = parsePayload(event);
+            if (!payload || (!payload.message && !payload.error && !payload.status)) {
+                return;
+            }
+            const message = payload?.message || payload?.error || 'Industrial routing stream error';
+            finalize(createIndustrialJobError(String(message), payload?.status || 'failed'));
+        });
+
+        source.onerror = () => {
+            if (settled) return;
+            if (source.readyState === EventSource.CLOSED) {
+                finalize(createIndustrialJobError('SSE stream closed before completion', 'sse_closed'));
+            }
+        };
+    });
+}
+
+async function monitorIndustrialJobViaPolling(jobInfo, onProgress, isCancelled) {
+    if (!jobInfo?.status_url) {
+        throw createIndustrialJobError('Thiếu status_url cho industrial PCB job', 'poll_unavailable');
+    }
+
+    const maxAttempts = 300;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (isCancelled()) {
+            throw createIndustrialJobError('PCB export polling cancelled', 'cancelled');
+        }
+
+        const resp = await fetch(jobInfo.status_url, { cache: 'no-store' });
+        const statusPayload = await resp.json().catch(() => ({}));
+
+        if (!resp.ok) {
+            const message = statusPayload?.detail?.message || statusPayload?.error || `HTTP ${resp.status}`;
+            throw createIndustrialJobError(`Không thể lấy trạng thái industrial PCB: ${message}`, statusPayload?.status);
+        }
+
+        onProgress(statusPayload);
+
+        const statusValue = String(statusPayload?.status || '').trim().toLowerCase();
+        if (statusValue === 'completed') {
+            return fetchIndustrialJobResult(jobInfo);
+        }
+        if (statusValue === 'failed') {
+            const message = statusPayload?.error || 'Industrial routing failed';
+            throw createIndustrialJobError(String(message), 'failed');
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+
+    throw createIndustrialJobError('Hết thời gian chờ industrial PCB job', 'timeout');
+}
+
+async function monitorIndustrialPcbJob(jobInfo, onProgress, isCancelled) {
+    if (isCancelled()) {
+        throw createIndustrialJobError('PCB export stream cancelled', 'cancelled');
+    }
+
+    try {
+        return await monitorIndustrialJobViaWebSocket(jobInfo, onProgress, isCancelled);
+    } catch (wsError) {
+        if (String(wsError?.jobStatus || '').toLowerCase() === 'failed') {
+            throw wsError;
+        }
+        if (isCancelled()) {
+            throw createIndustrialJobError('PCB export stream cancelled', 'cancelled');
+        }
+        console.warn('WebSocket tracking failed, fallback to SSE:', wsError);
+    }
+
+    try {
+        return await monitorIndustrialJobViaSse(jobInfo, onProgress, isCancelled);
+    } catch (sseError) {
+        if (String(sseError?.jobStatus || '').toLowerCase() === 'failed') {
+            throw sseError;
+        }
+        if (isCancelled()) {
+            throw createIndustrialJobError('PCB export stream cancelled', 'cancelled');
+        }
+        console.warn('SSE tracking failed, fallback to polling:', sseError);
+    }
+
+    return monitorIndustrialJobViaPolling(jobInfo, onProgress, isCancelled);
+}
+
 /**
  * Export circuit to PCB and render inline with KiCanvas
  */
@@ -1261,6 +1782,11 @@ async function exportAndRenderPCB(templateData, circuitData) {
     const placeholder = document.getElementById('pcbPlaceholder');
 
     if (!container) return;
+
+    closeActivePcbProgressStream();
+    const requestToken = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    window._activePcbExportToken = requestToken;
+    const isCancelled = () => window._activePcbExportToken !== requestToken;
 
     // Show toolbar
     if (toolbar) toolbar.style.display = 'flex';
@@ -1279,7 +1805,93 @@ async function exportAndRenderPCB(templateData, circuitData) {
         placeholder.innerHTML = '<i class="fas fa-spinner fa-spin fa-3x"></i><p>Đang tạo PCB layout...</p>';
     }
 
+    const finalizePcbReady = async (fileUrl, sourceLabel) => {
+        const contentResp = await fetch(fileUrl);
+        if (!contentResp.ok) {
+            throw new Error(`${sourceLabel}: không thể tải file PCB (HTTP ${contentResp.status})`);
+        }
+
+        const pcbContent = await contentResp.text();
+        if (isCancelled()) return;
+
+        window._lastPcbContent = pcbContent;
+        window._pcbReady = true;
+        window._pcbRendered = false;
+
+        if (placeholder) {
+            placeholder.innerHTML = '<i class="fas fa-check-circle fa-3x" style="color:#10b981"></i><p>PCB sẵn sàng - chuyển sang tab PCB để xem</p>';
+        }
+
+        if (currentTab === 'pcb') {
+            renderPCBKiCanvas();
+        }
+
+        console.log(`${sourceLabel} PCB export ready, size:`, pcbContent.length);
+    };
+
     try {
+        const circuitId = resolveIndustrialCircuitId(templateData, circuitData);
+        if (circuitId) {
+            try {
+                renderPcbProgressPlaceholder(placeholder, {
+                    status: 'queued',
+                    progress: {
+                        phase: 'queued',
+                        phase_index: 0,
+                        total_phases: 4,
+                        progress: 0,
+                        message: 'Đang submit industrial PCB job...',
+                    },
+                });
+
+                const jobInfo = await submitIndustrialPcbExport(circuitId);
+                if (isCancelled()) return;
+
+                renderPcbProgressPlaceholder(placeholder, jobInfo);
+
+                const finalPayload = await monitorIndustrialPcbJob(
+                    jobInfo,
+                    (progressPayload) => {
+                        if (isCancelled()) return;
+                        renderPcbProgressPlaceholder(placeholder, progressPayload);
+                    },
+                    isCancelled,
+                );
+
+                if (isCancelled()) return;
+
+                const resultPayload = finalPayload?.result && typeof finalPayload.result === 'object'
+                    ? finalPayload.result
+                    : finalPayload;
+                const fileUrl = resultPayload?.download_url || resultPayload?.url;
+
+                if (!fileUrl) {
+                    throw createIndustrialJobError(
+                        'Industrial PCB job hoàn tất nhưng thiếu download_url',
+                        finalPayload?.status || 'failed',
+                    );
+                }
+
+                closeActivePcbProgressStream();
+                await finalizePcbReady(fileUrl, 'Industrial');
+                return;
+            } catch (industrialError) {
+                if (isCancelled()) return;
+
+                const industrialStatus = String(industrialError?.jobStatus || '').toLowerCase();
+                if (industrialStatus === 'failed') {
+                    throw industrialError;
+                }
+
+                console.warn('Industrial PCB flow unavailable, fallback to legacy export:', industrialError);
+                if (placeholder) {
+                    placeholder.innerHTML = '<i class="fas fa-spinner fa-spin fa-2x"></i><p>Fallback sang chế độ export PCB tiêu chuẩn...</p>';
+                }
+            }
+        }
+
+        closeActivePcbProgressStream();
+
         const resp = await fetch('/api/chat/export-pcb', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1293,37 +1905,20 @@ async function exportAndRenderPCB(templateData, circuitData) {
 
         const result = await resp.json();
         const fileUrl = result.url;
-
-        // Fetch .kicad_pcb content for download
-        const contentResp = await fetch(fileUrl);
-        const pcbContent = await contentResp.text();
-
-        // Store for download and deferred render
-        window._lastPcbContent = pcbContent;
-        window._pcbReady = true;
-        window._pcbRendered = false;
-
-        // Update placeholder to indicate ready state
-        if (placeholder) {
-            placeholder.innerHTML = '<i class="fas fa-check-circle fa-3x" style="color:#10b981"></i><p>PCB sẵn sàng — chuyển sang tab PCB để xem</p>';
-        }
-
-        // If PCB tab is currently active, render immediately
-        if (currentTab === 'pcb') {
-            renderPCBKiCanvas();
-        }
-
-        console.log('PCB export ready, size:', pcbContent.length);
+        await finalizePcbReady(fileUrl, 'Legacy');
 
     } catch (err) {
         console.error('PCB render error:', err);
+        closeActivePcbProgressStream();
         window._pcbReady = false;
+        if (isCancelled()) return;
+
         if (placeholder) {
             placeholder.style.display = 'block';
             placeholder.innerHTML = `
                 <i class="fas fa-exclamation-triangle fa-2x" style="color:#d97706"></i>
                 <p>Không thể tạo PCB</p>
-                <p class="sub-text" style="font-size:11px">${err.message}</p>
+                <p class="sub-text" style="font-size:11px">${escapeHtml(err.message || 'Unknown error')}</p>
             `;
         }
     }
