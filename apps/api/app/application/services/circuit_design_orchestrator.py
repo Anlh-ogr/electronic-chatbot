@@ -5,12 +5,17 @@ from __future__ import annotations
 Module nay dieu phoi LLM -> domain validation -> simulation va retry voi feedback.
 """
 
-import json
 import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from app.application.ai.llm_contracts import (
+    ComponentProposalOutputV1,
+    build_llm_payload,
+    topology_code_to_name,
+    topology_name_to_code,
+)
 from app.domains.validators import ComponentSet, DCBiasValidator
 from app.infrastructure.simulation import NgspiceRunner, SimulationConfig
 
@@ -179,34 +184,39 @@ class CircuitDesignOrchestrator:
         from app.application.ai.llm_router import LLMRole
 
         system_prompt = self._build_system_prompt_for_components()
-        user_prompt = self._build_user_prompt(intent=intent, feedback_history=feedback_history)
+        user_payload = self._build_user_payload(intent=intent, feedback_history=feedback_history)
 
         role: "LLMRole" = getattr(LLMRole, "DESIGN", LLMRole.GENERAL)
         response = self.llm_router.chat_json(
             role,
             mode=mode,
             system=system_prompt,
-            user_content=user_prompt,
+            user_content=user_payload,
+            response_model=ComponentProposalOutputV1,
+            max_schema_retries=2,
         )
 
         if not response:
             logger.warning("LLM response is empty")
             return None
 
-        payload = self._extract_component_payload(response)
-        if payload is None:
-            logger.warning("Khong tim thay payload component hop le trong LLM response")
+        try:
+            payload = ComponentProposalOutputV1.model_validate(response)
+        except Exception as exc:
+            logger.warning("Component schema validation failed: %s", exc)
             return None
+
+        topology_name = topology_code_to_name(payload.tp)
 
         try:
             components = ComponentSet(
-                R1=float(payload["R1"]),
-                R2=float(payload["R2"]),
-                RC=float(payload["RC"]),
-                RE=float(payload["RE"]),
-                VCC=float(payload.get("VCC", intent.vcc if intent.vcc is not None else 12.0)),
-                beta=float(payload.get("beta", 100.0)),
-                topology=str(payload.get("topology", intent.topology or "common_emitter")),
+                R1=float(payload.r1),
+                R2=float(payload.r2),
+                RC=float(payload.rc),
+                RE=float(payload.re),
+                VCC=float(payload.v),
+                beta=float(payload.b),
+                topology=topology_name if topology_name != "unknown" else (intent.topology or "common_emitter"),
             )
             return components
         except (TypeError, ValueError, KeyError) as exc:
@@ -216,40 +226,33 @@ class CircuitDesignOrchestrator:
     def _build_system_prompt_for_components(self) -> str:
         """Sinh system prompt mo ta schema JSON component output."""
         return (
-            "Ban la ky su analog design. "
-            "Output ONLY mot JSON hop le, khong markdown, khong text ngoai JSON.\n"
-            "Schema bat buoc: {\"R1\": number, \"R2\": number, \"RC\": number, \"RE\": number, "
-            "\"VCC\": number, \"beta\": number, \"topology\": string}.\n"
-            "Don vi: R* theo Ohm, VCC theo Volt.\n"
-            "Rang buoc: R1,R2 >= 1000; RC >= 100; RE >= 0; VCC > 0; beta trong [50,300].\n"
-            "Khong duoc tra ve key la so phuc tap, chi dung key trong schema."
+            "Ban la ky su analog design. Tra ve duy nhat JSON theo schema cmp.v1. "
+            "Khong markdown, khong giai thich.\n"
+            "Schema: {\"sv\":\"cmp.v1\",\"tp\":\"CE|CB|CC|CS|CD|CG|INV|NON|DIF|INA|CLA|CLAB|CLB|CLC|CLD|DAR|MST|UNK\","
+            "\"r1\":number,\"r2\":number,\"rc\":number,\"re\":number,\"v\":number,\"b\":number}.\n"
+            "Rang buoc: r1,r2>=1000; rc>=100; re>=0; v>0; b trong [50,300]."
         )
 
-    def _build_user_prompt(self, intent: "CircuitIntent", feedback_history: List[Dict]) -> str:
-        """Sinh user prompt tu intent va lich su loi de huong LLM retry."""
-        topology = intent.topology or "common_emitter"
-        gain = intent.gain_target if intent.gain_target is not None else "khong ro"
+    def _build_user_payload(self, intent: "CircuitIntent", feedback_history: List[Dict]) -> Dict[str, object]:
+        """Sinh payload JSON tu intent va lich su loi de huong LLM retry."""
+        topology = topology_name_to_code(intent.topology or "common_emitter").value
+        gain = intent.gain_target if intent.gain_target is not None else None
         vcc = intent.vcc if intent.vcc is not None else 12.0
         freq = intent.frequency if intent.frequency is not None else 1000.0
 
-        base = (
-            f"Thiet ke mach {topology}, gain={gain}, VCC={vcc}V, tan so={freq}Hz. "
-            "Tra ve duy nhat JSON bo linh kien."
+        return build_llm_payload(
+            task="cmp.propose.v1",
+            input_data={
+                "it": {
+                    "tp": topology,
+                    "gn": gain,
+                    "vc": vcc,
+                    "fq": freq,
+                },
+                "fb": feedback_history,
+            },
+            output_format="json",
         )
-
-        if not feedback_history:
-            return base
-
-        lines: List[str] = [base, "", "=== CAC LOI DA GAP ==="]
-        for item in feedback_history:
-            attempt = item.get("attempt", "?")
-            err_type = item.get("type", "unknown")
-            errors = "; ".join(str(e) for e in item.get("errors", [])) or "(khong ro)"
-            suggestions = "; ".join(str(s) for s in item.get("suggestions", [])) or "(khong co)"
-            lines.append(f"Lan {attempt}: [{err_type}] {errors} -> Goi y: {suggestions}")
-        lines.append("=======================")
-        lines.append("Hay de xuat bo linh kien MOI tranh lai toan bo loi tren.")
-        return "\n".join(lines)
 
     def _build_sim_config(self, intent: "CircuitIntent") -> "SimulationConfig":
         """Tao config mo phong tu intent de dung cho ngspice runner."""
@@ -262,42 +265,6 @@ class CircuitDesignOrchestrator:
             duration_cycles=5,
             step_size_factor=0.01,
         )
-
-    def _extract_component_payload(self, response: Dict) -> Optional[Dict]:
-        """Rut payload component tu nhieu dang response JSON cua LLM."""
-        required = {"R1", "R2", "RC", "RE"}
-
-        if required.issubset(response.keys()):
-            return response
-
-        for key in ("components", "data", "result", "output"):
-            candidate = response.get(key)
-            if isinstance(candidate, dict) and required.issubset(candidate.keys()):
-                return candidate
-            if isinstance(candidate, str):
-                parsed = self._try_load_json(candidate)
-                if isinstance(parsed, dict) and required.issubset(parsed.keys()):
-                    return parsed
-
-        for value in response.values():
-            if isinstance(value, str):
-                parsed = self._try_load_json(value)
-                if isinstance(parsed, dict) and required.issubset(parsed.keys()):
-                    return parsed
-
-        return None
-
-    def _try_load_json(self, value: str) -> Optional[Dict]:
-        """Thu parse chuoi JSON de ho tro output LLM dang text."""
-        value = value.strip()
-        if not value:
-            return None
-
-        try:
-            loaded = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-        return loaded if isinstance(loaded, dict) else None
 
     def _save_feedback_session(self, intent: "CircuitIntent", result: DesignResult) -> None:
         """Luu session vao store neu duoc cung cap."""
