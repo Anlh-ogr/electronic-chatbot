@@ -30,6 +30,7 @@ from app.core.config import settings
 from app.interfaces.http.routes.chatbot import router as chatbot_router
 from app.interfaces.http.routes.circuits import router as circuits_router
 from app.interfaces.http.routes.snapshots import router as snapshots_router
+from app.interfaces.http.deps import get_industrial_routing_job_queue
 
 
 # ====== Custom Static Files Handler ======
@@ -54,6 +55,13 @@ app = FastAPI()
 app.include_router(chatbot_router)
 app.include_router(circuits_router)
 app.include_router(snapshots_router)
+
+
+@app.on_event("startup")
+async def startup_background_workers() -> None:
+    """Bootstrap persistent background workers (industrial routing queue)."""
+    queue = get_industrial_routing_job_queue()
+    queue.ensure_started()
 
 
 # ====== Health Check Endpoint ======
