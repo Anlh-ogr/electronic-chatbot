@@ -24,8 +24,11 @@ from __future__ import annotations
 # typing: Type hints cho request/response
 # fastapi: HTTP routing, dependency injection
 # pathlib: File path handling
+import asyncio
+import json
 from typing import Dict, Any, Union
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pathlib import Path
 
 # ====== Application layer ======
@@ -53,12 +56,16 @@ from app.application.circuits.use_cases import (
     ExportKiCadSchUseCase,
 )
 from app.application.circuits.use_cases.export_kicad_pcb import ExportKiCadPCBUseCase
+from app.application.circuits.services.industrial_routing_job_queue import (
+    IndustrialRoutingJobQueue,
+)
 from app.application.circuits.prompt_analyzer import PromptAnalyzer
 from app.interfaces.http.deps import (
     get_generate_circuit_use_case,
     get_validate_circuit_use_case,
     get_export_kicad_sch_use_case,
     get_export_kicad_pcb_use_case,
+    get_industrial_routing_job_queue,
 )
 from app.infrastructure.exporters.kicad_cli_renderer import KiCadCLIRenderer
 
@@ -68,6 +75,69 @@ router = APIRouter(
     prefix="/api/circuits",
     tags=["circuits"]
 )
+
+
+def _build_pcb_export_options(
+    *,
+    oracle_validate: bool,
+    oracle_strict: bool,
+    routing_mode: str,
+    enforce_related_spacing: bool,
+    related_spacing_min_mm: float,
+    related_spacing_max_mm: float,
+    industrial_passes: int,
+    via_penalty: float,
+    objective_profile: str,
+    diff_pair_tolerance_mm: float,
+    enable_power_zones: bool,
+) -> Dict[str, Any]:
+    selected_mode = routing_mode.strip().lower()
+    if selected_mode not in {"draft", "industrial"}:
+        selected_mode = "draft"
+
+    return {
+        "oracle_validate": oracle_validate,
+        "oracle_strict": oracle_strict,
+        "routing_mode": selected_mode,
+        "enforce_related_spacing": enforce_related_spacing,
+        "related_spacing_min_mm": related_spacing_min_mm,
+        "related_spacing_max_mm": related_spacing_max_mm,
+        "industrial_passes": industrial_passes,
+        "via_penalty": via_penalty,
+        "objective_profile": objective_profile,
+        "diff_pair_tolerance_mm": diff_pair_tolerance_mm,
+        "enable_power_zones": enable_power_zones,
+    }
+
+
+def _to_sse_event(event: str, payload: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _resolve_export_file(base_dir: Path, filename: str) -> Path:
+    safe_name = Path(filename).name
+    candidate = (base_dir / safe_name).resolve()
+    base_resolved = base_dir.resolve()
+
+    if candidate.parent != base_resolved:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "invalid_filename",
+                "message": "Invalid export filename",
+            },
+        )
+
+    if not candidate.exists() or not candidate.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "export_not_found",
+                "message": f"Export artifact '{safe_name}' was not found",
+            },
+        )
+
+    return candidate
 
 
 @router.post("/generate", response_model=CircuitResponse, status_code=status.HTTP_201_CREATED)
@@ -116,20 +186,16 @@ async def generate_from_prompt(
     request: GenerateFromPromptRequest,
     use_case: GenerateCircuitUseCase = Depends(get_generate_circuit_use_case)
 ) -> Union[CircuitResponse, PromptAnalysisResponse]:
-    """Generate a circuit from natural language prompt.
+    """ Generate a circuit from natural language prompt.
     
-    If prompt is clear, generates circuit immediately.
-    If prompt is ambiguous, returns clarifying questions.
+    Neu prompt rõ ràng, tạo mạch ngay lập tức.
+    Neu prompt mơ hồ, trả về các câu hỏi làm rõ.
     
-    Args:
-        request: Natural language prompt and optional parameters
-        use_case: Injected use case
+    Args: request: Natural language prompt and optional parameters
     
-    Returns:
-        CircuitResponse if clear, or PromptAnalysisResponse with questions if ambiguous
+    Returns: CircuitResponse neu ro rang, hoặc PromptAnalysisResponse với câu hỏi lm rõ nếu mơ hồ.
     
-    Raises:
-        HTTPException: If analysis or generation fails
+    Raises: HTTPException: If analysis or generation fails
     """
     try:
         # Analyze prompt
@@ -306,6 +372,14 @@ async def validate_circuit(
 @router.post("/export/{circuit_id}/kicad", response_model=ExportCircuitResponse)
 async def export_circuit_to_kicad(
     circuit_id: str,
+    oracle_validate: bool = Query(
+        default=True,
+        description="Run KiCad oracle validation (kicad-cli) after export",
+    ),
+    oracle_strict: bool = Query(
+        default=False,
+        description="Fail export when oracle validation does not pass",
+    ),
     use_case: ExportKiCadSchUseCase = Depends(get_export_kicad_sch_use_case)
 ) -> ExportCircuitResponse:
     """Export a circuit to KiCad schematic format.
@@ -324,7 +398,10 @@ async def export_circuit_to_kicad(
         request = ExportCircuitRequest(
             circuit_id=circuit_id,
             format=ExportFormat.KICAD,
-            options={}
+            options={
+                "oracle_validate": oracle_validate,
+                "oracle_strict": oracle_strict,
+            }
         )
         response = await use_case.execute(request)
         return response
@@ -362,6 +439,60 @@ async def export_circuit_to_kicad(
 @router.post("/export/{circuit_id}/pcb", response_model=ExportCircuitResponse)
 async def export_circuit_to_pcb(
     circuit_id: str,
+    oracle_validate: bool = Query(
+        default=True,
+        description="Run KiCad oracle validation (kicad-cli) after export",
+    ),
+    oracle_strict: bool = Query(
+        default=False,
+        description="Fail export when oracle validation does not pass",
+    ),
+    routing_mode: str = Query(
+        default="draft",
+        description="Routing mode: draft | industrial",
+    ),
+    enforce_related_spacing: bool = Query(
+        default=True,
+        description="Keep directly connected components in spacing range",
+    ),
+    related_spacing_min_mm: float = Query(
+        default=3.0,
+        ge=0.5,
+        le=20.0,
+        description="Minimum spacing (mm) for related components",
+    ),
+    related_spacing_max_mm: float = Query(
+        default=5.0,
+        ge=0.5,
+        le=25.0,
+        description="Maximum spacing (mm) for related components",
+    ),
+    industrial_passes: int = Query(
+        default=3,
+        ge=1,
+        le=10,
+        description="Phase-2 rip-up/reroute passes in industrial mode",
+    ),
+    via_penalty: float = Query(
+        default=12.0,
+        ge=0.0,
+        le=100.0,
+        description="A* via penalty used by industrial routing",
+    ),
+    objective_profile: str = Query(
+        default="balanced",
+        description="Objective profile: balanced | shortest | low_via | low_congestion | signal_integrity",
+    ),
+    diff_pair_tolerance_mm: float = Query(
+        default=1.0,
+        ge=0.0,
+        le=20.0,
+        description="Phase-3 max allowed skew for differential pairs",
+    ),
+    enable_power_zones: bool = Query(
+        default=False,
+        description="Enable Phase-4 zone planning for power/ground nets",
+    ),
     use_case: ExportKiCadPCBUseCase = Depends(get_export_kicad_pcb_use_case)
 ) -> ExportCircuitResponse:
     """Export a circuit to KiCad PCB format.
@@ -377,10 +508,24 @@ async def export_circuit_to_pcb(
         HTTPException: If export fails or circuit not found
     """
     try:
+        options = _build_pcb_export_options(
+            oracle_validate=oracle_validate,
+            oracle_strict=oracle_strict,
+            routing_mode=routing_mode,
+            enforce_related_spacing=enforce_related_spacing,
+            related_spacing_min_mm=related_spacing_min_mm,
+            related_spacing_max_mm=related_spacing_max_mm,
+            industrial_passes=industrial_passes,
+            via_penalty=via_penalty,
+            objective_profile=objective_profile,
+            diff_pair_tolerance_mm=diff_pair_tolerance_mm,
+            enable_power_zones=enable_power_zones,
+        )
+
         request = ExportCircuitRequest(
             circuit_id=circuit_id,
             format=ExportFormat.KICAD_PCB,
-            options={}
+            options=options,
         )
         response = await use_case.execute(request)
         return response
@@ -415,6 +560,278 @@ async def export_circuit_to_pcb(
         )
 
 
+@router.post("/export/{circuit_id}/pcb/industrial/submit")
+async def submit_industrial_pcb_export_job(
+    circuit_id: str,
+    oracle_validate: bool = Query(
+        default=True,
+        description="Run KiCad oracle validation (kicad-cli) after export",
+    ),
+    oracle_strict: bool = Query(
+        default=False,
+        description="Fail export when oracle validation does not pass",
+    ),
+    enforce_related_spacing: bool = Query(
+        default=True,
+        description="Keep directly connected components in spacing range",
+    ),
+    related_spacing_min_mm: float = Query(
+        default=3.0,
+        ge=0.5,
+        le=20.0,
+        description="Minimum spacing (mm) for related components",
+    ),
+    related_spacing_max_mm: float = Query(
+        default=5.0,
+        ge=0.5,
+        le=25.0,
+        description="Maximum spacing (mm) for related components",
+    ),
+    industrial_passes: int = Query(
+        default=3,
+        ge=1,
+        le=10,
+        description="Phase-2 rip-up/reroute passes in industrial mode",
+    ),
+    via_penalty: float = Query(
+        default=12.0,
+        ge=0.0,
+        le=100.0,
+        description="A* via penalty used by industrial routing",
+    ),
+    objective_profile: str = Query(
+        default="balanced",
+        description="Objective profile: balanced | shortest | low_via | low_congestion | signal_integrity",
+    ),
+    diff_pair_tolerance_mm: float = Query(
+        default=1.0,
+        ge=0.0,
+        le=20.0,
+        description="Phase-3 max allowed skew for differential pairs",
+    ),
+    enable_power_zones: bool = Query(
+        default=False,
+        description="Enable Phase-4 zone planning for power/ground nets",
+    ),
+    job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
+) -> JSONResponse:
+    """Submit industrial PCB export as an async background job."""
+    options = _build_pcb_export_options(
+        oracle_validate=oracle_validate,
+        oracle_strict=oracle_strict,
+        routing_mode="industrial",
+        enforce_related_spacing=enforce_related_spacing,
+        related_spacing_min_mm=related_spacing_min_mm,
+        related_spacing_max_mm=related_spacing_max_mm,
+        industrial_passes=industrial_passes,
+        via_penalty=via_penalty,
+        objective_profile=objective_profile,
+        diff_pair_tolerance_mm=diff_pair_tolerance_mm,
+        enable_power_zones=enable_power_zones,
+    )
+
+    request = ExportCircuitRequest(
+        circuit_id=circuit_id,
+        format=ExportFormat.KICAD_PCB,
+        options=options,
+    )
+
+    job = await job_queue.submit(
+        circuit_id=circuit_id,
+        request=request,
+    )
+
+    payload = {
+        **job,
+        "mode": "industrial",
+        "status_url": f"/api/circuits/export/pcb/industrial/jobs/{job['job_id']}/status",
+        "result_url": f"/api/circuits/export/pcb/industrial/jobs/{job['job_id']}/result",
+        "events_url": f"/api/circuits/export/pcb/industrial/jobs/{job['job_id']}/events",
+        "ws_url": f"/api/circuits/export/pcb/industrial/jobs/{job['job_id']}/ws",
+    }
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+
+
+@router.get("/export/pcb/industrial/jobs/{job_id}/status")
+async def get_industrial_pcb_export_job_status(
+    job_id: str,
+    job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
+) -> Dict[str, Any]:
+    """Return current status for an industrial PCB export job."""
+    payload = await job_queue.get_status(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "job_not_found",
+                "message": f"Industrial routing job '{job_id}' was not found",
+            },
+        )
+    return payload
+
+
+@router.get("/export/pcb/industrial/jobs/{job_id}/result")
+async def get_industrial_pcb_export_job_result(
+    job_id: str,
+    job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
+) -> JSONResponse:
+    """Fetch result for an industrial PCB export job."""
+    payload = await job_queue.get_result(job_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "job_not_found",
+                "message": f"Industrial routing job '{job_id}' was not found",
+            },
+        )
+
+    job_status = str(payload.get("status") or "").strip().lower()
+    if job_status in {"queued", "running"}:
+        return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=payload)
+
+    if job_status == "failed":
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=payload)
+
+    return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
+
+
+@router.get("/export/pcb/industrial/jobs/{job_id}/events")
+async def stream_industrial_pcb_export_job_events(
+    job_id: str,
+    request: Request,
+    job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
+) -> StreamingResponse:
+    """Stream industrial routing progress events (SSE) by phase."""
+
+    async def _event_gen():
+        last_fingerprint = ""
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            status_payload = await job_queue.get_status(job_id)
+            if status_payload is None:
+                yield _to_sse_event(
+                    "error",
+                    {
+                        "job_id": job_id,
+                        "status": "not_found",
+                        "message": "Industrial routing job not found",
+                    },
+                )
+                break
+
+            fingerprint = json.dumps(
+                {
+                    "status": status_payload.get("status"),
+                    "progress": status_payload.get("progress"),
+                    "error": status_payload.get("error"),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+
+            if fingerprint != last_fingerprint:
+                yield _to_sse_event("progress", status_payload)
+                last_fingerprint = fingerprint
+
+            job_status = str(status_payload.get("status") or "").strip().lower()
+            if job_status in {"completed", "failed"}:
+                result_payload = await job_queue.get_result(job_id)
+                if result_payload is None:
+                    result_payload = status_payload
+                final_event = "result" if job_status == "completed" else "error"
+                yield _to_sse_event(final_event, result_payload)
+                break
+
+            await asyncio.sleep(0.75)
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.websocket("/export/pcb/industrial/jobs/{job_id}/ws")
+async def stream_industrial_pcb_export_job_ws(
+    websocket: WebSocket,
+    job_id: str,
+    job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
+) -> None:
+    """Stream industrial routing progress events over WebSocket (parallel to SSE)."""
+    await websocket.accept()
+    last_fingerprint = ""
+
+    try:
+        while True:
+            status_payload = await job_queue.get_status(job_id)
+            if status_payload is None:
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "data": {
+                            "job_id": job_id,
+                            "status": "not_found",
+                            "message": "Industrial routing job not found",
+                        },
+                    }
+                )
+                break
+
+            fingerprint = json.dumps(
+                {
+                    "status": status_payload.get("status"),
+                    "progress": status_payload.get("progress"),
+                    "error": status_payload.get("error"),
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            )
+
+            if fingerprint != last_fingerprint:
+                await websocket.send_json({"event": "progress", "data": status_payload})
+                last_fingerprint = fingerprint
+
+            job_status = str(status_payload.get("status") or "").strip().lower()
+            if job_status in {"completed", "failed"}:
+                result_payload = await job_queue.get_result(job_id)
+                if result_payload is None:
+                    result_payload = status_payload
+                final_event = "result" if job_status == "completed" else "error"
+                await websocket.send_json({"event": final_event, "data": result_payload})
+                break
+
+            await asyncio.sleep(0.75)
+
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "data": {
+                        "job_id": job_id,
+                        "status": "stream_error",
+                        "message": str(exc),
+                    },
+                }
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.get("/health")
 async def health_check() -> Dict[str, str]:
     """Health check endpoint for circuits API.
@@ -427,6 +844,30 @@ async def health_check() -> Dict[str, str]:
         "service": "circuits-api",
         "version": "1.0.0"
     }
+
+
+@router.get("/{circuit_id}/exports/{filename}")
+async def download_kicad_export_file(circuit_id: str, filename: str) -> FileResponse:
+    """Serve exported KiCad schematic artifacts referenced by download_url."""
+    _ = circuit_id  # kept for URL compatibility
+    file_path = _resolve_export_file(Path("./artifacts/exports"), filename)
+    return FileResponse(
+        path=str(file_path),
+        media_type="text/plain",
+        filename=file_path.name,
+    )
+
+
+@router.get("/{circuit_id}/exports/pcb/{filename}")
+async def download_kicad_pcb_export_file(circuit_id: str, filename: str) -> FileResponse:
+    """Serve exported KiCad PCB artifacts referenced by industrial job results."""
+    _ = circuit_id  # kept for URL compatibility
+    file_path = _resolve_export_file(Path("./artifacts/exports/pcb"), filename)
+    return FileResponse(
+        path=str(file_path),
+        media_type="text/plain",
+        filename=file_path.name,
+    )
 
 
 @router.get("/export/{circuit_id}/kicad/content")
@@ -455,7 +896,7 @@ async def get_kicad_schematic_content(
         request = ExportCircuitRequest(
             circuit_id=circuit_id,
             format=ExportFormat.KICAD,
-            options={}
+            options={"oracle_validate": False}
         )
         
         logger.info(f"Executing export use case...")
@@ -547,7 +988,7 @@ async def get_kicad_schematic_file(
         request = ExportCircuitRequest(
             circuit_id=circuit_id,
             format=ExportFormat.KICAD,
-            options={}
+            options={"oracle_validate": False}
         )
         
         response = await use_case.execute(request)
@@ -650,7 +1091,7 @@ async def render_circuit(
         request = ExportCircuitRequest(
             circuit_id=circuit_id,
             format=ExportFormat.KICAD,
-            options={}
+            options={"oracle_validate": False}
         )
         
         export_response = await use_case.execute(request)

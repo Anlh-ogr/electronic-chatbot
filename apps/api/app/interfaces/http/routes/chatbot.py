@@ -71,6 +71,30 @@ class ChatResponseModel(BaseModel):
     analysis: Optional[Dict[str, Any]] = Field(None, description="Structured engineering analysis")
     circuit_data: Optional[Dict[str, Any]] = Field(None, description="Circuit IR data")
     suggestions: List[str] = Field(default_factory=list, description="Suggested queries")
+    session_id: Optional[str] = Field(None, description="Resolved session id")
+    user_message_id: Optional[str] = Field(None, description="Persisted user message id")
+    assistant_message_id: Optional[str] = Field(None, description="Persisted assistant message id")
+
+
+class EditUserMessageRequest(BaseModel):
+    """Payload to edit an existing user message in conversation history."""
+    session_id: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        description="Optional session id / chat id for integrity check",
+    )
+    content: str = Field(..., min_length=1, max_length=4000, description="Edited message content")
+
+
+class EditUserMessageResponse(BaseModel):
+    message_id: str
+    session_id: str
+    chat_id: str
+    role: str
+    status: str
+    content: str
+    created_at: str
 
 
 class SystemInfoResponse(BaseModel):
@@ -212,6 +236,9 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             analysis=result.analysis,
             circuit_data=result.circuit_data,
             suggestions=result.suggestions,
+            session_id=result.session_id,
+            user_message_id=result.user_message_id,
+            assistant_message_id=result.assistant_message_id,
         )
 
     except Exception as e:
@@ -220,6 +247,76 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "chat_failed", "message": str(e)},
         )
+
+
+@router.patch("/messages/{message_id}", response_model=EditUserMessageResponse)
+async def edit_user_message(
+    message_id: str,
+    request: EditUserMessageRequest,
+) -> EditUserMessageResponse:
+    """Edit a user request message and persist update to Neon database."""
+    db = SessionLocal()
+    try:
+        chat_repo = ChatHistoryRepository(db)
+        message = chat_repo.get_message(message_id)
+        if message is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "message_not_found",
+                    "message": f"Message '{message_id}' not found",
+                },
+            )
+
+        message_chat_id = str(message.chat_id)
+        chat = chat_repo.get_chat(message_chat_id)
+        resolved_session_id = str(chat.session_id) if chat is not None else message_chat_id
+
+        provided_id = str(request.session_id or "").strip()
+        if provided_id and provided_id not in {message_chat_id, resolved_session_id}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "session_mismatch",
+                    "message": "Message does not belong to the provided session/chat",
+                },
+            )
+
+        if str(message.role).lower() != "user":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "invalid_role",
+                    "message": "Only user messages can be edited",
+                },
+            )
+
+        updated = chat_repo.update_message_content(
+            message_id=message_id,
+            chat_id=message_chat_id,
+            new_content=request.content.strip(),
+            status="edited",
+        )
+        if updated is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "message_not_found",
+                    "message": f"Message '{message_id}' not found",
+                },
+            )
+
+        return EditUserMessageResponse(
+            message_id=str(updated.id),
+            session_id=resolved_session_id,
+            chat_id=message_chat_id,
+            role=str(updated.role),
+            status=str(updated.status),
+            content=updated.content,
+            created_at=updated.created_at.isoformat(),
+        )
+    finally:
+        db.close()
 
 
 @router.get("/info", response_model=SystemInfoResponse)
@@ -232,7 +329,10 @@ async def system_info() -> SystemInfoResponse:
 
     gemini_enabled = bool(
         (
-            os.getenv("Google_Cloud_API_Key")
+            os.getenv("Google_Cloud_Project_ID")
+            or os.getenv("GOOGLE_CLOUD_PROJECT")
+            or os.getenv("GCP_PROJECT")
+            or os.getenv("Google_Cloud_API_Key")
             or os.getenv("GOOGLE_CLOUD_API_KEY")
             or os.getenv("GEMINI_API_KEY")
             or ""
