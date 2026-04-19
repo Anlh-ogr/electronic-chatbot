@@ -303,20 +303,18 @@ FUNCTIONAL_KEYWORD_RULES: List[Dict[str, Any]] = [
 class NLPSpecParser:
     """ Phân tích nntn yêu cầu NLP → UserSpecification nhận diện ý định.
     Fl1: Regex-based extraction (luôn chạy, nhanh).
-    Fl2: LLM fallback nếu regex không nhận diện được (circuit_type=unknown)
-         là llm_client được inject vào.
     """
 
     def __init__(self, llm_client: Any = None) -> None:
-        """ Khởi tạo parser: phân tích dữ liệu đầu vào.
-        llm client: method chat json (mess, system instruction,...)
-        tương thích GeminiClient hoặc OpenAICompatibleLLMClient.
+        """Khởi tạo parser.
+
+        llm_client được giữ để tương thích ngược nhưng không còn được dùng
+        cho intent extraction. NLU service là nguồn duy nhất cho LLM extraction.
         """
-        
-        self._llm_client = llm_client
+        _ = llm_client
 
     def parse(self, user_text: str) -> UserSpec:
-        """ regex trước -> "unknown" -> llm fallback """
+        """Parse rule-based only."""
         spec = UserSpec(raw_text=user_text)
         text = user_text.lower().strip()
 
@@ -345,76 +343,7 @@ class NLPSpecParser:
         self._calc_confidence(spec)
         spec.source = "rule_based"
 
-        # Fl2: LLM fallback
-        if spec.circuit_type == "unknown" and self._llm_client:
-            llm_spec = self._llm_parse(user_text)
-            if llm_spec and llm_spec.circuit_type != "unknown":
-                spec = llm_spec
-                spec.source = "llm"
-
         logger.info(f"Obj chứa thông tin trích xuất: type={spec.circuit_type}, gain={spec.gain}, src={spec.source}")
-        return spec
-
-
-
-    # llm fallback
-    def _llm_parse(self, user_text: str) -> Optional[UserSpec]:
-        # Gọi LLM để phân tích dữ liệu input.
-        try:
-            from app.application.ai.gemini_client import GeminiMessage  # type: ignore
-            MessageCls = GeminiMessage
-        except ImportError:
-            try:
-                from app.application.ai.llm_client import ChatMessage  # type: ignore
-                MessageCls = ChatMessage  # type: ignore
-            except ImportError:
-                logger.warning("NLPSpecParser: Không tìm thấy message class cho LLM")
-                return None
-
-        system = (
-            "You are an electronics circuit intent extraction engine.\n"
-            "Given a user request (Vietnamese or English), extract structured intent.\n"
-            "Output ONLY a JSON object with schema:\n"
-            "{\n"
-            '  "circuit_type": string,  // common_emitter|common_base|common_collector|'
-            'common_source|common_drain|common_gate|inverting|non_inverting|'
-            'differential|instrumentation|class_a|class_ab|class_b|class_c|class_d|darlington|multi_stage|unknown\n'
-            '  "gain": number|null,\n'
-            '  "vcc": number|null,\n'
-            '  "frequency": number|null,\n'
-            '  "input_mode": "single_ended"|"differential",\n'
-            '  "supply_mode": "auto"|"single_supply"|"dual_supply",\n'
-            '  "coupling_preference": "auto"|"capacitor"|"direct"|"transformer",\n'
-            '  "device_preference": "auto"|"bjt"|"mosfet"|"opamp",\n'
-            '  "requested_stage_blocks": string[],\n'
-            '  "extra_requirements": string[],\n'
-            '  "confidence": number\n'
-            "}\n"
-            "- Understand Vietnamese: CE=common emitter, khuếch đại=amplifier, nguồn=supply\n"
-        )
-        try:
-            obj: Dict[str, Any] = self._llm_client.chat_json(
-                messages=[MessageCls(role="user", content=user_text)],
-                system_instruction=system,                         # llm hiểu
-                create=0.0,                                        # mức độ sáng tạo
-                max_tokens=500,
-            )
-        except Exception as e:
-            logger.warning(f"NLPSpecParser LLM fallback error: {e}")
-            return None
-
-        spec = UserSpec(raw_text=user_text)
-        spec.circuit_type = str(obj.get("circuit_type", "unknown"))
-        spec.gain = obj.get("gain")
-        spec.vcc = obj.get("vcc")
-        spec.frequency = obj.get("frequency")
-        spec.input_mode = str(obj.get("input_mode", "single_ended"))
-        spec.supply_mode = str(obj.get("supply_mode", "auto"))
-        spec.coupling_preference = str(obj.get("coupling_preference", "auto"))
-        spec.device_preference = str(obj.get("device_preference", "auto"))
-        spec.requested_stage_blocks = [str(x) for x in obj.get("requested_stage_blocks", []) if isinstance(x, str)]
-        spec.extra_requirements = obj.get("extra_requirements", [])
-        spec.confidence = float(obj.get("confidence", 0.5))
         return spec
 
     def _parse_functional_topology_hints(self, text: str, spec: UserSpec) -> None:
