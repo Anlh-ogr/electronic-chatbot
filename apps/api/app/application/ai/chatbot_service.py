@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import text
 
 from app.application.ai.llm_router import LLMMode, LLMRole, get_router
+from app.application.ai.llm_contracts import DomainCheckOutputV1, build_llm_payload
 from app.application.ai.context_router_service import (
     ContextRouterService,
     NullExternalKnowledgeProvider,
@@ -1515,6 +1516,10 @@ class ChatbotService:
 
     # ── LLM-powered helpers ──
 
+    @staticmethod
+    def _build_llm_payload(task: str, input_data: Dict[str, Any], output_format: str) -> Dict[str, Any]:
+        return build_llm_payload(task=task, input_data=input_data, output_format=output_format)
+
     def _domain_check(self, user_text: str, mode: LLMMode) -> Optional[str]:
         """
         Dùng LLM role chung kiểm tra nhanh: câu hỏi có liên quan điện tử không?
@@ -1526,16 +1531,27 @@ class ChatbotService:
             return None  # skip nếu không có API key
 
         system = (
-            "Bạn là bộ phân loại câu hỏi cho hệ thống thiết kế mạch điện tử. "
-            'Chỉ trả lời JSON: {"is_electronics": true/false}. '
-            "true nếu câu hỏi liên quan mạch điện, linh kiện, khuếch đại, nguồn, "
-            "op-amp, transistor, IC, PCB, tín hiệu, lọc, dao động, ... "
-            "false nếu không liên quan điện tử."
+            "Ban la bo phan loai cau hoi cho he thong thiet ke mach dien tu. "
+            "Tra ve duy nhat JSON theo schema domain.v1: {\"sv\":\"domain.v1\",\"ok\":true|false}. "
+            "Dat ok=true chi khi cau hoi lien quan electronics, linh kien, topology, simulation hoac PCB."
+        )
+        payload = self._build_llm_payload(
+            task="domain.check.v1",
+            input_data={
+                "dm": "electronics",
+                "txt": user_text,
+            },
+            output_format="json",
         )
         result = self._router.chat_json(
-            LLMRole.GENERAL, mode=mode, system=system, user_content=user_text,
+            LLMRole.GENERAL,
+            mode=mode,
+            system=system,
+            user_content=payload,
+            response_model=DomainCheckOutputV1,
+            max_schema_retries=2,
         )
-        if result and result.get("is_electronics") is False:
+        if result and result.get("ok") is False:
             return (
                 "⚠️ Xin lỗi, tôi chỉ hỗ trợ các câu hỏi về **thiết kế mạch** "
                 "(khuếch đại,BJT,mosfet, op-amp, ...). "
@@ -1551,19 +1567,28 @@ class ChatbotService:
         if not self._router.is_available(LLMRole.GENERAL, mode=mode):
             return None
 
-        missing_str = ", ".join(missing)
         system = (
-            "Bạn là trợ lý thiết kế mạch điện tử. Người dùng đã hỏi nhưng thiếu thông tin. "
-            "Hãy viết 1 đoạn ngắn (2-4 câu) bằng tiếng Việt, nhẹ nhàng hỏi lại "
-            "những thông số còn thiếu, kèm ví dụ cụ thể để họ dễ trả lời. "
-            "Trả về text thuần, KHÔNG JSON."
+            "Ban la tro ly thiet ke mach dien tu. "
+            "Dung payload de dat cau hoi bo sung thong tin con thieu. "
+            "Toi da 4 cau, giong dieu than thien, co vi du ngan. "
+            "Tra ve markdown text, khong JSON."
         )
-        user_msg = (
-            f'Câu hỏi gốc: "{user_text}"\n'
-            f"Thông tin còn thiếu: {missing_str}"
+        payload = self._build_llm_payload(
+            task="chat.c.v1",
+            input_data={
+                "txt": user_text,
+                "miss": missing,
+                "response_contract": {
+                    "language": "vi",
+                    "format": "markdown",
+                    "max_sentences": 4,
+                    "must_include_examples": True,
+                },
+            },
+            output_format="md",
         )
         return self._router.chat_text(
-            LLMRole.GENERAL, mode=mode, system=system, user_content=user_msg,
+            LLMRole.GENERAL, mode=mode, system=system, user_content=payload,
         )
 
     def _reasoning_fallback(
@@ -1577,43 +1602,43 @@ class ChatbotService:
             return None
 
         system = (
-            "Bạn là kỹ sư thiết kế mạch điện tử. "
-            "Hệ thống rule-based không tìm được template phù hợp. "
-            "Hãy thiết kế mạch dựa trên yêu cầu, trình bày ĐÚNG 6 phần, đúng thứ tự, không thêm mục khác:\n"
-            "1. **Hệ phương trình khuếch đại**\n"
-            "   - Phương trình khuếch đại chính:\n"
-            "   - Hệ số khuếch đại điện áp: Av≈−gm×(RD∣∣RL)\n"
-            "2. **Chức năng**\n"
-            "3. **Giải pháp**\n"
-            "4. **Tính toán**\n"
-            "5. **Thông số kỹ thuật**\n"
-            "6. **Kết quả**\n\n"
-            "Ràng buộc bắt buộc:\n"
-            "- Không dùng emoji/ký hiệu như ✅, ❌.\n"
-            "- Không dùng cụm: 'Av là chìa khóa'.\n"
-            "- Không đổi tiêu đề các mục.\n"
-            "- Dùng Markdown, tiếng Việt. Nếu không đủ thông tin, nêu giả định rõ ràng."
+            "Ban la ky su analog. Rule-based planner khong tim duoc template phu hop. "
+            "Dung payload de tao phuong an best-effort bang tieng Viet markdown. "
+            "Tuan thu response_contract trong payload va neu thieu du lieu thi neu ro gia dinh."
         )
-        params_desc = []
-        if intent.circuit_type:
-            params_desc.append(f"Loại mạch: {intent.circuit_type}")
-        if intent.gain_target is not None:
-            params_desc.append(f"Gain mục tiêu: {intent.gain_target}")
-        if intent.vcc is not None:
-            params_desc.append(f"VCC: {intent.vcc}V")
-        if intent.frequency is not None:
-            params_desc.append(f"Tần số: {intent.frequency}Hz")
-        params_str = "\n".join(params_desc) or "Không rõ thông số"
-
-        user_msg = (
-            f'Yêu cầu gốc: "{intent.raw_text}"\n'
-            f"Thông số trích xuất:\n{params_str}\n"
-            f"Lỗi rule-based: {error_msg}\n\n"
-            f"Hãy thiết kế mạch phù hợp nhất."
+        payload = self._build_llm_payload(
+            task="chat.rf.v1",
+            input_data={
+                "txt": intent.raw_text,
+                "err": error_msg,
+                "it": {
+                    "ty": intent.intent_type,
+                    "ct": intent.circuit_type,
+                    "tp": intent.topology,
+                    "gn": intent.gain_target,
+                    "vc": intent.vcc,
+                    "fq": intent.frequency,
+                },
+                "response_contract": {
+                    "language": "vi",
+                    "format": "markdown",
+                    "sections": [
+                        "He phuong trinh khuech dai",
+                        "Chuc nang",
+                        "Giai phap",
+                        "Tinh toan",
+                        "Thong so ky thuat",
+                        "Ket qua",
+                    ],
+                    "forbid_emoji": True,
+                    "assumption_policy": "Neu thieu du lieu thi neu ro gia dinh",
+                },
+            },
+            output_format="md",
         )
         logger.info(f"[LLM fallback] mode={mode.value}, intent={intent.circuit_type}, error={error_msg}")
         return self._router.chat_text(
-            LLMRole.GENERAL, mode=mode, system=system, user_content=user_msg,
+            LLMRole.GENERAL, mode=mode, system=system, user_content=payload,
             max_tokens=8192,
         )
 
@@ -1623,18 +1648,32 @@ class ChatbotService:
             return None
 
         system = (
-            "Bạn là kỹ sư thiết kế mạch điện tử. "
-            "Giải thích chi tiết về mạch điện tử theo yêu cầu, bao gồm:\n"
-            "1. **Nguyên lý hoạt động** - cách mạch hoạt động\n"
-            "2. **Chức năng từng linh kiện** - vai trò của mỗi thành phần\n"
-            "3. **Công thức và tính toán** - các công thức quan trọng\n"
-            "4. **Ưu/nhược điểm** - khi nào nên dùng\n"
-            "5. **Ứng dụng thực tế** - các ứng dụng phổ biến\n\n"
-            "Dùng Markdown, tiếng Việt."
+            "Ban la ky su thiet ke mach dien tu. "
+            "Dung payload de giai thich mach theo response_contract, bang tieng Viet markdown, "
+            "tap trung vao thong tin giup nguoi dung hieu va ap dung nhanh."
         )
-        user_msg = f'Yêu cầu: "{intent.raw_text}"\nLoại mạch: {intent.circuit_type or "chưa xác định"}'
+        payload = self._build_llm_payload(
+            task="chat.rx.v1",
+            input_data={
+                "txt": intent.raw_text,
+                "ct": intent.circuit_type or "unknown",
+                "ty": intent.intent_type,
+                "response_contract": {
+                    "language": "vi",
+                    "format": "markdown",
+                    "sections": [
+                        "Nguyen ly hoat dong",
+                        "Chuc nang tung linh kien",
+                        "Cong thuc va tinh toan",
+                        "Uu nhuoc diem",
+                        "Ung dung thuc te",
+                    ],
+                },
+            },
+            output_format="md",
+        )
         return self._router.chat_text(
-            LLMRole.GENERAL, mode=mode, system=system, user_content=user_msg,
+            LLMRole.GENERAL, mode=mode, system=system, user_content=payload,
             max_tokens=4096,
         )
 

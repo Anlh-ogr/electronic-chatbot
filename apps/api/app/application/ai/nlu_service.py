@@ -27,6 +27,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from app.application.ai.llm_contracts import (
+    ExplainDetailCode,
+    NLUIntentOutputV1,
+    build_llm_payload,
+    device_code_to_name,
+    edit_code_to_name,
+    intent_code_to_name,
+    scope_code_to_name,
+    supply_code_to_name,
+    topology_code_to_name,
+)
+
 if TYPE_CHECKING:
     from app.application.ai.llm_router import LLMMode
 
@@ -329,7 +341,6 @@ class NLUService:
         "bias_network": [r"\bmạng\s*phân\s*cực\b", r"\bbias\b", r"\bphân\s*cực\b"],
         "feedback_loop": [r"\bhồi\s*tiếp\b", r"\bfeedback\b"],
     }
-
     def __init__(self) -> None:
         self._router = None
         self._init_router()
@@ -891,199 +902,133 @@ class NLUService:
             
     #  LLM-enhanced parser
     def _llm_extract(self, user_text: str, mode: Optional["LLMMode"] = None) -> Optional[CircuitIntent]:
-        # Trích xuất intent từ LLM router.
         if not self._router:
             return None
-        
-        # Tạo prompt để hướng dẫn model thực hiện yêu cầu
+
         system_prompt = self._build_extraction_prompt()
-        obj = self._call_llm_extraction(system_prompt, user_text, mode=mode)
-        
-        if obj is None:
+        payload = self._call_llm_extraction(system_prompt, user_text, mode=mode)
+        if payload is None:
             return None
-        
-        # Đưa kết quả về intent
-        return self._build_intent_from_llm(user_text, obj)
-    
+
+        return self._build_intent_from_llm(user_text, payload)
+
     def _build_extraction_prompt(self) -> str:
-        # Tạo prompt cho LLM
-        system = (
-            "You are an electronics circuit intent extraction engine.\n"
-            "Given a user request in Vietnamese or English, extract structured intent and output ONLY a valid JSON object.\n"
-            "Do NOT include any explanation, markdown, or extra text — just the raw JSON.\n\n"
-
-            "## OUTPUT SCHEMA\n"
-            "{\n"
-            '  "intent_type":        string,   // REQUIRED. One of: "create"|"modify"|"validate"|"explain"\n'
-            '  "circuit_type":       string,   // REQUIRED. One of:\n'
-            '                                  //   BJT:   common_emitter | common_base | common_collector | darlington | multi_stage\n'
-            '                                  //   FET:   common_source  | common_drain | common_gate\n'
-            '                                  //   OpAmp: inverting | non_inverting | differential | instrumentation\n'
-            '                                  //   Power: class_a | class_ab | class_b | class_c | class_d\n'
-            '                                  //   Other: unknown\n'
-            '  "gain_target":        number | null,   // Voltage gain magnitude (e.g. 10 for 20dB)\n'
-            '  "vcc":                number | null,   // Supply voltage in Volts (e.g. 12 for "12V")\n'
-            '  "frequency":          number | null,   // Operating/cutoff frequency in Hz (e.g. 1000 for "1kHz")\n'
-            '  "input_channels":     number,          // Number of input channels, default 1\n'
-            '  "channel_inputs":      object,          // Per-channel params. Example: {"CH1": {"amplitude_v": 0.02, "frequency_hz": 1000}}\n'
-            '  "voltage_range":       object,          // Signal voltage range. Example: {"min": -1.0, "max": 1.0}\n'
-            '  "input_mode":         string,          // "single_ended" | "differential". Default: "single_ended"\n'
-            '  "high_cmr":           boolean,         // High CMRR required? Default: false\n'
-            '  "output_buffer":      boolean,         // Low-impedance output buffer required? Default: false\n'
-            '  "power_output":       boolean,         // Is this a power amplifier stage? Default: false\n'
-            '  "supply_mode":        string,          // "auto" | "single_supply" | "dual_supply". Default: "auto"\n'
-            '  "device_preference":  string,          // "auto" | "bjt" | "mosfet" | "opamp". Default: "auto"\n'
-            '  "extra_requirements": string[],        // Tags from: ["low_noise","high_bandwidth","rail_to_rail","ac_coupled","low_power","high_voltage"]\n'
-            '  "edit_operations":    array,           // Only for intent_type="modify". Empty array [] otherwise.\n'
-            '                                         // Each item: { "action": string, "target": string, "params": object }\n'
-            '                                         // action: "add_component"|"remove_component"|"replace_component"|"change_value"|"change_connection"\n'
-            '                                         // target: component name or node (e.g. "R1", "collector", "feedback_network")\n'
-            '                                         // params: { "value": ..., "unit": ..., "component_type": ... } as applicable\n'
-            '  "target_scope":       string,          // "entire_circuit"|"input_stage"|"output_stage"|"bias_network"|"feedback_loop"\n'
-            '  "hard_constraints":   object,          // Must-satisfy limits, e.g. {"gain_min": 10, "vcc_max": 15, "bandwidth_min": 20000}\n'
-            '  "soft_preferences":   string[],        // Nice-to-have, e.g. ["low_noise", "small_footprint", "low_cost"]\n'
-            '  "confidence":         number           // 0.0-1.0: how certain you are about the extraction\n'
-            "}\n\n"
-
-            "## EXTRACTION RULES\n\n"
-
-            "### Numeric Values\n"
-            "- Extract ALL numeric values mentioned: gain, voltage, frequency, resistance, etc.\n"
-            "- Convert units: '12V'→vcc=12, '1kHz'→frequency=1000, '100kΩ'→params.value=100000\n"
-            "- If gain is given in dB, convert to linear: 20dB → gain=10, 40dB → gain=100\n\n"
-
-            "### Vietnamese Vocabulary Mapping\n"
-            "- khuếch đại / mạch khuếch đại = amplifier circuit\n"
-            "- nguồn / điện áp nguồn = supply voltage (VCC)\n"
-            "- tần số = frequency; độ lợi / hệ số khuếch đại = gain\n"
-            "- CE / cực phát chung = common_emitter\n"
-            "- CB / cực nền chung = common_base\n"
-            "- CC / cực thu chung / lặp phát = common_collector\n"
-            "- MOSFET nguồn chung = common_source\n"
-            "- khuếch đại vi sai = differential amplifier\n"
-            "- khuếch đại đảo = inverting; không đảo = non_inverting\n\n"
-
-            "### Edit Operations (intent_type = 'modify')\n"
-            "- 'thêm R 10k vào collector'  → action='add_component',    target='collector', params={value:10000, unit:'ohm', component_type:'resistor'}\n"
-            "- 'xóa R1' / 'bỏ R1'         → action='remove_component', target='R1',        params={}\n"
-            "- 'thay R1 thành 10k'         → action='change_value',     target='R1',        params={value:10000, unit:'ohm'}\n"
-            "- 'đổi Q1 sang MOSFET'        → action='replace_component',target='Q1',        params={component_type:'mosfet'}\n"
-            "- 'đổi kết nối R2 sang base'  → action='change_connection', target='R2',       params={node:'base'}\n\n"
-
-            "### Defaults & Fallbacks\n"
-            "- If a field cannot be determined from the request, use null for numbers and default strings as specified.\n"
-            "- Set confidence < 0.5 if the request is vague or ambiguous.\n"
-            "- If circuit_type is unclear but device is known (e.g. 'mạch dùng BJT'), set circuit_type='unknown' and device_preference='bjt'.\n"
+        # Keep prompt focused on transformation only; backend handles clarification flow.
+        return (
+            "Convert user request (Vietnamese or English) into one JSON object following schema nlu.v1. "
+            "Return JSON only. No markdown.\n"
+            "Schema keys:\n"
+            '{"sv":"nlu.v1","it":"CRT|MOD|VAL|EXP","tp":"CE|CB|CC|CS|CD|CG|INV|NON|DIF|INA|CLA|CLAB|CLB|CLC|CLD|DAR|MST|UNK",'
+            '"gn":number|null,"vc":number|null,"fq":number|null,"ic":int,'
+            '"ci":object,"vr":{"mn":number|null,"mx":number|null},"im":"SE|DI","hc":bool,"ob":bool,"po":bool,'
+            '"sm":"AUTO|SGL|DUL","dp":"AUTO|BJT|MOS|OPA","xr":string[],"eo":[{"a":"ADD|RMV|REP|CHV|CHC","t":string,"p":object}],'
+            '"ts":"ALL|IN|OUT|BIAS|FB","hcst":object,"sp":string[],"ra":["CRT|MOD|VAL|EXP"],"ed":"B|D","ef":string[],"cf":0..1}.\n'
+            "Extraction rules:\n"
+            "- Derive values only from user text.\n"
+            "- Convert units (kHz->Hz, MHz->Hz, dB gain->linear gain).\n"
+            "- Unknown topology => tp='UNK'. Missing numeric values => null.\n"
+            "- Use enums exactly as listed."
         )
-        return system
-    
-    def _call_llm_extraction(self, system_prompt: str, user_text: str, mode: Optional["LLMMode"] = None) -> Optional[dict]:
-        # Gọi LLM router để trích xuất json
+
+    def _call_llm_extraction(
+        self,
+        system_prompt: str,
+        user_text: str,
+        mode: Optional["LLMMode"] = None,
+    ) -> Optional[NLUIntentOutputV1]:
         from app.application.ai.llm_router import LLMRole
-        
+
+        prompt_payload = build_llm_payload(
+            task="nlu.extract.v1",
+            input_data={"txt": user_text},
+            output_format="json",
+        )
+
         obj = self._router.chat_json(
             LLMRole.GENERAL,
             mode=mode,
             system=system_prompt,
-            user_content=user_text
+            user_content=prompt_payload,
+            response_model=NLUIntentOutputV1,
+            max_schema_retries=2,
         )
         if obj is None:
             return None
-        return obj
 
-    def _build_intent_from_llm(self, user_text: str, obj: dict) -> CircuitIntent:
-        # Chuyển đổi phản hồi JSON từ LLM thành circuit obj
+        try:
+            return NLUIntentOutputV1.model_validate(obj)
+        except Exception as exc:
+            logger.warning("NLU schema parse failed after router validation: %s", exc)
+            return None
+
+    def _build_intent_from_llm(self, user_text: str, payload: NLUIntentOutputV1) -> CircuitIntent:
         intent = CircuitIntent(raw_text=user_text, source="llm")
-        
-        # phân tích các đặc thù cơ bản
-        self._fill_basic_fields(intent, obj)
-        self._parse_llm_edit_operations(intent, obj)
-        self._parse_explain_fields(intent, obj)
-        
+
+        self._fill_basic_fields(intent, payload)
+        self._parse_llm_edit_operations(intent, payload)
+        self._parse_explain_fields(intent, payload)
+
         if not intent.requested_actions:
             intent.requested_actions = self._detect_requested_actions(user_text.lower())
         return intent
-    
-    def _fill_basic_fields(self, intent: CircuitIntent, obj: dict) -> None: 
-        # Map các field json -> intent
-        intent.intent_type = str(obj.get("intent_type", "create"))
-        intent.circuit_type = str(obj.get("circuit_type", "unknown"))
-        intent.topology = intent.circuit_type
-        
-        intent.gain_target = obj.get("gain_target")
-        intent.vcc = obj.get("vcc")
-        intent.frequency = obj.get("frequency")
-        intent.input_channels = int(obj.get("input_channels", 1) or 1)
-        channel_inputs = obj.get("channel_inputs", {})
-        if isinstance(channel_inputs, dict):
-            normalized_channels: Dict[str, Dict[str, Optional[float]]] = {}
-            for key, val in channel_inputs.items():
-                if isinstance(val, dict):
-                    normalized_channels[str(key).upper()] = {
-                        "amplitude_v": (float(val["amplitude_v"]) if val.get("amplitude_v") is not None else None),
-                        "frequency_hz": (float(val["frequency_hz"]) if val.get("frequency_hz") is not None else None),
-                    }
-            intent.channel_inputs = normalized_channels
-        voltage_range = obj.get("voltage_range", {})
-        if isinstance(voltage_range, dict):
-            vmin = voltage_range.get("min")
-            vmax = voltage_range.get("max")
-            intent.voltage_range = {
-                "min": float(vmin) if vmin is not None else None,
-                "max": float(vmax) if vmax is not None else None,
-            }
-        
-        intent.input_mode = str(obj.get("input_mode", "single_ended"))
-        intent.high_cmr = bool(obj.get("high_cmr", False))
-        intent.output_buffer = bool(obj.get("output_buffer", False))
-        intent.power_output = bool(obj.get("power_output", False))
-        
-        intent.supply_mode = str(obj.get("supply_mode", "auto"))
-        intent.device_preference = str(obj.get("device_preference", "auto"))
-        
-        intent.extra_requirements = obj.get("extra_requirements", [])
-        intent.confidence = float(obj.get("confidence", 0.5))
-        
-        intent.target_scope = str(obj.get("target_scope", "entire_circuit"))
-        intent.hard_constraints = obj.get("hard_constraints", {})
-        intent.soft_preferences = obj.get("soft_preferences", [])
-        
-    def _parse_llm_edit_operations(self, intent: CircuitIntent, obj: dict) -> None:
-        # Phân tích nhận diện edit_operations từ json
-        raw_ops = obj.get("edit_operations", []) # Json phản hồi
-       
-        for raw_op in raw_ops:
-            if isinstance(raw_op, dict):
-                intent.edit_operations.append(EditOperation(
-                    action=str(raw_op.get("action", "")),
-                    target=str(raw_op.get("target", "")),
-                    params=raw_op.get("params", {}),
-                ))
-        
-    def _parse_explain_fields(self, intent: CircuitIntent, obj: dict) -> None:
-        # Phân tích các field hỗ trợ cho explain intent
-        raw_actions = obj.get("requested_actions", [])
-        if isinstance(raw_actions, list):
-            intent.requested_actions = [str(a) for a in raw_actions if str(a)] # phần tử -> string
-            
-        # Chi tiết giải thích: ưu tiên "detailed" nếu có, mặc định "basic"
-        raw_detail = str(obj.get("explain_detail_level", "basic")).strip().lower()
-        intent.explain_detail_level = "detailed" if raw_detail == "detailed" else "basic"
-    
-        # Các thành phần cần tập trung giải thích, chuẩn hóa thành uppercase và loại bỏ trùng lặp.
-        raw_focus = obj.get("explain_focus_components", [])
-        if isinstance(raw_focus, list):
-            dedup_focus: List[str] = []
 
-            # Chuẩn hóa tên linh kiện thành uppercase
-            for item in raw_focus:
-                item_norm = str(item).strip().upper()
-                
-                # Loại bỏ trùng lặp và giữ nguyên thứ tự
-                if item_norm and item_norm not in dedup_focus:
-                    dedup_focus.append(item_norm)
-            # Gán kết quả đã chuẩn hóa và khử trùng lặp vào intent
-            intent.explain_focus_components = dedup_focus
+    def _fill_basic_fields(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
+        intent.intent_type = intent_code_to_name(payload.it)
+        intent.circuit_type = topology_code_to_name(payload.tp)
+        intent.topology = intent.circuit_type
+
+        intent.gain_target = payload.gn
+        intent.vcc = payload.vc
+        intent.frequency = payload.fq
+        intent.input_channels = payload.ic
+
+        normalized_channels: Dict[str, Dict[str, Optional[float]]] = {}
+        for key, val in payload.ci.items():
+            normalized_channels[str(key).upper()] = {
+                "amplitude_v": val.av,
+                "frequency_hz": val.fq,
+            }
+        intent.channel_inputs = normalized_channels
+
+        intent.voltage_range = {
+            "min": payload.vr.mn,
+            "max": payload.vr.mx,
+        }
+        intent.input_mode = "differential" if payload.im.value == "DI" else "single_ended"
+        intent.high_cmr = payload.hc
+        intent.output_buffer = payload.ob
+        intent.power_output = payload.po
+
+        intent.supply_mode = supply_code_to_name(payload.sm)
+        intent.device_preference = device_code_to_name(payload.dp)
+
+        intent.extra_requirements = list(payload.xr)
+        intent.confidence = float(payload.cf)
+
+        intent.target_scope = scope_code_to_name(payload.ts)
+        intent.hard_constraints = dict(payload.hcst)
+        intent.soft_preferences = list(payload.sp)
+
+    def _parse_llm_edit_operations(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
+        for raw_op in payload.eo:
+            intent.edit_operations.append(
+                EditOperation(
+                    action=edit_code_to_name(raw_op.a),
+                    target=str(raw_op.t),
+                    params=dict(raw_op.p),
+                )
+            )
+
+    def _parse_explain_fields(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
+        intent.requested_actions = [intent_code_to_name(action) for action in payload.ra]
+        intent.explain_detail_level = "detailed" if payload.ed == ExplainDetailCode.D else "basic"
+
+        dedup_focus: List[str] = []
+        for item in payload.ef:
+            item_norm = str(item).strip().upper()
+            if item_norm and item_norm not in dedup_focus:
+                dedup_focus.append(item_norm)
+        intent.explain_focus_components = dedup_focus
 
 
     #  Merge intents (rule-based và LLM intents)

@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 from app.application.ai.llm_router import LLMMode
+from app.application.ai.llm_contracts import build_llm_payload
 
 class NLGService:
     """ Natural Language Generation service.
@@ -49,6 +50,10 @@ class NLGService:
                 logger.info("NLG: Không có LLM API keys, sử dụng template cơ bản")
         except Exception as e:
             logger.warning(f"NLG: Lỗi khởi tạo LLM Router: {e}")
+
+    @staticmethod
+    def _build_llm_payload(task: str, context: Dict[str, Any], output_format: str = "md") -> Dict[str, Any]:
+        return build_llm_payload(task=task, input_data=context, output_format=output_format)
 
 
     #  Public API
@@ -247,7 +252,6 @@ class NLGService:
     def _llm_success_response(self, circuit_type: str, gain_actual: Optional[float], gain_target: Optional[float], params: Dict[str, float], gain_formula: str, warnings: List[str], template_id: str, mode: Optional["LLMMode"],) -> str:
         # Dùng LLM Router sinh response tự nhiên với Master Prompt 6 mục.
         from app.application.ai.llm_router import LLMRole
-        import json
 
         context = {
             "circuit_type": circuit_type,
@@ -258,39 +262,42 @@ class NLGService:
             "params": params,
             "warnings": warnings,
             "amplifier_equation_context": self._build_equation_context(circuit_type),
+            "response_contract": {
+                "language": "vi",
+                "opening_prefix": "✅",
+                "format": "markdown",
+                "sections": [
+                    "He phuong trinh he so khuech dai",
+                    "Chuc nang mach",
+                    "Giai phap",
+                    "Buoc tinh toan thiet ke",
+                    "Thong so ky thuat cuoi cung",
+                    "Ket qua kiem tra",
+                ],
+                "must_include": ["Av", "Ai", "Zi", "Zo"],
+                "assumption_policy": "Neu thieu du lieu thi neu ro gia dinh",
+            },
         }
 
         system = (
-            "Bạn là trợ lý thiết kế mạch điện tử. "
-            "Dựa trên kết quả thiết kế, sinh response bằng tiếng Việt cho người dùng.\n"
-            "Trình bày phản hồi theo đúng 6 mục sau (dùng Markdown):\n"
-            "1. **Hệ phương trình hệ số khuếch đại** - BẮT BUỘC in đầu tiên: Av, Ai, Zi, Zo và kết luận waveform (đảo pha/không đảo pha, nguy cơ méo).\n"
-            "2. **Chức năng mạch** - Mô tả luồng tín hiệu từ đầu vào đến đầu ra\n"
-            "3. **Giải pháp** - Phân tích cấu trúc mạch đã chọn, kèm phương trình khuếch đại\n"
-            "4. **Bước tính toán thiết kế** - Công thức lý thuyết và thay số cụ thể cho R, C, L, Gain\n"
-            "5. **Thông số kỹ thuật cuối cùng** - Tóm tắt Av, Ai, Zin, Zout, BW, Vpp...\n"
-            "6. **Kết quả kiểm tra**\n"
-            "Yêu cầu bắt buộc cho mục 2 (Giải pháp):\n"
-            "- Luôn nêu phương trình khuếch đại chính gồm: Av, Ai, Zi, Zo (nếu thiếu dữ liệu thì ghi rõ giả định).\n"
-            "- BJT (CE/CC/CB): ưu tiên dùng beta (hFE), gm = Ic/0.026, re ~= 26mV/IE, RC, RL, RB1, RB2, RE; nêu điểm Q, mô hình tín hiệu nhỏ, rồi suy ra Av/Ai/Zi/Zo.\n"
-            "- FET (CS/CD/CG): nêu gm tại điểm Q, RD, RL; với CS dùng Av ~= -gm*(RD||RL) khi phù hợp; nêu cách suy ra Ai/Zi/Zo.\n"
-            "- Op-amp (đảo/không đảo/vi sai/follower): dùng quy tắc vàng op-amp (V+ ~= V-, dòng vào ~= 0), viết KCL tại nút vào để suy ra Av; nêu thêm Ai/Zi/Zo theo hồi tiếp.\n"
-            "- Multi-stage: nêu Av_total ~= Av1*Av2*...*Avn (đã tính loading), hệ số loading Rin(i+1)/(Rin(i+1)+Rout(i)), và Av_total(dB)=20log|Av_total|.\n"
-            "- Darlington: nêu beta_total ~= beta1*beta2, Zin rất cao ~= beta1*beta2*RE, Av tùy cấu hình (follower ~= 1 hoặc CE ~= -gm*RL).\n"
-            "- Class A/B/AB/C/D: nêu thêm thông số công suất-hiệu suất cốt lõi (IQ, Vbias, conduction angle, duty PWM, fsw, LC filter...) ngoài Av/Ai/Zi/Zo.\n"
-            "- Tóm tắt yếu tố quyết định độ lợi: BJT -> beta, gm/re, RC/RE/RL; FET -> gm, RD/RL; Op-amp -> tỉ số điện trở hồi tiếp (Rf/Rin hoặc 1 + Rf/Rg).\n"
-            "- Ở mục 3 bắt buộc nêu rõ điểm Q và tiến trình tính toán (DC -> tín hiệu nhỏ -> KCL/KVL).\n"
-            "- Mục 1 luôn phải xuất hiện đầu tiên và dùng nó để suy luận waveform đầu ra có độ tin cậy cao.\n"
-            "- Trong mục 1 phải có thêm dạng chuẩn mô phỏng: v_{{out}}(t)=A_v \\cdot v_{{in}}(t)\\$, và với tín hiệu sin phải nêu Vout_pk, pha phi, điều kiện clipping theo nguồn.\n"
-            "- Ưu tiên định dạng phương trình bằng KaTeX ($...$ hoặc $$...$$) để hiển thị đẹp trên giao diện.\n"
-            "Bắt đầu bằng ✅ nếu thành công."
+            "Ban la tro ly thiet ke mach dien tu. "
+            "Dung du lieu payload de tao phan hoi tieng Viet theo markdown. "
+            "Tuan thu response_contract trong payload: dung du cac muc, dung thu tu, "
+            "giu noi dung ky thuat ngan gon va nhat quan. "
+            "Neu thieu du lieu thi neu ro gia dinh thay vi suy doan."
+        )
+
+        payload = self._build_llm_payload(
+            "nlg.s.v1",
+            context,
+            output_format="md",
         )
 
         result = self._router.chat_text(
             LLMRole.GENERAL,
             mode=mode,
             system=system,
-            user_content=f"Kết quả thiết kế:\n{json.dumps(context, ensure_ascii=False, indent=2)}",
+            user_content=payload,
         )
         if result:
             return result
@@ -307,7 +314,6 @@ class NLGService:
     ) -> str:
         """Dùng LLM Router sinh error response + đề xuất."""
         from app.application.ai.llm_router import LLMRole
-        import json
 
         context = {
             "error": error_msg,
@@ -315,23 +321,32 @@ class NLGService:
             "circuit_type": circuit_type,
             "gain_target": gain_target,
             "vcc": vcc,
+            "response_contract": {
+                "language": "vi",
+                "opening_prefix": "❌",
+                "format": "markdown",
+                "sections": ["Loi", "Nguyen nhan", "Huong xu ly"],
+                "solution_count": "2-3",
+            },
         }
 
         system = (
-            "Bạn là trợ lý thiết kế mạch điện tử. "
-            "Khi thiết kế gặp lỗi, hãy:\n"
-            "1. Giải thích lỗi bằng tiếng Việt\n"
-            "2. Phân tích nguyên nhân kỹ thuật\n"
-            "3. Đề xuất 2-3 giải pháp cụ thể\n"
-            "4. Dùng markdown formatting\n"
-            "5. Bắt đầu bằng ❌"
+            "Ban la tro ly thiet ke mach dien tu. "
+            "Dung payload de tao error response theo response_contract. "
+            "Tap trung vao nguyen nhan ky thuat va huong khac phuc co the thuc hien ngay."
+        )
+
+        payload = self._build_llm_payload(
+            "nlg.e.v1",
+            context,
+            output_format="md",
         )
 
         result = self._router.chat_text(
             LLMRole.GENERAL,
             mode=mode,
             system=system,
-            user_content=f"Lỗi thiết kế mạch:\n{json.dumps(context, ensure_ascii=False, indent=2)}",
+            user_content=payload,
         )
         if result:
             return result
@@ -340,25 +355,36 @@ class NLGService:
     def _llm_clarification(self, circuit_type: str, missing_fields: List[str], mode: Optional["LLMMode"]) -> str:
         """Dùng LLM Router sinh clarification response."""
         from app.application.ai.llm_router import LLMRole
-        import json
 
         context = {
             "circuit_type": circuit_type,
             "missing_fields": missing_fields,
+            "response_contract": {
+                "language": "vi",
+                "opening_prefix": "✓",
+                "format": "markdown",
+                "max_sentences": 4,
+                "must_include_examples": True,
+            },
         }
 
         system = (
-            "Bạn là trợ lý thiết kế mạch điện tử. "
-            "Khi chưa có đủ thông tin, hãy hỏi lại người dùng bằng tiếng Việt. "
-            "Hỏi rõ, thân thiện, và đưa ví dụ cụ thể nếu cần. "
-            "Bắt đầu bằng ✓"
+            "Ban la tro ly thiet ke mach dien tu. "
+            "Dung payload de dat cau hoi bo sung thong tin theo response_contract. "
+            "Ngan gon, than thien, de nguoi dung tra loi nhanh."
+        )
+
+        payload = self._build_llm_payload(
+            "nlg.c.v1",
+            context,
+            output_format="md",
         )
 
         result = self._router.chat_text(
             LLMRole.GENERAL,
             mode=mode,
             system=system,
-            user_content=f"Thiếu thông tin:\n{json.dumps(context, ensure_ascii=False, indent=2)}",
+            user_content=payload,
         )
         if result:
             return result
@@ -367,27 +393,41 @@ class NLGService:
     def _llm_modify_response(self, intent: Any, edit_log: List[str], circuit_data: Dict[str, Any], solved: Dict[str, float], mode: Optional["LLMMode"]) -> str:
         """Dùng LLM Router sinh modify response."""
         from app.application.ai.llm_router import LLMRole
-        import json
 
         context = {
             "circuit_type": intent.circuit_type,
             "edit_log": edit_log,
             "component_count": len(circuit_data.get("components", [])),
             "solved_params": solved,
+            "response_contract": {
+                "language": "vi",
+                "opening_prefix": "✅",
+                "format": "markdown",
+                "must_include": [
+                    "tom tat thao tac",
+                    "tong so linh kien",
+                    "gia tri linh kien moi",
+                ],
+            },
         }
 
         system = (
-            "Bạn là trợ lý thiết kế mạch điện tử. "
-            "Khi người dùng chỉnh sửa mạch thành công, hãy tóm tắt các thay đổi bằng tiếng Việt. "
-            "Nêu rõ: (1) thao tác đã làm, (2) số linh kiện, (3) giá trị linh kiện mới. "
-            "Dùng Markdown formatting. Bắt đầu bằng ✅"
+            "Ban la tro ly thiet ke mach dien tu. "
+            "Dung payload de tao tom tat ket qua chinh sua theo response_contract. "
+            "Noi dung ngan gon, de doi chieu voi thay doi thuc te."
+        )
+
+        payload = self._build_llm_payload(
+            "nlg.m.v1",
+            context,
+            output_format="md",
         )
 
         result = self._router.chat_text(
             LLMRole.GENERAL,
             mode=mode,
             system=system,
-            user_content=f"Kết quả sửa mạch:\n{json.dumps(context, ensure_ascii=False, indent=2)}",
+            user_content=payload,
         )
         if result:
             return result

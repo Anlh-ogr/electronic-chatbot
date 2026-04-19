@@ -25,11 +25,16 @@ from __future__ import annotations
 
 import logging
 import os
+import json
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Type
+
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
+
+PromptContent = Any
 
 
 def _env(name: str, default: str = "") -> str:
@@ -175,44 +180,80 @@ class LLMRouter:
             or _env("GOOGLE_CLOUD_API_KEY")
             or _env("GEMINI_API_KEY")
         )
+        try:
+            self._json_schema_retries = max(0, int(_env("LLM_JSON_SCHEMA_MAX_RETRIES", "2") or "2"))
+        except ValueError:
+            self._json_schema_retries = 2
         logger.info(
             f"LLMRouter initialized: mode={self._default_mode.value}, "
             f"gemini={'yes' if self._gemini_available else 'no'}"
         )
 
     # ── Public API ──
-    def chat_json(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[Dict[str, Any]]:
+    def chat_json(
+        self,
+        role: LLMRole,
+        *,
+        mode: Optional[LLMMode] = None,
+        system: str = "",
+        user_content: PromptContent = "",
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_model: Optional[Type[BaseModel]] = None,
+        max_schema_retries: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
         config = self._get_config(role, mode)
         if not config:
             logger.error(f"Không có cấu hình cho role {role}")
             return None
 
-        result = self._try_call_json(config.primary, system, user_content, temperature, max_tokens)
+        normalized_user_content = self._normalize_user_content(user_content)
+        retries = self._json_schema_retries if max_schema_retries is None else max(0, max_schema_retries)
+
+        result = self._try_call_json(
+            config.primary,
+            system,
+            normalized_user_content,
+            temperature,
+            max_tokens,
+            response_model=response_model,
+            schema_retries=retries,
+        )
         if result is not None:
             return result
 
         for fallback in config.fallbacks:
             logger.info(f"[{role.value}] Trying fallback ({fallback.model_id})")
-            result = self._try_call_json(fallback, system, user_content, temperature, max_tokens)
+            result = self._try_call_json(
+                fallback,
+                system,
+                normalized_user_content,
+                temperature,
+                max_tokens,
+                response_model=response_model,
+                schema_retries=retries,
+            )
             if result is not None:
                 return result
 
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def chat_text(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: str = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[str]:
+    def chat_text(self, role: LLMRole, *, mode: Optional[LLMMode] = None, system: str = "", user_content: PromptContent = "", temperature: Optional[float] = None, max_tokens: Optional[int] = None,) -> Optional[str]:
         config = self._get_config(role, mode)
         if not config:
             logger.error(f"Không có cấu hình cho role {role}")
             return None
 
-        result = self._try_call_text(config.primary, system, user_content, temperature, max_tokens)
+        normalized_user_content = self._normalize_user_content(user_content)
+
+        result = self._try_call_text(config.primary, system, normalized_user_content, temperature, max_tokens)
         if result is not None:
             return result
 
         for fallback in config.fallbacks:
             logger.info(f"[{role.value}] Trying fallback ({fallback.model_id})")
-            result = self._try_call_text(fallback, system, user_content, temperature, max_tokens)
+            result = self._try_call_text(fallback, system, normalized_user_content, temperature, max_tokens)
             if result is not None:
                 return result
 
@@ -249,6 +290,14 @@ class LLMRouter:
                 }
         return status
 
+    @staticmethod
+    def _normalize_user_content(user_content: PromptContent) -> str:
+        if isinstance(user_content, str):
+            return user_content
+        if isinstance(user_content, (dict, list)):
+            return json.dumps(user_content, ensure_ascii=False)
+        return str(user_content)
+
 
     # ── Internal call helpers ──
     def _get_config(self, role: LLMRole, mode: Optional[LLMMode]) -> Optional[RoleConfig]:
@@ -256,16 +305,51 @@ class LLMRouter:
         configs = self._mode_configs.get(resolved_mode, {})
         return configs.get(role) or configs.get(LLMRole.GENERAL)
 
-    def _try_call_json(self, model: ModelConfig, system: str, user_content: str,
-                             temperature: Optional[float], max_tokens: Optional[int],) -> Optional[Dict[str, Any]]:
+    def _try_call_json(
+        self,
+        model: ModelConfig,
+        system: str,
+        user_content: str,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        response_model: Optional[Type[BaseModel]],
+        schema_retries: int,
+    ) -> Optional[Dict[str, Any]]:
         temp = temperature if temperature is not None else model.temperature
         tokens = max_tokens if max_tokens is not None else model.max_tokens
-        
-        try:
-            return self._gemini_json(model, system, user_content, temp, tokens)
-        except Exception as e:
-            logger.warning(f"[{model.provider.value}/{model.model_id}] JSON failed: {e}")
-            return None
+
+        attempts = schema_retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                obj = self._gemini_json(model, system, user_content, temp, tokens)
+            except Exception as e:
+                logger.warning(
+                    "[%s/%s] JSON call failed (attempt %s/%s): %s",
+                    model.provider.value,
+                    model.model_id,
+                    attempt,
+                    attempts,
+                    e,
+                )
+                continue
+
+            if response_model is None:
+                return obj
+
+            try:
+                validated = response_model.model_validate(obj)
+                return validated.model_dump(mode="json")
+            except ValidationError as e:
+                logger.warning(
+                    "[%s/%s] JSON schema validation failed (attempt %s/%s): %s",
+                    model.provider.value,
+                    model.model_id,
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+        return None
 
     def _try_call_text(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[str]:
