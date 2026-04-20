@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .spec_parser import UserSpec
 from .metadata_repo import MetadataRepository
-from .ml_topology_selector import RandomForestTopologySelector
 
 """ lý do sử dụng thư viện
 _future__ annotations: tham chiếu đến biến/thamsố/giátrị trước khi tạo xong.
@@ -94,10 +93,6 @@ class TopologyPlanner:
      5. Chọn mạch đạt (max_score), suy ra mode và confidence
      6. Nếu có yêu cầu mở rộng (output_buffer, ...), thêm suggested_extensions (block)
     """
-    def __init__(self) -> None:
-        # ML advisor là optional: nếu model chưa có thì planner vẫn chạy rule-based.
-        self._ml_selector = RandomForestTopologySelector()
-
     def plan(self, spec: UserSpec, repo: MetadataRepository) -> TopologyPlan:
         """ pipeline: validate circuit type
                       grammar rule
@@ -216,10 +211,8 @@ class TopologyPlanner:
     
     # 5. tìm template tốt nhất theo hàm điểm tuyến tính, cập nhật plan với template_id, mode, confidence, rationale chi tiết
     def _select_best_template(self, spec: UserSpec, plan: TopologyPlan, candidates: List[Dict[str, Any]], required_caps: Dict[str, Any]) -> None:
-        ml_context = self._ml_selector.predict_context(spec)
-
         scored: List[Tuple[float, Dict[str, Any], Dict[str, float]]] = [
-            self._score_candidate(meta, spec, plan.blocks, required_caps, ml_context)
+            self._score_candidate(meta, spec, plan.blocks, required_caps)
             for meta in candidates
         ]
         
@@ -254,8 +247,7 @@ class TopologyPlanner:
             "Best candidate by weighted score "
             f"{best_score:.3f} (family={breakdown['family']:.2f}, "
             f"supply={breakdown['supply']:.2f}, cap={breakdown['capability']:.2f}, "
-            f"pattern={breakdown['pattern']:.2f}, priority={breakdown['priority']:.2f}, "
-            f"ml={breakdown['ml']:.2f})"
+            f"pattern={breakdown['pattern']:.2f}, priority={breakdown['priority']:.2f})"
         )
         # match template id và family để giải thích lý do chọn template đó
         plan.rationale.append(f"Matched template: {plan.matched_template_id} (family={best_family})")
@@ -404,7 +396,6 @@ class TopologyPlanner:
         spec: UserSpec,
         planned_blocks: List[str],
         required_caps: List[str],
-        ml_context: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> Tuple[float, Dict[str, Any], Dict[str, float]]:
         domain = meta.get("domain", {})
         hints = meta.get("planner_hints", {})
@@ -415,15 +406,6 @@ class TopologyPlanner:
         capability_score = self._compute_capability_score(hints, required_caps)
         pattern_score = self._compute_pattern_score(fs, planned_blocks)
         priority_score = self._compute_priority_score(hints)
-        ml_score = self._ml_selector.score_candidate(meta, ml_context)
-        ml_weighted_contribution = 0.15 * ml_score
-
-        logger.debug(
-            "RF score debug | template=%s raw_ml=%.4f weighted_contribution=%.4f",
-            str(meta.get("template_id", "")),
-            ml_score,
-            ml_weighted_contribution,
-        )
 
         total_score = self._combine_weighted_score(
             family=family_score,
@@ -431,7 +413,6 @@ class TopologyPlanner:
             capability=capability_score,
             pattern=pattern_score,
             priority=priority_score,
-            ml=ml_score,
         )
 
         breakdown = {
@@ -440,8 +421,6 @@ class TopologyPlanner:
             "capability": capability_score,
             "pattern": pattern_score,
             "priority": priority_score,
-            "ml": ml_score,
-            "ml_weighted": ml_weighted_contribution,
         }
         return total_score, meta, breakdown
     
@@ -522,15 +501,13 @@ class TopologyPlanner:
         capability: float,
         pattern: float,
         priority: float,
-        ml: float,
     ) -> float:
         return (
-            0.30 * family
-            + 0.18 * supply
-            + 0.17 * capability
-            + 0.10 * pattern
+            0.35 * family
+            + 0.20 * supply
+            + 0.20 * capability
+            + 0.15 * pattern
             + 0.10 * priority
-            + 0.15 * ml
         )
 
 

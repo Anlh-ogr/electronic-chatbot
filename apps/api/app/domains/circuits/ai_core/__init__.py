@@ -18,7 +18,6 @@ from .topology_planner import TopologyPlanner, TopologyPlan
 from .parameter_solver import ParameterSolver, SolvedParams
 from .circuit_generator import CircuitGenerator, GeneratedCircuit
 from .ai_core import AICore, PipelineResult
-from .ml_topology_selector import RandomForestTopologySelector
 
 """ Lý do sử dụng thư viện
 .spec_parser: chuyển ngôn ngữ tự nhiên → spec cấu trúc JSON
@@ -41,5 +40,4 @@ __all__ = [
     "SolvedParams",
     "CircuitGenerator",
     "GeneratedCircuit",
-    "RandomForestTopologySelector",
 ]
