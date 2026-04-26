@@ -1,0 +1,110 @@
+[
+  {
+    "name": "high_gain_reject_common_collector",
+    "input_json": {
+      "prompt_version": "v2",
+      "user_spec": {
+        "circuit_type": "common_emitter",
+        "gain": 180.0,
+        "extra_requirements": []
+      },
+      "available_topologies": [
+        "common_collector",
+        "common_emitter",
+        "common_source"
+      ],
+      "topology_metadata": {
+        "common_collector": {
+          "priority_score": 0.7,
+          "ordered_blocks": [
+            "cc_block"
+          ]
+        },
+        "common_emitter": {
+          "priority_score": 0.8,
+          "ordered_blocks": [
+            "ce_block"
+          ]
+        }
+      },
+      "constraints": {
+        "high_gain_threshold": 100.0,
+        "must_select_from_available_topologies": true
+      }
+    },
+    "forbidden_topologies": [
+      "common_collector"
+    ]
+  },
+  {
+    "name": "high_input_impedance_prefers_non_ce",
+    "input_json": {
+      "prompt_version": "v2",
+      "user_spec": {
+        "circuit_type": "common_source",
+        "gain": 20.0,
+        "extra_requirements": [
+          "high_input_impedance"
+        ]
+      },
+      "available_topologies": [
+        "common_emitter",
+        "common_source",
+        "common_drain"
+      ],
+      "topology_metadata": {
+        "common_drain": {
+          "priority_score": 0.85,
+          "ordered_blocks": [
+            "cd_block"
+          ]
+        },
+        "common_emitter": {
+          "priority_score": 0.75,
+          "ordered_blocks": [
+            "ce_block"
+          ]
+        }
+      },
+      "constraints": {
+        "must_select_from_available_topologies": true
+      }
+    }
+  },
+  {
+    "name": "opamp_low_noise_case",
+    "input_json": {
+      "prompt_version": "v2",
+      "user_spec": {
+        "circuit_type": "non_inverting",
+        "gain": 12.0,
+        "high_cmr": true,
+        "extra_requirements": [
+          "low_distortion"
+        ]
+      },
+      "available_topologies": [
+        "non_inverting",
+        "differential",
+        "instrumentation"
+      ],
+      "topology_metadata": {
+        "non_inverting": {
+          "priority_score": 0.7,
+          "ordered_blocks": [
+            "non_inverting_block"
+          ]
+        },
+        "differential": {
+          "priority_score": 0.8,
+          "ordered_blocks": [
+            "differential_block"
+          ]
+        }
+      },
+      "constraints": {
+        "must_select_from_available_topologies": true
+      }
+    }
+  }
+]

@@ -1,3 +1,43 @@
+"""Prompt analyzer for Circuits flow.
+
+Detailed input-output flow:
+1. Input source:
+    - Called by routes:
+      - POST /api/circuits/generate/from-prompt
+      - POST /api/circuits/analyze-prompt
+    - Receives:
+      - prompt: natural language request
+      - parameters: optional explicit overrides from client
+
+2. Parsing stage:
+    - Uses NLUService.understand(prompt) to extract intent fields.
+
+3. Mapping stage:
+    - Maps intent.circuit_type to template_id via CIRCUIT_TYPE_TO_TEMPLATE_ID.
+
+4. Merge stage:
+    - Extracts parameters from intent (gain/vcc/frequency).
+    - Merges extracted params with caller-provided parameters.
+    - Caller-provided parameters override extracted values on conflicts.
+
+5. Validation stage:
+    - Checks required parameters by template via TEMPLATE_REQUIREMENTS.
+    - Builds missing parameter list.
+
+6. Classification stage:
+    - CLEAR: template is known, confidence >= 0.3, no required params missing.
+    - AMBIGUOUS: template known but required params are missing.
+    - INVALID: template unknown or low confidence.
+
+7. Output contract:
+    - PromptAnalysis:
+      - clarity
+      - template_id (optional)
+      - parameters (merged)
+      - questions (clarification list)
+      - confidence
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -43,7 +83,12 @@ class PromptAnalysis:
 
 
 class PromptAnalyzer:
-    """Analyzes prompt clarity by consuming unified NLU output only."""
+    """Analyze prompt readiness for template-based circuit generation.
+
+    This class does not generate circuits directly.
+    It only classifies prompt clarity and returns normalized analysis output
+    for route handlers to decide generate vs clarification.
+    """
 
     CIRCUIT_TYPE_TO_TEMPLATE_ID: Dict[str, str] = {
         "common_emitter": "bjt_common_emitter",
@@ -73,6 +118,23 @@ class PromptAnalyzer:
     }
 
     def analyze(self, prompt: str, parameters: Optional[Dict[str, Any]] = None) -> PromptAnalysis:
+        """Run prompt analysis pipeline and return normalized PromptAnalysis.
+
+        Stage-by-stage behavior:
+        1. Parse prompt with NLUService -> intent
+        2. Resolve template_id from intent.circuit_type
+        3. Extract parameters from intent
+        4. Merge with caller parameters (caller wins)
+        5. Check required parameters for selected template
+        6. Return PromptAnalysis with clarity clear/ambiguous/invalid
+
+        Args:
+            prompt: User natural language request.
+            parameters: Optional explicit parameter overrides from caller.
+
+        Returns:
+            PromptAnalysis used by API routes.
+        """
         if parameters is None:
             parameters = {}
 

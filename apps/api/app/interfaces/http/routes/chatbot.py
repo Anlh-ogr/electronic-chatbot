@@ -207,13 +207,7 @@ def _get_simulation_service():
 
 @router.post("", response_model=ChatResponseModel)
 async def chat(request: ChatRequest) -> ChatResponseModel:
-    """
-    Gửi message cho chatbot, nhận response.
-
-    Hệ thống chạy theo 2 mode toàn cục:
-    1. Air (mặc định): model nhanh lấy từ env local
-    2. Pro: switch sang chain model chất lượng cao hơn
-    """
+    """ Gửi message cho chatbot, nhận response. """
     try:
         service = _get_chatbot_service()
         result = service.chat(

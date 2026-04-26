@@ -8,10 +8,14 @@ Cấp 2 (tương lai): tự synthesis topology mới.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from .llm_topology_contracts import TopologySelectionInput
+from .llm_topology_rules import TopologyRuleEngine
+from .llm_topology_selector import LLMTopologySelector
 from .spec_parser import UserSpec
 from .metadata_repo import MetadataRepository
 
@@ -93,6 +97,15 @@ class TopologyPlanner:
      5. Chọn mạch đạt (max_score), suy ra mode và confidence
      6. Nếu có yêu cầu mở rộng (output_buffer, ...), thêm suggested_extensions (block)
     """
+    def __init__(
+        self,
+        *,
+        llm_selector: Optional[LLMTopologySelector] = None,
+        rule_engine: Optional[TopologyRuleEngine] = None,
+    ) -> None:
+        self._llm_selector = llm_selector or LLMTopologySelector()
+        self._rule_engine = rule_engine or TopologyRuleEngine()
+
     def plan(self, spec: UserSpec, repo: MetadataRepository) -> TopologyPlan:
         """ pipeline: validate circuit type
                       grammar rule
@@ -218,8 +231,46 @@ class TopologyPlanner:
         
         # Sắp xếp candidates theo điểm tổng, chọn candidate tốt nhất
         scored.sort(key=lambda item: item[0], reverse=True)
-        # Lấy candidate tốt nhất và breakdown điểm để giải thích
-        best_score, best, breakdown = scored[0]
+        # Rule-based default candidate luôn có sẵn để fallback an toàn.
+        default_score, default_best, default_breakdown = scored[0]
+        best_score, best, breakdown = default_score, default_best, default_breakdown
+
+        selector_trace = self._run_llm_selector(spec, candidates)
+        llm_selected_topology = str(selector_trace.get("selected_topology") or "")
+
+        if selector_trace.get("ok") and llm_selected_topology:
+            rule_result = self._rule_engine.evaluate(
+                selected_topology=llm_selected_topology,
+                selector_input=selector_trace["selector_input"],
+            )
+            selector_trace["rule_result"] = rule_result.model_dump(mode="json")
+
+            if not rule_result.passed:
+                plan.rationale.append(
+                    f"LLM topology '{llm_selected_topology}' rejected by rule engine; fallback to rule-based default"
+                )
+            else:
+                llm_candidate = self._pick_best_candidate_by_family(scored, llm_selected_topology)
+                if llm_candidate is not None:
+                    best_score, best, breakdown = llm_candidate
+                    if rule_result.penalty_score > 0.0:
+                        best_score = max(0.0, best_score - 0.10 * rule_result.penalty_score)
+                        plan.rationale.append(
+                            f"Rule penalty applied to LLM topology '{llm_selected_topology}': {rule_result.penalty_score:.2f}"
+                        )
+                    plan.rationale.append(
+                        f"LLM selected topology family '{llm_selected_topology}' and passed safety checks"
+                    )
+                else:
+                    plan.rationale.append(
+                        f"LLM topology '{llm_selected_topology}' not found in candidates; fallback to rule-based default"
+                    )
+        else:
+            selector_error = selector_trace.get("error") or {}
+            error_code = selector_error.get("code", "selector_unavailable")
+            plan.rationale.append(
+                f"LLM selector fallback: {error_code}"
+            )
         
         # Cập nhật plan với thông tin template đã chọn
         plan.matched_template_id = best.get("template_id")
@@ -251,6 +302,113 @@ class TopologyPlanner:
         )
         # match template id và family để giải thích lý do chọn template đó
         plan.rationale.append(f"Matched template: {plan.matched_template_id} (family={best_family})")
+
+        self._log_topology_selection_event(selector_trace, best_family)
+
+    def _run_llm_selector(self, spec: UserSpec, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        selector_input_raw = self._build_llm_selector_input(spec, candidates)
+
+        try:
+            selector_input = TopologySelectionInput.model_validate(selector_input_raw)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "validated": False,
+                "selected_topology": None,
+                "llm_output": None,
+                "error": {
+                    "code": "SELECTOR_INPUT_INVALID",
+                    "message": str(exc),
+                },
+                "prompt_version": selector_input_raw.get("prompt_version", "v2"),
+                "input": selector_input_raw,
+                "selector_input": selector_input_raw,
+            }
+
+        result = self._llm_selector.select_topology(selector_input.model_dump(mode="json"))
+        if not isinstance(result, dict):
+            result = {
+                "ok": False,
+                "validated": False,
+                "error": {
+                    "code": "SELECTOR_INVALID_RESPONSE",
+                    "message": "LLM selector returned non-dict payload.",
+                },
+            }
+
+        return {
+            "ok": bool(result.get("ok", False)),
+            "validated": bool(result.get("validated", False)),
+            "selected_topology": result.get("selected_topology"),
+            "llm_output": result.get("llm_output"),
+            "error": result.get("error"),
+            "prompt_version": result.get("prompt_version", selector_input.prompt_version.value),
+            "input": selector_input.model_dump(mode="json"),
+            "selector_input": selector_input,
+        }
+
+    def _build_llm_selector_input(self, spec: UserSpec, candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
+        available_topologies: List[str] = []
+        topology_metadata: Dict[str, Dict[str, Any]] = {}
+
+        for meta in candidates:
+            domain = meta.get("domain", {})
+            family = str(domain.get("family") or "").strip()
+            if not family:
+                continue
+
+            if family not in available_topologies:
+                available_topologies.append(family)
+
+            if family in topology_metadata:
+                continue
+
+            hints = meta.get("planner_hints", {})
+            fs = meta.get("functional_structure", {})
+            topology_metadata[family] = {
+                "category": domain.get("category"),
+                "topology_tags": domain.get("topology_tags", []),
+                "required_capabilities": hints.get("required_capabilities", []),
+                "priority_score": hints.get("priority_score", 0.5),
+                "ordered_blocks": fs.get("pattern_signature", {}).get("ordered_block_types", []),
+            }
+
+        return {
+            "prompt_version": "v2",
+            "user_spec": spec.to_dict(),
+            "available_topologies": available_topologies,
+            "topology_metadata": topology_metadata,
+            "constraints": {
+                "must_select_from_available_topologies": True,
+                "json_only_output": True,
+                "no_extra_text": True,
+                "high_gain_threshold": 100.0,
+                "reject_common_collector_when_high_gain": True,
+                "penalize_common_emitter_for_high_input_impedance": True,
+            },
+        }
+
+    @staticmethod
+    def _pick_best_candidate_by_family(
+        scored: List[Tuple[float, Dict[str, Any], Dict[str, float]]],
+        family: str,
+    ) -> Optional[Tuple[float, Dict[str, Any], Dict[str, float]]]:
+        family_norm = str(family).strip().lower()
+        for score, meta, breakdown in scored:
+            candidate_family = str(meta.get("domain", {}).get("family") or "").strip().lower()
+            if candidate_family == family_norm:
+                return score, meta, breakdown
+        return None
+
+    def _log_topology_selection_event(self, selector_trace: Dict[str, Any], final_topology: str) -> None:
+        event = {
+            "input": selector_trace.get("input", {}),
+            "prompt_version": str(selector_trace.get("prompt_version", "v2")),
+            "llm_output": selector_trace.get("llm_output"),
+            "validated": bool(selector_trace.get("validated", False)),
+            "final_topology": final_topology,
+        }
+        logger.info("TopologySelectionLog %s", json.dumps(event, ensure_ascii=False, sort_keys=True))
         
     # 6. xử lý khi không tìm được mẫu phù hợp
     def _handle_no_candidates(self, spec: UserSpec, plan: TopologyPlan) -> None:

@@ -15,6 +15,8 @@ Cấp 2 (tương lai): tự synthesis topology mới từ block graph
 from .spec_parser import NLPSpecParser, UserSpec
 from .metadata_repo import MetadataRepository
 from .topology_planner import TopologyPlanner, TopologyPlan
+from .llm_topology_selector import LLMTopologySelector, select_topology
+from .llm_topology_rules import TopologyRuleEngine
 from .parameter_solver import ParameterSolver, SolvedParams
 from .circuit_generator import CircuitGenerator, GeneratedCircuit
 from .ai_core import AICore, PipelineResult
@@ -36,6 +38,9 @@ __all__ = [
     "MetadataRepository",
     "TopologyPlanner",
     "TopologyPlan",
+    "LLMTopologySelector",
+    "TopologyRuleEngine",
+    "select_topology",
     "ParameterSolver",
     "SolvedParams",
     "CircuitGenerator",

@@ -186,16 +186,31 @@ async def generate_from_prompt(
     request: GenerateFromPromptRequest,
     use_case: GenerateCircuitUseCase = Depends(get_generate_circuit_use_case)
 ) -> Union[CircuitResponse, PromptAnalysisResponse]:
-    """ Generate a circuit from natural language prompt.
-    
-    Neu prompt rõ ràng, tạo mạch ngay lập tức.
-    Neu prompt mơ hồ, trả về các câu hỏi làm rõ.
-    
-    Args: request: Natural language prompt and optional parameters
-    
-    Returns: CircuitResponse neu ro rang, hoặc PromptAnalysisResponse với câu hỏi lm rõ nếu mơ hồ.
-    
-    Raises: HTTPException: If analysis or generation fails
+    """Generate a circuit from natural language prompt.
+
+    Full runtime flow (input -> output):
+    1. Receive request.prompt + request.parameters from client.
+    2. Run PromptAnalyzer.analyze(prompt, parameters).
+    3. Branch by analysis.clarity:
+       - clear:
+         a) Build GenerateFromTemplateRequest from analysis output.
+         b) Call GenerateCircuitUseCase.execute(...).
+         c) Return CircuitResponse.
+       - ambiguous:
+         a) Return PromptAnalysisResponse with template hint + missing-field questions.
+       - invalid:
+         a) Return PromptAnalysisResponse with topology clarification questions.
+
+    Input:
+    - prompt: natural language request
+    - parameters: optional explicit values (override extracted values)
+
+    Output:
+    - CircuitResponse when ready to generate
+    - PromptAnalysisResponse when clarification is required
+
+    Raises:
+    - HTTPException on analysis/generation failure.
     """
     try:
         # Analyze prompt
@@ -270,15 +285,21 @@ async def generate_from_prompt(
 async def analyze_prompt(
     request: GenerateFromPromptRequest
 ) -> PromptAnalysisResponse:
-    """Analyze a prompt without generating the circuit.
-    
-    Useful for UX to show users what will be generated before committing.
-    
-    Args:
-        request: Natural language prompt and optional parameters
-    
+    """Analyze a prompt without generating a circuit.
+
+    This endpoint is a read-only analysis stage for UX preview.
+
+    Flow:
+    1. Receive prompt + optional explicit parameters.
+    2. Run PromptAnalyzer to produce normalized PromptAnalysis.
+    3. Build user-facing PromptAnalysisResponse message by clarity:
+       - clear: ready-to-generate summary
+       - ambiguous: partial match + required clarifications
+       - invalid: cannot determine topology reliably
+
     Returns:
-        PromptAnalysisResponse with detected template and parameters
+        PromptAnalysisResponse with clarity, template_id, merged parameters,
+        clarification questions, and confidence.
     """
     try:
         analyzer = PromptAnalyzer()
