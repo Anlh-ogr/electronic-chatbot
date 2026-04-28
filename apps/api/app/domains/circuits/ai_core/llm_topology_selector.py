@@ -84,7 +84,7 @@ class LLMTopologySelector:
                 user_content=prompt.user_payload,
                 temperature=0.0,
                 max_tokens=512,
-                response_model=None,
+                response_model=LLMTopologyOutput,
                 max_schema_retries=0,
             )
 

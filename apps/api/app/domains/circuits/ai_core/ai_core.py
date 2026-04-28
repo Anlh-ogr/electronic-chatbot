@@ -6,10 +6,21 @@
 
 from __future__ import annotations
 
+import ast
 import logging
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
+
+try:
+    from sympy import SympifyError, sympify
+except Exception:  # pragma: no cover - optional dependency guard
+    SympifyError = ValueError
+    sympify = None
+
+from app.application.ai.circuit_ir_schema import CircuitIR
 
 from .spec_parser import NLPSpecParser, UserSpec
 from .metadata_repo import MetadataRepository
@@ -115,6 +126,342 @@ class PipelineResult:
         if self.circuit:
             d["circuit"] = self.circuit.to_dict()
         return d
+
+
+class InvalidPinConnectionError(ValueError):
+    """Raised when a net node references an invalid component pin."""
+
+
+class CircuitIRValidator:
+    """Validation gate for LLM-generated CircuitIR.
+
+    Provides:
+    - Math validation/fix for calculation entries
+    - Physics pin validation against component pin policies
+    """
+
+    _PIN_POLICY: Dict[str, Set[str]] = {
+        "resistor": {"1", "2"},
+        "capacitor": {"1", "2"},
+        "inductor": {"1", "2"},
+        "npn": {"B", "C", "E", "1", "2", "3"},
+        "pnp": {"B", "C", "E", "1", "2", "3"},
+        "opamp": {"1", "2", "3", "4", "5", "6", "7", "8", "IN+", "IN-", "OUT", "V+", "V-"},
+        "voltage_source": {"1", "2", "+", "-"},
+        "current_source": {"1", "2", "+", "-"},
+        "diode": {"A", "K", "1", "2"},
+    }
+
+    _TYPE_ALIASES: Dict[str, str] = {
+        "r": "resistor",
+        "res": "resistor",
+        "resistor": "resistor",
+        "c": "capacitor",
+        "cap": "capacitor",
+        "capacitor": "capacitor",
+        "l": "inductor",
+        "inductor": "inductor",
+        "q_npn": "npn",
+        "q_pnp": "pnp",
+        "npn": "npn",
+        "pnp": "pnp",
+        "bjt": "npn",
+        "bjt_npn": "npn",
+        "bjt_pnp": "pnp",
+        "opamp": "opamp",
+        "op_amp": "opamp",
+        "vsource": "voltage_source",
+        "voltage_source": "voltage_source",
+        "isource": "current_source",
+        "current_source": "current_source",
+        "diode": "diode",
+        "d": "diode",
+    }
+
+    _UNIT_SUFFIX_SCALE: Dict[str, float] = {
+        "k": 1e3,
+        "m": 1e-3,
+        "u": 1e-6,
+        "n": 1e-9,
+        "p": 1e-12,
+        "g": 1e9,
+    }
+
+    def __init__(self, relative_error_threshold: float = 0.05) -> None:
+        self.relative_error_threshold = max(0.0, float(relative_error_threshold))
+
+    def validate_and_fix_math(self, ir: CircuitIR) -> CircuitIR:
+        """Recompute formulas, fix hallucinated values, and sync component values.
+
+        If relative error > 5% (default), the calculated value is corrected and the
+        target component value is updated to the corrected number.
+        """
+        if not ir.calculations:
+            return ir
+
+        symbol_table = self._build_symbol_table(ir)
+        fixed_values_by_ref: Dict[str, float] = {}
+        updated_calculations = []
+        calc_changed = False
+
+        for calc in ir.calculations:
+            corrected = calc
+            computed = self._compute_formula(calc.formula, symbol_table)
+
+            if computed is None or not math.isfinite(computed):
+                updated_calculations.append(corrected)
+                continue
+
+            expected = float(calc.calculated_value)
+            rel_err = self._relative_error(expected, computed)
+            if rel_err > self.relative_error_threshold:
+                logger.warning(
+                    "Math mismatch for %s: expected=%s computed=%s rel_err=%.4f. Auto-fixing.",
+                    calc.target_component,
+                    expected,
+                    computed,
+                    rel_err,
+                )
+                corrected = calc.model_copy(update={"calculated_value": computed})
+                fixed_values_by_ref[calc.target_component.strip().upper()] = computed
+                calc_changed = True
+
+            symbol_table[calc.target_component.strip().upper()] = float(corrected.calculated_value)
+            symbol_table[calc.target_component.strip().lower()] = float(corrected.calculated_value)
+            updated_calculations.append(corrected)
+
+        updated_components = []
+        comp_changed = False
+        for comp in ir.components:
+            ref_upper = comp.ref_id.strip().upper()
+            if ref_upper in fixed_values_by_ref:
+                comp_changed = True
+                updated_components.append(comp.model_copy(update={"value": fixed_values_by_ref[ref_upper]}))
+            else:
+                updated_components.append(comp)
+
+        if not calc_changed and not comp_changed:
+            return ir
+
+        return ir.model_copy(
+            update={
+                "calculations": updated_calculations,
+                "components": updated_components,
+            },
+            deep=True,
+        )
+
+    def validate_pins(self, ir: CircuitIR) -> None:
+        """Validate net node references against component existence and pin policy."""
+        component_by_ref = {comp.ref_id.strip().upper(): comp for comp in ir.components}
+
+        for net in ir.nets:
+            for node in net.nodes:
+                if ":" not in node:
+                    raise InvalidPinConnectionError(
+                        f"Invalid node format '{node}' in net '{net.net_name}'. Expected REF:PIN"
+                    )
+
+                raw_ref, raw_pin = node.split(":", 1)
+                ref_id = raw_ref.strip().upper()
+                pin_name = raw_pin.strip().upper()
+
+                if not ref_id or not pin_name:
+                    raise InvalidPinConnectionError(
+                        f"Invalid node format '{node}' in net '{net.net_name}'. Expected REF:PIN"
+                    )
+
+                component = component_by_ref.get(ref_id)
+                if component is None:
+                    raise InvalidPinConnectionError(
+                        f"Net '{net.net_name}' references unknown component '{ref_id}'"
+                    )
+
+                allowed_pins = self._resolve_allowed_pins(component.type)
+                if not allowed_pins:
+                    raise InvalidPinConnectionError(
+                        f"No pin policy defined for component type '{component.type}' ({component.ref_id})"
+                    )
+
+                if pin_name not in allowed_pins:
+                    raise InvalidPinConnectionError(
+                        f"Invalid pin '{raw_pin}' for component '{component.ref_id}' "
+                        f"(type={component.type}). Allowed pins: {sorted(allowed_pins)}"
+                    )
+
+    def _build_symbol_table(self, ir: CircuitIR) -> Dict[str, float]:
+        table: Dict[str, float] = {
+            "pi": math.pi,
+            "e": math.e,
+        }
+
+        for comp in ir.components:
+            val = self._to_numeric(comp.value)
+            if val is None:
+                continue
+            table[comp.ref_id.strip().upper()] = val
+            table[comp.ref_id.strip().lower()] = val
+
+        for calc in ir.calculations:
+            target = calc.target_component.strip()
+            try:
+                numeric = float(calc.calculated_value)
+            except (TypeError, ValueError):
+                continue
+            table[target.upper()] = numeric
+            table[target.lower()] = numeric
+
+        return table
+
+    def _compute_formula(self, formula: str, symbol_table: Dict[str, float]) -> Optional[float]:
+        raw = (formula or "").strip()
+        if not raw:
+            return None
+
+        expr = self._sanitize_formula_expression(raw)
+        if not expr:
+            return None
+
+        try:
+            if sympify is not None:
+                value = sympify(expr, locals=symbol_table)
+                return float(value.evalf())
+        except (SympifyError, TypeError, ValueError) as exc:
+            logger.warning("sympy evaluation failed for formula '%s': %s", formula, exc)
+        except Exception as exc:  # pragma: no cover - conservative runtime guard
+            logger.warning("Unexpected sympy error for formula '%s': %s", formula, exc)
+
+        try:
+            return float(self._safe_eval_with_ast(expr, symbol_table))
+        except Exception as exc:
+            logger.warning("AST evaluator failed for formula '%s': %s", formula, exc)
+            return None
+
+    def _sanitize_formula_expression(self, formula: str) -> str:
+        expr = [part.strip() for part in formula.split("=") if part.strip()]
+        candidate = expr[-1] if expr else formula
+
+        candidate = candidate.replace("×", "*").replace("÷", "/").replace("^", "**")
+        candidate = candidate.replace(",", "")
+
+        def _expand_metric(match: re.Match[str]) -> str:
+            base = float(match.group("num"))
+            suffix = (match.group("suffix") or "").lower()
+            return str(base * self._UNIT_SUFFIX_SCALE.get(suffix, 1.0))
+
+        candidate = re.sub(
+            r"(?P<num>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(?P<suffix>[kKmMuUnNpPgG])(?=\s*(?:[A-Za-zΩ]+)?\b)",
+            _expand_metric,
+            candidate,
+        )
+        candidate = re.sub(r"(?<=\d)\s*[A-Za-zΩ]+", "", candidate)
+        candidate = re.sub(r"[^0-9A-Za-z_+\-*/(). ]", " ", candidate)
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        return candidate
+
+    def _safe_eval_with_ast(self, expression: str, symbols: Dict[str, float]) -> float:
+        allowed_funcs = {
+            "sqrt": math.sqrt,
+            "sin": math.sin,
+            "cos": math.cos,
+            "tan": math.tan,
+            "log": math.log,
+            "log10": math.log10,
+            "exp": math.exp,
+            "abs": abs,
+            "pow": pow,
+        }
+
+        names = dict(symbols)
+        names.update({"pi": math.pi, "e": math.e})
+
+        node = ast.parse(expression, mode="eval")
+
+        def _eval(n: ast.AST) -> float:
+            if isinstance(n, ast.Expression):
+                return _eval(n.body)
+            if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+                return float(n.value)
+            if isinstance(n, ast.Name):
+                key = n.id
+                if key in names:
+                    return float(names[key])
+                if key.upper() in names:
+                    return float(names[key.upper()])
+                if key.lower() in names:
+                    return float(names[key.lower()])
+                raise ValueError(f"Unknown symbol '{key}'")
+            if isinstance(n, ast.BinOp):
+                left = _eval(n.left)
+                right = _eval(n.right)
+                if isinstance(n.op, ast.Add):
+                    return left + right
+                if isinstance(n.op, ast.Sub):
+                    return left - right
+                if isinstance(n.op, ast.Mult):
+                    return left * right
+                if isinstance(n.op, ast.Div):
+                    return left / right
+                if isinstance(n.op, ast.Pow):
+                    return left ** right
+                if isinstance(n.op, ast.Mod):
+                    return left % right
+                raise ValueError(f"Unsupported binary operator: {type(n.op).__name__}")
+            if isinstance(n, ast.UnaryOp):
+                val = _eval(n.operand)
+                if isinstance(n.op, ast.UAdd):
+                    return val
+                if isinstance(n.op, ast.USub):
+                    return -val
+                raise ValueError(f"Unsupported unary operator: {type(n.op).__name__}")
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                func_name = n.func.id
+                func = allowed_funcs.get(func_name)
+                if func is None:
+                    raise ValueError(f"Function '{func_name}' is not allowed")
+                args = [_eval(arg) for arg in n.args]
+                return float(func(*args))
+            raise ValueError(f"Unsupported AST node: {type(n).__name__}")
+
+        return float(_eval(node))
+
+    @staticmethod
+    def _to_numeric(value: Any) -> Optional[float]:
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        text = str(value or "").strip().replace(",", "")
+        if not text:
+            return None
+
+        match = re.fullmatch(
+            r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([kKmMuUnNpPgG]?)",
+            text,
+        )
+        if not match:
+            return None
+
+        base = float(match.group(1))
+        suffix = (match.group(2) or "").lower()
+        scale = CircuitIRValidator._UNIT_SUFFIX_SCALE.get(suffix, 1.0)
+        return base * scale
+
+    @staticmethod
+    def _relative_error(expected: float, measured: float) -> float:
+        denom = max(abs(expected), 1e-12)
+        return abs(measured - expected) / denom
+
+    def _resolve_allowed_pins(self, component_type: str) -> Set[str]:
+        raw = str(component_type or "").strip().lower()
+        canonical = self._TYPE_ALIASES.get(raw)
+        if canonical is None:
+            for key, alias in self._TYPE_ALIASES.items():
+                if key in raw:
+                    canonical = alias
+                    break
+        if canonical is None:
+            return set()
+        return {pin.upper() for pin in self._PIN_POLICY.get(canonical, set())}
 
 
 """ Xử lý điều phối của Meta-Template Layer,

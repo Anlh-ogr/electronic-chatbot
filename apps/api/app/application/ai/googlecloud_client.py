@@ -28,12 +28,16 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 import vertexai
+import vertexai.preview.generative_models as preview_models
 from vertexai.generative_models import (
+    GenerationConfig,
     GenerativeModel,
     HarmBlockThreshold,
     HarmCategory,
     SafetySetting,
 )
+
+from app.application.ai.schema_utils import prepare_vertex_schema
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +134,7 @@ class GoogleCloudClient:
         system_instruction: str = "",
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        response_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Gọi Gemini và parse kết quả thành JSON object."""
         prompt = self._build_prompt(
@@ -141,6 +146,8 @@ class GoogleCloudClient:
             prompt=prompt,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_mime_type="application/json",
+            response_schema=response_schema,
         )
         return self._parse_json_content(content_text)
 
@@ -209,7 +216,15 @@ class GoogleCloudClient:
 
         return "\n\n".join(lines)
 
-    def _generate_text(self, *, prompt: str, temperature: float, max_tokens: int) -> str:
+    def _generate_text(
+        self,
+        *,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        response_mime_type: Optional[str] = None,
+        response_schema: Optional[Dict[str, Any]] = None,
+    ) -> str:
         safety_settings = [
             SafetySetting(
                 category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
@@ -230,14 +245,39 @@ class GoogleCloudClient:
         ]
 
         try:
+            if response_schema is not None:
+                label = "unknown"
+                if isinstance(response_schema, dict):
+                    label = str(response_schema.get("title") or "unknown")
+                response_schema = prepare_vertex_schema(response_schema, debug_label=label)
+
+            token_budget = int(max_tokens)
+            temp_value = float(temperature)
+            if response_schema is not None:
+                token_budget = max(token_budget, 8192)
+                temp_value = 0.2
+
+            generation_config_data: Dict[str, Any] = {
+                "temperature": temp_value,
+                "max_output_tokens": token_budget,
+                "top_p": 0.95,
+                "top_k": 40,
+            }
+            if response_mime_type:
+                generation_config_data["response_mime_type"] = response_mime_type
+            if response_schema is not None:
+                # Native schema binding on Vertex response generation.
+                generation_config_data["response_schema"] = response_schema
+
+            # Keep compatibility with preview runtime by importing preview_models.
+            # The schema object is emitted as plain dict JSON Schema from pydantic.
+            _ = preview_models
+
+            generation_config = GenerationConfig(**generation_config_data)
+
             response = self._model_client.generate_content(
                 prompt,
-                generation_config={
-                    "temperature": float(temperature),
-                    "max_output_tokens": int(max_tokens),
-                    "top_p": 0.95,
-                    "top_k": 40,
-                },
+                generation_config=generation_config,
                 safety_settings=safety_settings,
             )
         except Exception as e:

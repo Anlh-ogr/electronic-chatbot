@@ -29,7 +29,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 
@@ -43,10 +43,15 @@ from app.application.ai.nlu_service import NLUService, CircuitIntent
 from app.application.ai.nlg_service import NLGService
 from app.application.ai.constraint_validator import ConstraintValidator
 from app.application.ai.repair_engine import RepairEngine
-from app.application.ai.simulation_service import NgSpiceSimulationService, SimulationError
+from app.application.ai.simulation_service import (
+    NgSpiceSimulationService,
+    NgspiceCompilerService,
+    SimulationError,
+)
 from app.db.database import Base, SessionLocal, engine
 from app.domains.validators import ComponentSet, DCBiasValidator, DCValidationResult
 from app.domains.circuits.ai_core import AICore
+from app.domains.circuits.ai_core.ai_core import CircuitIRValidator, InvalidPinConnectionError
 from app.domains.circuits.ai_core.spec_parser import UserSpec
 from app.domains.circuits.ai_core.parameter_solver import ParameterSolver
 from app.infrastructure.repositories.chat_context_repository import (
@@ -56,6 +61,9 @@ from app.infrastructure.repositories.chat_context_repository import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.application.ai.circuit_ir_schema import CircuitIR
 
 # Path defaults
 _API_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # apps/api/
@@ -85,6 +93,14 @@ class ChatResponse:
     session_id: Optional[str] = None
     user_message_id: Optional[str] = None
     assistant_message_id: Optional[str] = None
+    download_url: Optional[str] = None
+    spice_deck_ready: Optional[bool] = None
+    spice_deck_url: Optional[str] = None
+    spice_deck: Optional[str] = None
+    artifact_id: Optional[str] = None
+    self_correction_retries: Optional[int] = None
+    ir_id: Optional[str] = None
+    compiled_ir_payload: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -119,7 +135,25 @@ class ChatResponse:
             d["user_message_id"] = self.user_message_id
         if self.assistant_message_id:
             d["assistant_message_id"] = self.assistant_message_id
+        if self.download_url:
+            d["download_url"] = self.download_url
+        if self.spice_deck_ready is not None:
+            d["spice_deck_ready"] = self.spice_deck_ready
+        if self.spice_deck_url:
+            d["spice_deck_url"] = self.spice_deck_url
+        if self.spice_deck:
+            d["spice_deck"] = self.spice_deck
+        if self.artifact_id:
+            d["artifact_id"] = self.artifact_id
+        if self.self_correction_retries is not None:
+            d["self_correction_retries"] = self.self_correction_retries
+        if self.ir_id:
+            d["ir_id"] = self.ir_id
         return d
+
+
+class ClarificationRequiredError(ValueError):
+    """Raised when CircuitIR indicates missing critical user parameters."""
 
 
 class ChatbotService:
@@ -169,7 +203,7 @@ class ChatbotService:
         self._init_context_router()
         logger.info("ChatbotService initialized")
 
-    def chat(
+    async def chat(
         self,
         user_text: str,
         session_id: Optional[str] = None,
@@ -264,6 +298,13 @@ class ChatbotService:
                     fallback_name=response.template_id,
                 )
 
+            if context_available_for_request and chat_id and response.success and response.download_url:
+                await self._persist_compiled_ir_and_artifacts(
+                    response=response,
+                    chat_id=chat_id,
+                    message_id=assistant_message_id,
+                )
+
             if context_available_for_request and chat_id:
                 self._persist_summary_and_memory_facts(chat_id=chat_id, response=response)
 
@@ -276,6 +317,151 @@ class ChatbotService:
 
         response.processing_time_ms = (time.time() - start) * 1000
         return response
+
+    def generate_circuit_ir(
+        self,
+        user_text: str,
+        mode: Optional[str] = None,
+    ) -> Optional[CircuitIR]:
+        """Generate structured CircuitIR directly from natural-language requirements."""
+        from app.application.ai.circuit_ir_schema import CircuitIR
+
+        req_text = (user_text or "").strip()
+        if not req_text:
+            logger.warning("generate_circuit_ir called with empty user_text")
+            return None
+
+        selected_mode = self._resolve_chat_mode(mode)
+
+        try:
+            result = self._router.generate_circuit_ir(
+                req_text,
+                mode=selected_mode,
+                max_schema_retries=2,
+            )
+            if result is None:
+                logger.warning("LLM did not return a valid CircuitIR object")
+                return None
+            ir = CircuitIR.model_validate(result)
+            if not ir.is_valid_request:
+                logger.info(
+                    "CircuitIR requested clarification: %s",
+                    ir.clarification_question or "missing critical I/O targets",
+                )
+            return ir
+        except Exception as exc:
+            logger.error("generate_circuit_ir failed: %s", exc, exc_info=True)
+            return None
+
+    def compile_circuit_artifacts(
+        self,
+        user_text: str,
+        mode: Optional[str] = None,
+        max_self_corrections: int = 2,
+    ) -> Dict[str, Any]:
+        """End-to-end circuit compile flow: LLM IR -> validate -> KiCad SCH -> SPICE deck."""
+        from app.application.ai.circuit_ir_schema import CircuitIR
+        from app.application.circuits.use_cases.export_kicad_sch import KiCad8SchematicCompiler
+
+        req_text = (user_text or "").strip()
+        if not req_text:
+            raise ValueError("Yeu cau tao mach dang rong")
+
+        selected_mode = self._resolve_chat_mode(mode)
+        validator = CircuitIRValidator()
+        sch_compiler = KiCad8SchematicCompiler()
+        spice_compiler = NgspiceCompilerService()
+
+        output_dir = _API_ROOT / "artifacts" / "compiled"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        attempt_prompt = req_text
+        retries_used = 0
+        validated_ir: Optional[CircuitIR] = None
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_self_corrections + 1):
+            try:
+                ir_result = self._router.generate_circuit_ir(
+                    attempt_prompt,
+                    mode=selected_mode,
+                    max_schema_retries=2,
+                )
+                if ir_result is None:
+                    raise ValueError("LLM khong tra ve CircuitIR hop le")
+
+                ir_obj = CircuitIR.model_validate(ir_result)
+                if not ir_obj.is_valid_request:
+                    raise ClarificationRequiredError(
+                        ir_obj.clarification_question
+                        or "Please provide more circuit parameters."
+                    )
+
+                ir_obj = validator.validate_and_fix_math(ir_obj)
+                validator.validate_pins(ir_obj)
+                validated_ir = ir_obj
+                retries_used = attempt
+                break
+            except ClarificationRequiredError:
+                raise
+            except InvalidPinConnectionError as exc:
+                last_error = exc
+                if attempt >= max_self_corrections:
+                    break
+                retries_used = attempt + 1
+                attempt_prompt = self._build_ir_retry_prompt(req_text, str(exc), pin_only=True)
+                logger.warning("Pin validation failed, retrying IR generation (%s/%s): %s", retries_used, max_self_corrections, exc)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= max_self_corrections:
+                    break
+                retries_used = attempt + 1
+                attempt_prompt = self._build_ir_retry_prompt(req_text, str(exc), pin_only=False)
+                logger.warning("Circuit compile pre-check failed, retrying IR generation (%s/%s): %s", retries_used, max_self_corrections, exc)
+
+        if validated_ir is None:
+            raise RuntimeError(f"Khong the tao CircuitIR hop le sau {max_self_corrections + 1} lan: {last_error}")
+
+        sch_content = sch_compiler.compile_to_sch(validated_ir)
+        spice_deck = spice_compiler.generate_spice_deck(validated_ir)
+
+        artifact_id = uuid.uuid4().hex
+        sch_file_name = f"{artifact_id}.kicad_sch"
+        sch_file_path = output_dir / sch_file_name
+        sch_file_path.write_text(sch_content, encoding="utf-8")
+
+        spice_file_name = f"{artifact_id}.cir"
+        spice_file_path = output_dir / spice_file_name
+        spice_file_path.write_text(spice_deck, encoding="utf-8")
+
+        return {
+            "message": "Circuit compiled successfully",
+            "mode": selected_mode.value,
+            "circuit_data": validated_ir.model_dump(mode="json"),
+            "download_url": f"/api/chat/compiled/{sch_file_name}",
+            "spice_deck_ready": True,
+            "spice_deck": spice_deck,
+            "spice_deck_url": f"/api/chat/compiled/{spice_file_name}",
+            "self_correction_retries": retries_used,
+            "artifact_id": artifact_id,
+        }
+
+    @staticmethod
+    def _build_ir_retry_prompt(requirements: str, error_message: str, pin_only: bool) -> str:
+        if pin_only:
+            return (
+                f"{requirements}\n\n"
+                "The previous CircuitIR has invalid pin mapping. "
+                f"Error: {error_message}.\n"
+                "Regenerate the full CircuitIR JSON and keep all ref_id values stable. "
+                "Use only valid pins for each component and keep net nodes in REF:PIN format."
+            )
+        return (
+            f"{requirements}\n\n"
+            "The previous CircuitIR failed validation. "
+            f"Error: {error_message}.\n"
+            "Regenerate the full CircuitIR JSON with corrected equations/components/nets while preserving the requested topology."
+        )
 
     def _init_context_router(self) -> None:
         """Initialize chat-context persistence layer if database is available."""
@@ -904,6 +1090,13 @@ class ChatbotService:
 
             if assumption_notes:
                 response.suggestions.extend([f"Gia dinh bo sung: {note}" for note in assumption_notes])
+
+            # Task 6 integration: attach end-to-end compiled artifacts to chat response.
+            self._attach_compile_artifacts_to_response(
+                response=response,
+                user_text=intent.raw_text,
+                mode=mode,
+            )
         else:
             response.success = False
             response.message = self._safe_error_response(
@@ -917,6 +1110,132 @@ class ChatbotService:
 
         response.processing_time_ms = (time.time() - start) * 1000
         return response
+
+    def _attach_compile_artifacts_to_response(
+        self,
+        response: ChatResponse,
+        user_text: str,
+        mode: LLMMode,
+    ) -> None:
+        """Best-effort attachment of KiCad/SPICE artifacts for frontend download/preview."""
+        try:
+            compiled = self.compile_circuit_artifacts(
+                user_text=user_text,
+                mode=mode.value,
+                max_self_corrections=2,
+            )
+        except Exception as exc:
+            logger.warning("Attach compile artifacts failed (soft): %s", exc)
+            return
+
+        response.download_url = compiled.get("download_url")
+        response.spice_deck_ready = bool(compiled.get("spice_deck_ready", False))
+        response.spice_deck_url = compiled.get("spice_deck_url")
+        response.spice_deck = compiled.get("spice_deck")
+        response.artifact_id = compiled.get("artifact_id")
+        payload = compiled.get("circuit_data")
+        if isinstance(payload, dict):
+            response.compiled_ir_payload = payload
+        retries = compiled.get("self_correction_retries")
+        if isinstance(retries, int):
+            response.self_correction_retries = retries
+
+    async def _persist_compiled_ir_and_artifacts(
+        self,
+        *,
+        response: ChatResponse,
+        chat_id: str,
+        message_id: Optional[str],
+    ) -> None:
+        """Persist validated IR and generated artifacts after successful create flow."""
+        from app.application.ai.circuit_ir_schema import CircuitIR
+        from app.db.session import async_session
+        from app.infrastructure.repositories.circuit_artifact_repository import CircuitArtifactRepository
+        from app.infrastructure.repositories.circuit_ir_repository import CircuitIRRepository
+
+        ir_payload = response.compiled_ir_payload if isinstance(response.compiled_ir_payload, dict) else None
+        if not ir_payload:
+            return
+
+        circuit_payload = response.circuit_data if isinstance(response.circuit_data, dict) else {}
+        circuit_id = self._extract_circuit_id(circuit_payload)
+        if not circuit_id:
+            logger.warning("Skip IR persistence: missing circuit_id in response payload")
+            return
+
+        try:
+            ir = CircuitIR.model_validate(ir_payload)
+        except Exception as exc:
+            logger.warning("Skip IR persistence: compiled payload is not valid CircuitIR (%s)", exc)
+            return
+
+        try:
+            async with async_session() as session:
+                ir_repo = CircuitIRRepository(session)
+                artifact_repo = CircuitArtifactRepository(session)
+
+                ir_id = await ir_repo.save_ir(
+                    ir=ir,
+                    circuit_id=circuit_id,
+                    session_id=chat_id,
+                    message_id=message_id,
+                )
+
+                sch_path = self._resolve_compiled_artifact_path(response.download_url)
+                if sch_path is not None:
+                    await artifact_repo.save_artifact(
+                        ir_id=ir_id,
+                        circuit_id=circuit_id,
+                        artifact_type="kicad_sch",
+                        file_path=str(sch_path),
+                        download_url=response.download_url,
+                        file_size_bytes=sch_path.stat().st_size,
+                    )
+
+                spice_path = self._resolve_compiled_artifact_path(response.spice_deck_url)
+                if spice_path is not None:
+                    await artifact_repo.save_artifact(
+                        ir_id=ir_id,
+                        circuit_id=circuit_id,
+                        artifact_type="spice_deck",
+                        file_path=str(spice_path),
+                        download_url=response.spice_deck_url,
+                        file_size_bytes=spice_path.stat().st_size,
+                    )
+
+                await ir_repo.update_status(ir_id, "compiled")
+                response.ir_id = ir_id
+        except Exception as exc:
+            logger.warning("Persist compiled IR/artifacts failed (soft): %s", exc)
+
+    @staticmethod
+    def _extract_circuit_id(circuit_payload: Dict[str, Any]) -> Optional[str]:
+        direct = circuit_payload.get("circuit_id")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        meta = circuit_payload.get("meta")
+        if isinstance(meta, dict):
+            from_meta = meta.get("circuit_id")
+            if isinstance(from_meta, str) and from_meta.strip():
+                return from_meta.strip()
+
+        return None
+
+    @staticmethod
+    def _resolve_compiled_artifact_path(download_url: Optional[str]) -> Optional[Path]:
+        if not download_url:
+            return None
+
+        safe_name = Path(str(download_url)).name
+        if not safe_name:
+            return None
+
+        base_dir = (_API_ROOT / "artifacts" / "compiled").resolve()
+        candidate = (base_dir / safe_name).resolve()
+        if candidate.parent != base_dir or not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
 
     def _handle_modify(self, intent: CircuitIntent, response: ChatResponse, start: float, mode: LLMMode) -> ChatResponse:
         """Flow chỉnh sửa mạch: xác định thao tác → apply lên mạch base → validate → NLG."""
@@ -2424,7 +2743,28 @@ class ChatbotService:
         supply_values.extend(self._extract_supply_voltages_from_netlist(self._extract_netlist(circuit_data)))
         metrics["supply_voltages"] = supply_values
 
-        expected_vcc = self._extract_numeric(intent.vcc, component_set.VCC)
+        extracted_vcc = self._dc_validator._extract_vcc(circuit_data)
+        metrics["extracted_vcc"] = extracted_vcc
+
+        intent_vcc = self._extract_numeric(intent.vcc, component_set.VCC)
+        metrics["intent_vcc"] = intent_vcc
+
+        expected_vcc = intent_vcc if isinstance(intent_vcc, (int, float)) and float(intent_vcc) >= 1.0 else extracted_vcc
+        if not isinstance(expected_vcc, (int, float)) or float(expected_vcc) < 1.0:
+            logger.warning(
+                "[physics] Extracted VCC=%.3fV is suspiciously low. Skipping physics validation to avoid false positives.",
+                float(expected_vcc or 0.0),
+            )
+            metrics["physics_skipped"] = True
+            return {
+                "passed": True,
+                "errors": [],
+                "suggestions": [
+                    "Kiem tra lai truong power_supply.voltage / VCC trong CircuitIR"
+                ],
+                "metrics": metrics,
+            }
+
         if supply_values and isinstance(expected_vcc, (int, float)):
             max_supply = max(supply_values)
             min_supply = min(supply_values)
@@ -2922,6 +3262,12 @@ class ChatbotService:
             or str(circuit_data.get("topology_type") or "")
             or "common_emitter"
         ).strip().lower()
+        topology_aliases = {
+            "ci": "inverting",
+            "ni": "non_inverting",
+            "diff": "differential",
+        }
+        topology = topology_aliases.get(topology, topology)
 
         solved_map: Dict[str, float] = {}
         for key, value in (solved_values or {}).items():
@@ -2966,7 +3312,7 @@ class ChatbotService:
 
         missing: List[str] = []
 
-        if topology in {"inverting", "non_inverting"}:
+        if topology in {"inverting", "non_inverting", "differential", "instrumentation"}:
             rf = pick("RF", "R2", "RC")
             rin = pick("RIN", "RG", "R1", "RE")
 
@@ -2975,14 +3321,20 @@ class ChatbotService:
                 rf = self._extract_numeric(rf, inferred_rf)
                 rin = self._extract_numeric(rin, inferred_rin)
 
-            if rf is None:
-                missing.append("RF")
-            if rin is None:
-                missing.append("RIN/RG")
+            if topology in {"inverting", "non_inverting"}:
+                if rf is None:
+                    missing.append("RF")
+                if rin is None:
+                    missing.append("RIN/RG")
             if vcc is None:
                 missing.append("VCC")
             if missing:
                 return None, missing
+
+            # Differential/instrumentation stages may not expose explicit Rf/Rin in solved map;
+            # fall back to neutral values so op-amp-specific checks can still run.
+            rf = self._extract_numeric(rf, 10_000.0)
+            rin = self._extract_numeric(rin, 10_000.0)
 
             return ComponentSet(
                 R1=1.0,

@@ -33,6 +33,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import logging
 import os
+from pathlib import Path
 
 from app.db.database import SessionLocal
 from app.infrastructure.repositories.chat_context_repository import (
@@ -74,6 +75,13 @@ class ChatResponseModel(BaseModel):
     session_id: Optional[str] = Field(None, description="Resolved session id")
     user_message_id: Optional[str] = Field(None, description="Persisted user message id")
     assistant_message_id: Optional[str] = Field(None, description="Persisted assistant message id")
+    download_url: Optional[str] = Field(None, description="Download URL for generated .kicad_sch artifact")
+    spice_deck_ready: Optional[bool] = Field(None, description="Whether SPICE deck artifact is ready")
+    spice_deck_url: Optional[str] = Field(None, description="Download URL for generated .cir artifact")
+    spice_deck: Optional[str] = Field(None, description="Generated SPICE deck text")
+    artifact_id: Optional[str] = Field(None, description="Artifact correlation id")
+    self_correction_retries: Optional[int] = Field(None, description="Retries used in IR self-correction loop")
+    ir_id: Optional[str] = Field(None, description="Persisted circuit_ir identifier for keep/compose flow")
 
 
 class EditUserMessageRequest(BaseModel):
@@ -175,6 +183,27 @@ class SimulationResponse(BaseModel):
     execution_time_ms: float
 
 
+class CompileCircuitRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=3000, description="Natural language circuit requirements")
+    mode: Optional[str] = Field(None, description="Model tier: fast | think | pro | ultra")
+
+
+class CompileCircuitResponse(BaseModel):
+    message: str
+    mode: str
+    circuit_data: Dict[str, Any]
+    download_url: str
+    spice_deck_ready: bool
+    spice_deck: str
+    spice_deck_url: str
+    self_correction_retries: int
+    artifact_id: str
+
+
+class SpiceStreamRequest(BaseModel):
+    spice_deck: str = Field(..., min_length=1, description="Full SPICE deck text")
+
+
 # ── Router ──
 
 router = APIRouter(prefix="/api/chat", tags=["chatbot"])
@@ -182,6 +211,8 @@ router = APIRouter(prefix="/api/chat", tags=["chatbot"])
 # Singleton chatbot service
 _chatbot_service = None
 _simulation_service = None
+_API_ROOT = Path(__file__).resolve().parents[4]
+_COMPILED_DIR = _API_ROOT / "artifacts" / "compiled"
 
 
 def _get_chatbot_service():
@@ -210,7 +241,7 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
     """ Gửi message cho chatbot, nhận response. """
     try:
         service = _get_chatbot_service()
-        result = service.chat(
+        result = await service.chat(
             request.message,
             session_id=request.session_id,
             user_id=request.user_id,
@@ -233,6 +264,13 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             session_id=result.session_id,
             user_message_id=result.user_message_id,
             assistant_message_id=result.assistant_message_id,
+            download_url=result.download_url,
+            spice_deck_ready=result.spice_deck_ready,
+            spice_deck_url=result.spice_deck_url,
+            spice_deck=result.spice_deck,
+            artifact_id=result.artifact_id,
+            self_correction_retries=result.self_correction_retries,
+            ir_id=result.ir_id,
         )
 
     except Exception as e:
@@ -241,6 +279,70 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "chat_failed", "message": str(e)},
         )
+
+
+@router.post("/compile-circuit", response_model=CompileCircuitResponse)
+async def compile_circuit(request: CompileCircuitRequest) -> CompileCircuitResponse:
+    """End-to-end compile flow: generate CircuitIR, validate, export kicad_sch and spice deck."""
+    try:
+        service = _get_chatbot_service()
+        result = service.compile_circuit_artifacts(
+            user_text=request.message,
+            mode=request.mode,
+            max_self_corrections=2,
+        )
+        return CompileCircuitResponse(**result)
+    except Exception as e:
+        logger.error("Compile circuit endpoint error: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "compile_circuit_failed", "message": str(e)},
+        )
+
+
+@router.get("/compiled/{file_name}")
+async def get_compiled_artifact(file_name: str) -> PlainTextResponse:
+    """Serve generated .kicad_sch/.cir artifact files for frontend preview/download."""
+    safe_name = Path(file_name).name
+    if not safe_name.endswith((".kicad_sch", ".cir")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_file_name", "message": "Unsupported artifact extension"},
+        )
+
+    _COMPILED_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = (_COMPILED_DIR / safe_name).resolve()
+    base_path = _COMPILED_DIR.resolve()
+    if artifact_path.parent != base_path or not artifact_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "artifact_not_found", "message": "Artifact file not found"},
+        )
+
+    content = artifact_path.read_text(encoding="utf-8", errors="ignore")
+    return PlainTextResponse(
+        content=content,
+        media_type="text/plain",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        },
+    )
+
+
+@router.post("/simulate/spice-stream")
+async def simulate_spice_stream(request: SpiceStreamRequest) -> StreamingResponse:
+    """Stream ngspice data points from a full SPICE deck as SSE frames."""
+    from app.application.ai.simulation_service import NgspiceCompilerService
+
+    compiler = NgspiceCompilerService()
+
+    async def event_gen():
+        async for json_line in compiler.run_simulation_stream(request.spice_deck):
+            yield f"data: {json_line}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @router.patch("/messages/{message_id}", response_model=EditUserMessageResponse)

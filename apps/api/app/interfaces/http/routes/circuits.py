@@ -26,10 +26,12 @@ from __future__ import annotations
 # pathlib: File path handling
 import asyncio
 import json
-from typing import Dict, Any, Union
+from typing import Dict, Any, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pathlib import Path
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # ====== Application layer ======
 from app.application.circuits.dtos import (
@@ -54,6 +56,7 @@ from app.application.circuits.use_cases import (
     GenerateCircuitUseCase,
     ValidateCircuitUseCase,
     ExportKiCadSchUseCase,
+    MergeCircuitsUseCase,
 )
 from app.application.circuits.use_cases.export_kicad_pcb import ExportKiCadPCBUseCase
 from app.application.circuits.services.industrial_routing_job_queue import (
@@ -68,6 +71,10 @@ from app.interfaces.http.deps import (
     get_industrial_routing_job_queue,
 )
 from app.infrastructure.exporters.kicad_cli_renderer import KiCadCLIRenderer
+from app.infrastructure.repositories.circuit_artifact_repository import CircuitArtifactRepository
+from app.infrastructure.repositories.circuit_ir_repository import CircuitIRRepository
+from app.infrastructure.repositories.composition_repository import CompositionRepository
+from app.db.session import get_session
 
 
 # Create router
@@ -75,6 +82,18 @@ router = APIRouter(
     prefix="/api/circuits",
     tags=["circuits"]
 )
+
+
+class KeepIRRequest(BaseModel):
+    ir_id: str = Field(..., min_length=1)
+    is_kept: bool = Field(...)
+
+
+class ComposeCircuitsRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    chat_id: Optional[str] = Field(default=None)
+    ir_ids: List[str] = Field(default_factory=list)
+    coupling_hint: Optional[str] = Field(default=None)
 
 
 def _build_pcb_export_options(
@@ -1214,4 +1233,92 @@ async def render_circuit(
                 "message": str(e)
             }
         )
+
+
+@router.post("/ir/keep")
+async def keep_ir(
+    request: KeepIRRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, Any]:
+    """Mark or unmark a circuit IR as kept for composition flow."""
+    repo = CircuitIRRepository(session)
+    updated = await repo.mark_kept(request.ir_id, request.is_kept)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "ir_not_found",
+                "message": f"IR '{request.ir_id}' not found",
+            },
+        )
+
+    return {
+        "success": True,
+        "ir_id": request.ir_id,
+        "is_kept": request.is_kept,
+    }
+
+
+@router.get("/ir/kept")
+async def list_kept_irs(
+    session_id: str = Query(..., min_length=1),
+    session: AsyncSession = Depends(get_session),
+) -> List[Dict[str, Any]]:
+    """List all kept IR payloads in a session."""
+    repo = CircuitIRRepository(session)
+    kept = await repo.get_kept_irs(session_id)
+
+    output: List[Dict[str, Any]] = []
+    for item in kept:
+        output.append(
+            {
+                "ir_id": item.get("ir_id"),
+                "circuit_name": item.get("circuit_name"),
+                "topology_type": item.get("topology_type"),
+                "stage_count": item.get("stage_count"),
+                "created_at": item.get("created_at").isoformat() if item.get("created_at") else None,
+            }
+        )
+    return output
+
+
+@router.post("/compose")
+async def compose_circuits(
+    request: ComposeCircuitsRequest,
+    session: AsyncSession = Depends(get_session),
+) -> Dict[str, Any]:
+    """Merge kept stage IRs into one composed circuit and return compiled schematic URL."""
+    ir_repo = CircuitIRRepository(session)
+    artifact_repo = CircuitArtifactRepository(session)
+    composition_repo = CompositionRepository(session)
+    use_case = MergeCircuitsUseCase(
+        circuit_ir_repo=ir_repo,
+        artifact_repo=artifact_repo,
+        composition_repo=composition_repo,
+    )
+
+    try:
+        result = await use_case.execute(
+            session_id=request.session_id,
+            chat_id=request.chat_id,
+            ir_ids=request.ir_ids or None,
+            coupling_hint=request.coupling_hint,
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "compose_invalid_request",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "compose_failed",
+                "message": str(exc),
+            },
+        ) from exc
 

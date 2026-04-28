@@ -533,12 +533,20 @@ class NLUService:
     def _parse_vcc(self, text: str, intent: CircuitIntent) -> None:
         # Trích giá trị VCC (điện áp nguồn) từ text.
         intent.vcc = self._extract_number(text, [
-            r"\bvcc\b\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",  # ưu tiên VCC rõ ràng
-            r"\bsupply\b\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",  # supply 12V
-            r"dùng\s*(?:nguồn\s*)?([0-9]+(?:\.[0-9]+)?)\s*v",      # dùng nguồn 12V
-            r"\bnguồn\b\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)\s*v",    # nguồn 12V
-            r"\b([0-9]+(?:\.[0-9]+)?)\s*v\b",                      # số kèm đơn vị V (bắt buộc có 'v')
+            r"\bvcc\b\s*[=:]?\s*(?:±|\+/?-)?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",  # ưu tiên VCC rõ ràng
+            r"\bvdd\b\s*[=:]?\s*(?:±|\+/?-)?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",  # VDD rõ ràng
+            r"\bsupply\b\s*[=:]?\s*(?:±|\+/?-)?\s*([0-9]+(?:\.[0-9]+)?)\s*v?",  # supply 12V
+            r"dùng\s*(?:nguồn\s*)?(?:±|\+/?-)?\s*([0-9]+(?:\.[0-9]+)?)\s*v",      # dùng nguồn ±15V
+            r"\bnguồn\b\s*[=:]?\s*(?:±|\+/?-)?\s*([0-9]+(?:\.[0-9]+)?)\s*v",    # nguồn ±15V
+            r"\b([0-9]+(?:\.[0-9]+)?)\s*v\b",                                        # số kèm đơn vị V (bắt buộc có 'v')
         ])
+
+    @staticmethod
+    def _normalize_supply_voltage(value: Optional[float]) -> Optional[float]:
+        if not isinstance(value, (int, float)):
+            return None
+        voltage = abs(float(value))
+        return voltage if voltage >= 1.0 else None
 
     def _parse_frequency(self, text: str, intent: CircuitIntent) -> None:
         # kHz trước để tránh match nhầm Hz
@@ -917,6 +925,10 @@ class NLUService:
         return (
             "Convert user request (Vietnamese or English) into one JSON object following schema nlu.v1. "
             "Return JSON only. No markdown.\n"
+            "IMPORTANT: vc means the DC power supply voltage (VCC/VDD), not the input signal amplitude. "
+            "If the user says 'nguồn ±15V', set vc = 15.0. "
+            "Never copy Vin, mV input amplitude, or signal peak into vc. "
+            "If only the input signal amplitude is mentioned, leave vc null unless a supply is explicitly stated.\n"
             "Schema keys:\n"
             '{"sv":"nlu.v1","it":"CRT|MOD|VAL|EXP","tp":"CE|CB|CC|CS|CD|CG|INV|NON|DIF|INA|CLA|CLAB|CLB|CLC|CLD|DAR|MST|UNK",'
             '"gn":number|null,"vc":number|null,"fq":number|null,"ic":int,'
@@ -978,7 +990,7 @@ class NLUService:
         intent.topology = intent.circuit_type
 
         intent.gain_target = payload.gn
-        intent.vcc = payload.vc
+        intent.vcc = self._normalize_supply_voltage(payload.vc)
         intent.frequency = payload.fq
         intent.input_channels = payload.ic
 
@@ -1059,7 +1071,9 @@ class NLUService:
             and re.search(r"(?:gain|av|khuếch\s*đại)", rule.raw_text, re.IGNORECASE)
         ):
             merged.gain_target = rule.gain_target
-        merged.vcc = llm.vcc if llm.vcc is not None else rule.vcc
+        merged.vcc = self._normalize_supply_voltage(llm.vcc)
+        if merged.vcc is None:
+            merged.vcc = self._normalize_supply_voltage(rule.vcc)
         merged.frequency = llm.frequency if llm.frequency is not None else rule.frequency
         merged.input_channels = llm.input_channels if llm.input_channels > 1 else rule.input_channels
         merged.channel_inputs = llm.channel_inputs if llm.channel_inputs else rule.channel_inputs

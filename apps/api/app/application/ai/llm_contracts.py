@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StrictSchemaModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class LLMContractRequest(StrictSchemaModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    sv: str = Field(default="req.v1")
+    tk: str = Field(..., min_length=1)
+    in_: Dict[str, Any] = Field(default_factory=dict, alias="in")
+    of: str = Field(default="json")
 
 
 class IntentCode(str, Enum):
@@ -36,6 +45,17 @@ class TopologyCode(str, Enum):
     DAR = "DAR"
     MST = "MST"
     UNK = "UNK"
+
+
+TOPOLOGY_ALIASES = {
+    "CI": "INV",
+    "NI": "NON",
+    "DIFF": "DIF",
+}
+
+
+def normalize_topology(value: str) -> str:
+    return TOPOLOGY_ALIASES.get((value or "").strip().upper(), (value or "").strip().upper())
 
 
 class InputModeCode(str, Enum):
@@ -94,7 +114,7 @@ class NLUEditOperationV1(StrictSchemaModel):
 
 
 class NLUIntentOutputV1(StrictSchemaModel):
-    sv: Literal["nlu.v1"]
+    sv: str = Field(default="nlu.v1")
     it: IntentCode
     tp: TopologyCode
     gn: Optional[float] = None
@@ -119,14 +139,21 @@ class NLUIntentOutputV1(StrictSchemaModel):
     ef: List[str] = Field(default_factory=list)
     cf: float = Field(default=0.5, ge=0.0, le=1.0)
 
+    @field_validator("tp", mode="before")
+    @classmethod
+    def normalize_tp(cls, value: Any) -> str:
+        if value is None:
+            return "UNK"
+        return normalize_topology(str(value))
+
 
 class DomainCheckOutputV1(StrictSchemaModel):
-    sv: Literal["domain.v1"]
+    sv: str = Field(default="domain.v1")
     ok: bool
 
 
 class ComponentProposalOutputV1(StrictSchemaModel):
-    sv: Literal["cmp.v1"]
+    sv: str = Field(default="cmp.v1")
     tp: TopologyCode = TopologyCode.CE
     r1: float = Field(ge=1000.0)
     r2: float = Field(ge=1000.0)
@@ -166,6 +193,13 @@ _TOPOLOGY_CODE_TO_NAME = {
     TopologyCode.UNK: "unknown",
 }
 _TOPOLOGY_NAME_TO_CODE = {value: key for key, value in _TOPOLOGY_CODE_TO_NAME.items()}
+_TOPOLOGY_NAME_TO_CODE.update(
+    {
+        "ci": TopologyCode.INV,
+        "ni": TopologyCode.NON,
+        "diff": TopologyCode.DIF,
+    }
+)
 
 
 _SUPPLY_CODE_TO_NAME = {

@@ -8,10 +8,12 @@ from .generate_circuit import GenerateCircuitUseCase
 from .validate_circuit import ValidateCircuitUseCase
 from .export_kicad_sch import ExportKiCadSchUseCase
 from .validate_renderability import ValidateRenderability
+from .merge_circuits import MergeCircuitsUseCase
 
 __all__ = [
     "GenerateCircuitUseCase",
     "ValidateCircuitUseCase",
     "ExportKiCadSchUseCase",
     "ValidateRenderability",
+    "MergeCircuitsUseCase",
 ]

@@ -6,8 +6,9 @@ Module nay nam o tang Domain, khong goi LLM va khong phu thuoc vao ngspice.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,146 @@ class DCBiasValidator:
         "common_collector",
         "inverting",
         "non_inverting",
+        "differential",
+        "instrumentation",
     }
+    SUPPLY_COMPONENT_TYPES = {
+        "VCC",
+        "VDD",
+        "VEE",
+        "POWER",
+        "POWER_SUPPLY",
+        "PWR_FLAG",
+        "VOLTAGE_SOURCE",
+        "VSOURCE",
+    }
+
+    @staticmethod
+    def _get_field(source: Any, field_name: str, default: Any = None) -> Any:
+        if source is None:
+            return default
+        if isinstance(source, dict):
+            return source.get(field_name, default)
+        return getattr(source, field_name, default)
+
+    @classmethod
+    def _coerce_voltage(cls, value: Any) -> Optional[float]:
+        if isinstance(value, dict):
+            return cls._coerce_voltage(value.get("value"))
+        if isinstance(value, (int, float)):
+            voltage = abs(float(value))
+            return voltage if voltage > 1.0 else None
+        if not isinstance(value, str):
+            return None
+
+        text = value.strip().replace("±", "")
+        if not text:
+            return None
+
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)(\s*(mv|v))?\b", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+
+        voltage = abs(float(match.group(1)))
+        unit = (match.group(3) or "v").lower()
+        if unit == "mv":
+            voltage /= 1000.0
+        return voltage if voltage > 1.0 else None
+
+    @staticmethod
+    def _has_bjt_topology_hint(topology: str) -> bool:
+        hint = (topology or "").strip().lower()
+        return any(
+            token in hint
+            for token in (
+                "common_emitter",
+                "common_base",
+                "common_collector",
+                "multi_stage",
+                "darlington",
+                "class_a",
+                "class_ab",
+                "class_b",
+                "class_c",
+            )
+        )
+
+    @classmethod
+    def _extract_topology_hint(cls, ir: Any) -> str:
+        candidates = [
+            cls._get_field(ir, "topology"),
+            cls._get_field(ir, "circuit_type"),
+            cls._get_field(ir, "device_preference"),
+            cls._get_field(cls._get_field(ir, "analysis"), "topology_classification"),
+            cls._get_field(cls._get_field(ir, "architecture"), "topology_type"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().lower()
+        return ""
+
+    @classmethod
+    def _default_vcc_for_topology(cls, topology: str) -> float:
+        return 12.0 if cls._has_bjt_topology_hint(topology) else 15.0
+
+    def _extract_vcc(self, ir: Any) -> float:
+        """Extract VCC from a CircuitIR-like payload with sane fallbacks.
+
+        Priority:
+        1. power_supply.voltage
+        2. architecture.stages.active_device_vcc
+        3. power-supply components in the components list
+        4. analysis/design_specs or calculations mentioning supply/VCC
+        5. default 15.0V for op-amp-style requests, 12.0V for BJT-style requests
+        """
+
+        topology = self._extract_topology_hint(ir)
+
+        power_supply = self._get_field(ir, "power_supply")
+        voltage = self._coerce_voltage(self._get_field(power_supply, "voltage"))
+        if voltage is not None:
+            return voltage
+
+        architecture = self._get_field(ir, "architecture")
+        stages = self._get_field(architecture, "stages", [])
+        if isinstance(stages, list):
+            for stage in stages:
+                voltage = self._coerce_voltage(self._get_field(stage, "active_device_vcc"))
+                if voltage is not None:
+                    return voltage
+
+        components = self._get_field(ir, "components", [])
+        if isinstance(components, list):
+            for component in components:
+                component_type = str(self._get_field(component, "type", "")).strip().upper()
+                if component_type not in self.SUPPLY_COMPONENT_TYPES:
+                    continue
+                for field_name in ("voltage", "value", "vcc", "vdd"):
+                    voltage = self._coerce_voltage(self._get_field(component, field_name))
+                    if voltage is not None:
+                        return voltage
+                parameters = self._get_field(component, "parameters", {})
+                if isinstance(parameters, dict):
+                    for field_name in ("voltage", "value", "vcc", "vdd"):
+                        voltage = self._coerce_voltage(parameters.get(field_name))
+                        if voltage is not None:
+                            return voltage
+
+        analysis = self._get_field(ir, "analysis")
+        for spec_list_name in ("design_specs", "calculations_table", "calculations"):
+            specs = self._get_field(analysis, spec_list_name, [])
+            if not isinstance(specs, list):
+                continue
+            for spec in specs:
+                parameter = str(self._get_field(spec, "parameter", self._get_field(spec, "name", ""))).strip().lower()
+                if not parameter or not any(token in parameter for token in ("supply", "vcc", "vdd", "vss", "rail")):
+                    continue
+                for field_name in ("value", "voltage", "calculated_value"):
+                    voltage = self._coerce_voltage(self._get_field(spec, field_name))
+                    if voltage is not None:
+                        return voltage
+
+        return self._default_vcc_for_topology(topology)
 
     def validate(self, c: ComponentSet, gain_target: Optional[float]) -> DCValidationResult:
         """Kiem tra phan cuc DC cho cau hinh BJT co mang chia ap base."""
@@ -217,9 +357,49 @@ class DCBiasValidator:
             metrics=metrics,
         )
 
+    def validate_opamp_swing(self, c: ComponentSet, gain_target: Optional[float]) -> DCValidationResult:
+        """Kiem tra swing dau ra co ban cho op-amp topology (khong dung VCE/Q-point BJT)."""
+        errors: List[str] = []
+        suggestions: List[str] = []
+
+        if c.VCC <= 0:
+            errors.append("VCC phai lon hon 0V")
+            return DCValidationResult(passed=False, errors=errors, suggestions=suggestions, metrics={})
+
+        # Rule of thumb for non rail-to-rail op-amp output swing.
+        max_swing = max(c.VCC - 1.5, 0.0)
+        vout_required = max(abs(float(gain_target or 2.0)) * 0.1, 0.0)
+
+        metrics = {
+            "VCC": float(c.VCC),
+            "max_swing": float(max_swing),
+            "vout_required": float(vout_required),
+        }
+
+        if max_swing <= 0:
+            errors.append("Nguon cap qua thap de op-amp swing on dinh")
+        elif vout_required > max_swing:
+            errors.append(
+                f"Op-amp output clipping: Vout_required={vout_required:.3f}V > max_swing={max_swing:.3f}V"
+            )
+            suggestions.append("Tang VCC hoac chon op-amp rail-to-rail")
+
+        return DCValidationResult(
+            passed=len(errors) == 0,
+            errors=errors,
+            suggestions=suggestions,
+            metrics=metrics,
+        )
+
     def validate_by_topology(self, c: ComponentSet, gain_target: Optional[float]) -> DCValidationResult:
         """Chon ham validate phu hop dua vao topology."""
         topology = (c.topology or "").strip().lower()
+        topology_aliases = {
+            "ci": "inverting",
+            "ni": "non_inverting",
+            "diff": "differential",
+        }
+        topology = topology_aliases.get(topology, topology)
 
         if topology not in self.SUPPORTED_TOPOLOGIES:
             warning = (
@@ -239,11 +419,14 @@ class DCBiasValidator:
         if topology in {"common_emitter", "common_base", "common_collector"}:
             return self.validate(c, gain_target)
 
-        if topology in {"inverting", "non_inverting"} or "inverting" in topology or "non_inverting" in topology:
+        if topology in {"inverting", "non_inverting"}:
             rf = c.RC
             rin = c.RE if c.RE > 0 else c.R2
             resolved_gain = gain_target if gain_target is not None else max(abs(rf / rin), 1.0)
             return self.validate_opamp_inverting(Rf=rf, Rin=rin, gain_target=resolved_gain)
+
+        if topology in {"differential", "instrumentation"}:
+            return self.validate_opamp_swing(c, gain_target)
 
         return DCValidationResult(
             passed=False,
