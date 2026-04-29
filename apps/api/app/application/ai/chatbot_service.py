@@ -67,6 +67,8 @@ if TYPE_CHECKING:
 
 # Path defaults
 _API_ROOT = Path(__file__).resolve().parent.parent.parent.parent  # apps/api/
+_EMPTY = Path("/dev/null/disabled") # for AI core
+# none
 _METADATA_DIR = _API_ROOT / "resources" / "templates_metadata"
 _BLOCK_LIBRARY_DIR = _API_ROOT / "resources" / "block_library"
 _TEMPLATES_DIR = _API_ROOT / "resources" / "templates"
@@ -162,11 +164,14 @@ class ChatbotService:
     def __init__(self) -> None:
         self._nlu = NLUService()
         self._nlg = NLGService()
+        # block resources (metadata, templates) được load trong AICore
         self._ai_core = AICore(
-            metadata_dir=_METADATA_DIR,
-            block_library_dir=_BLOCK_LIBRARY_DIR,
-            templates_dir=_TEMPLATES_DIR,
+            metadata_dir=_EMPTY,
+            block_library_dir=_EMPTY,
+            templates_dir=_EMPTY,
         )
+        
+        
         self._router = get_router()
         self._validator = ConstraintValidator()
         self._dc_validator = DCBiasValidator()
@@ -2662,7 +2667,10 @@ class ChatbotService:
                 "suggestions": ["Physics gate disabled by ENFORCE_PHYSICS_GATE"],
                 "metrics": {},
             }
-
+        # log debug vcc
+        vcc_val=intent.vcc if hasattr(intent, 'vcc') else "N/a"
+        logger.info(f"[physics] VCC from intent: {vcc_val}, solved_values keys: {list(solved_values.keys())}")
+        
         component_set, missing_fields = self._build_component_set_for_physics(
             intent=intent,
             solved_values=solved_values,
@@ -3306,8 +3314,33 @@ class ChatbotService:
                 if prefixed:
                     return float(prefixed[0][1])
             return None
-
-        vcc = self._extract_numeric(pick("VCC", "VDD", "SUPPLY"), intent.vcc, self._extract_vcc_from_circuit_data(circuit_data))
+        
+        # Fix VCC - dume
+        vcc = None
+        
+        # Priority 1: User nhập trực tiếp trong intent (intent.vcc)
+        if intent.vcc is not None and isinstance (intent.vcc, (int, float)):
+            vcc = abs(float(intent.vcc))
+        
+        # Priority 2: Từ kết quả giải mạch (solved value/pick)
+        if vcc is None:
+            vcc_picked = pick("VCC", "VDD", "SUPPLY")
+            if vcc_picked is not None:
+                vcc = abs(float(vcc_picked))
+                
+        # Priority 3: Safe fallback
+        if vcc is None:
+            if topology in {"inverting", "non_inverting", "differential", "instrumentation"}:
+                vcc = 15.0
+            elif any (topo in topology for topo in ["common_", "multi_stage", "darlington", "fet", "mosfet"]):
+                vcc = 12.0
+            elif "class" in topology:
+                vcc = 24.0
+            elif "logic" in topology or "gate" in topology:
+                vcc = 5.0
+            else:
+                vcc = 12.0
+        
         beta = self._extract_numeric(pick("BETA", "BF"), 100.0)
 
         missing: List[str] = []
@@ -4171,12 +4204,24 @@ class ChatbotService:
         return max(1, len(in_ports))
 
     def _estimate_voltage_range(self, intent: CircuitIntent, circuit_data: Dict[str, Any]) -> Dict[str, Optional[float]]:
-        # For single supply: [0, VCC], for dual supply: [-VCC, VCC] if available.
-        if intent.vcc is None:
-            return {"min": None, "max": None}
+        vcc = None
+        if intent.vcc is not None and isinstance (intent.vcc, (int, float)):
+            vcc = abs(float(intent.vcc))
+        if vcc is None:
+            topology = (intent.circuit_type or intent.topology or str(circuit_data.get("topology_type") or "")).lower()
+            if any(t in topology for t in ["inverting", "non_inverting", "diff", "instrumentation"]):
+                vcc = 15.0
+            elif "class" in topology:
+                vcc = 24.0
+            else:
+                vcc = 12.0
+
+        # For single supply: [0, VCC], for dual supply: [-VCC, VCC]
         if intent.supply_mode == "dual_supply":
-            return {"min": -float(intent.vcc), "max": float(intent.vcc)}
-        return {"min": 0.0, "max": float(intent.vcc)}
+            return {"min": -float(vcc), "max": float(vcc)}
+        
+        # Nguồn đơn (Single Supply)
+        return {"min": 0.0, "max": float(vcc)}
 
     def _render_gain_substitution(self, gain_formula: str, solved_values: Dict[str, float]) -> str:
         if not gain_formula:

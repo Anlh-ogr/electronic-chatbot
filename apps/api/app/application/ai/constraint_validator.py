@@ -222,34 +222,43 @@ class ConstraintValidator:
         vcc_target = intent.get("vcc")
         if vcc_target is not None:
             report.checked_rules += 1
-            # Tìm voltage source trong circuit
-            for comp in circuit.get("components", []):
-                if comp.get("type", "").upper() == "VOLTAGE_SOURCE":
-                    params = comp.get("parameters", {})
-                    v = params.get("voltage")
-                    if isinstance(v, dict):
-                        v = v.get("value")
-                    if v is not None and abs(v - vcc_target) > 0.5:
-                        report.violations.append(Violation(
-                            code="VCC_MISMATCH", severity="warning",
-                            message=f"Nguồn {comp.get('id','')} = {v}V khác yêu cầu {vcc_target}V",
-                            field="vcc",
-                            expected=vcc_target,
-                            actual=v,
-                        ))
-                    break
+            # Tìm tất cả voltage source (dual supply có 2 nguồn: VCC+ và VEE/VSS-)
+            supply_comps = [
+                c for c in circuit.get("components", [])
+                if c.get("type", "").upper() in {
+                    "VOLTAGE_SOURCE", "VCC", "VDD", "VEE", "VSS", "POWER_SUPPLY", "VSOURCE"
+                }
+            ]
+            # Lấy giá trị tuyệt đối lớn nhất → đại diện cho |VCC|
+            found_voltages = []
+            for comp in supply_comps:
+                params = comp.get("parameters", {})
+                v = params.get("voltage") or comp.get("voltage") or comp.get("value")
+                if isinstance(v, dict):
+                    v = v.get("value")
+                try:
+                    found_voltages.append(abs(float(v)))
+                except (TypeError, ValueError):
+                    pass
+            
+            if found_voltages:
+                actual_vcc = max(found_voltages)  # lấy rail dương cao nhất
+                if abs(actual_vcc - abs(vcc_target)) > 0.5:
+                    report.violations.append(Violation(
+                        code="VCC_MISMATCH", severity="warning",
+                        message=(
+                            f"Nguon cung cap thuc te {actual_vcc}V khac yeu cau {abs(vcc_target)}V"
+                        ),
+                        field="vcc",
+                        expected=abs(vcc_target),
+                        actual=actual_vcc,
+                    ))
 
     # ------------------------------------------------------------------ #
     #  Hard constraint checks
     # ------------------------------------------------------------------ #
 
-    def _check_hard_constraints(
-        self,
-        circuit: Dict[str, Any],
-        intent: Dict[str, Any],
-        solved: Dict[str, float],
-        report: ValidationReport,
-    ) -> None:
+    def _check_hard_constraints(self,circuit: Dict[str, Any],intent: Dict[str, Any],solved: Dict[str, float],report: ValidationReport,) -> None:
         """Kiểm tra hard constraints từ intent."""
         constraints = intent.get("hard_constraints", {})
         if not constraints:
@@ -280,20 +289,50 @@ class ConstraintValidator:
                     expected=f"<= {gain_max}",
                     actual=actual_gain,
                 ))
+        # VSS range check (dual supply)
+        vss_min = constraints.get("vss_min")  # giá trị âm, e.g. -15
+        vss_max = constraints.get("vss_max")  # thường là 0 hoặc âm nhỏ
+        
+        if vss_min is not None or vss_max is not None:
+        # Tìm nguồn âm trong circuit
+            vss_actual = None
+            for comp in circuit.get("components", []):
+                ctype = comp.get("type", "").upper()
+                if ctype not in {"VEE", "VSS", "VOLTAGE_SOURCE", "VSOURCE"}:
+                    continue
+                params = comp.get("parameters", {})
+                v = params.get("voltage") or comp.get("voltage") or comp.get("value")
+                if isinstance(v, dict):
+                    v = v.get("value")
+                try:
+                    fv = float(v)
+                    if fv < 0:  # nguồn âm
+                        vss_actual = fv
+                        break
+                except (TypeError, ValueError):
+                    pass
 
-        vcc_max = constraints.get("vcc_max")
-        if vcc_max is not None:
-            vcc_val = solved.get("vcc") or constraints.get("vcc")
-            if vcc_val is not None:
-                report.checked_rules += 1
-                if vcc_val > vcc_max:
-                    report.violations.append(Violation(
-                        code="HARD_VCC_MAX", severity="error",
-                        message=f"VCC {vcc_val}V > giới hạn tối đa {vcc_max}V",
-                        field="vcc",
-                        expected=f"<= {vcc_max}",
-                        actual=vcc_val,
-                    ))
+            if vss_actual is not None:
+                if vss_min is not None:
+                    report.checked_rules += 1
+                    if vss_actual < vss_min:
+                        report.violations.append(Violation(
+                            code="HARD_VSS_MIN", severity="error",
+                            message=f"VSS {vss_actual}V < gioi han toi thieu {vss_min}V",
+                            field="vss",
+                            expected=f">= {vss_min}",
+                            actual=vss_actual,
+                        ))
+                if vss_max is not None:
+                    report.checked_rules += 1
+                    if vss_actual > vss_max:
+                        report.violations.append(Violation(
+                            code="HARD_VSS_MAX", severity="error",
+                            message=f"VSS {vss_actual}V > gioi han toi da {vss_max}V",
+                            field="vss",
+                            expected=f"<= {vss_max}",
+                            actual=vss_actual,
+                        ))
 
         zout_max = constraints.get("output_impedance_max_ohm")
         if zout_max is not None:

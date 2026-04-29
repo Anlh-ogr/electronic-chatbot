@@ -85,6 +85,14 @@ def _walk_slim(node: dict) -> None:
         return
     for key in ("description", "title", "examples", "example"):
         node.pop(key, None)
+    # inject "type" nếu node có properties/items nhưng thiếu "type"
+    if "properties" in node and "type" not in node:
+        node["type"] = "object"
+    if "items" in node and "type" not in node:
+        node["type"] = "array"
+    
+    
+    
     for value in list(node.values()):
         if isinstance(value, dict):
             _walk_slim(value)
@@ -97,6 +105,7 @@ def _walk_slim(node: dict) -> None:
 def prepare_vertex_schema(schema: dict, *, debug_label: str = "") -> dict:
     """Single entry point: sanitize + slim + assert no const remains."""
     result = slim_schema_for_vertex(sanitize_schema_for_vertex(schema))
+    _inject_missing_types(result)
     raw = json.dumps(result)
     issues = []
     if '"const"' in raw:
@@ -104,6 +113,9 @@ def prepare_vertex_schema(schema: dict, *, debug_label: str = "") -> dict:
     if '"type": "null"' in raw or '"type":"null"' in raw:
         issues.append("'type: null' found (use nullable: true instead)")
 
+    # kiểm tra node có properties nhưng không có type
+    if _has_typeless_object(result): issues.append("object node missing type field")
+    
     if issues:
         raise ValueError(
             f"[SCHEMA BUG] in '{debug_label}': {', '.join(issues)}. "
@@ -116,3 +128,31 @@ def prepare_vertex_schema(schema: dict, *, debug_label: str = "") -> dict:
         len(raw),
     )
     return result
+
+def _inject_missing_types(node: dict) -> None:
+    """Đảm bảo mọi object/array node đều có trường type."""
+    if not isinstance(node, dict):
+        return
+    if "properties" in node and "type" not in node:
+        node["type"] = "object"
+    if "items" in node and "type" not in node:
+        node["type"] = "array"
+    for v in list(node.values()):
+        if isinstance(v, dict):
+            _inject_missing_types(v)
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    _inject_missing_types(item)
+
+def _has_typeless_object(node: dict) -> bool:
+    if not isinstance(node, dict):
+        return False
+    if "properties" in node and "type" not in node:
+        return True
+    return any(
+        _has_typeless_object(v) if isinstance(v, dict)
+        else any(_has_typeless_object(i) for i in v if isinstance(i, dict))
+        if isinstance(v, list) else False
+        for v in node.values()
+    )

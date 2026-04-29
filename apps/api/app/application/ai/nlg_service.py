@@ -261,22 +261,50 @@ class NLGService:
             "gain_actual": gain_actual,
             "params": params,
             "warnings": warnings,
+             # ── THÊM MỚI: trích từ params nếu có ──
+            "supply_voltage": params.get("vcc") or params.get("VCC"),
+            "supply_type": (
+                "dual" if (params.get("vss") or params.get("VSS")) else "single"
+            ),
+            "vss": params.get("vss") or params.get("VSS"),
+            "active_device_model": params.get("active_device") or params.get("ic_model"),
+            "vin_peak": params.get("vin") or params.get("Vin"),
+            "vout_target": params.get("vout") or params.get("Vout"),
+            "zin_min": params.get("zin_min") or params.get("Zin_min"),
+            # ── context công thức ──
             "amplifier_equation_context": self._build_equation_context(circuit_type),
             "response_contract": {
                 "language": "vi",
-                "opening_prefix": "✅",
                 "format": "markdown",
                 "sections": [
-                    "He phuong trinh he so khuech dai",
-                    "Chuc nang mach",
-                    "Giai phap",
-                    "Buoc tinh toan thiet ke",
-                    "Thong so ky thuat cuoi cung",
-                    "Ket qua kiem tra",
+                    "Hệ phương trình hệ số khuếch đại",
+                    "Chức năng mạch",
+                    "Giải pháp & Nguyên lý hoạt động",
+                    "Bước tính toán thiết kế",         # Bảng giá trị Vin/Vout/Zin → RIN/RF
+                    "Thông số kỹ thuật cuối cùng",
+                    "Kết quả kiểm tra",
+                    # >>>THÊM 3 mục mới:
+                    "Cấu trúc tầng (Stage Architecture)",   # topology, stage count, active device
+                    "Cấu trúc nguồn & output",              # power rail, output strategy
+                    "Phương thức liên kết",                 # RC/Direct/Transformer coupling
                 ],
+                "ir_backend_fields": {           # fill IR
+                    "topology_type": "SingleStage|MultiStage|Hybrid",
+                    "stage_count": "int",
+                    "stages": [{
+                        "function": "str",
+                        "active_device": "str (e.g. LM741, 2N2222)",
+                        "coupling_in": "RC|Direct|Transformer",
+                        "coupling_out": "RC|Direct|Transformer",
+                    }],
+                    "power_rail": "Single|Dual",
+                    "supply_voltage": "float (exact, from user request)",
+                    "output_strategy": "CommonLoad|PushPull",
+                    "interstage_coupling": "RC|Direct|Transformer",
+                },
                 "must_include": ["Av", "Ai", "Zi", "Zo"],
-                "assumption_policy": "Neu thieu du lieu thi neu ro gia dinh",
-            },
+                "assumption_policy": "Nêu rõ giả định nếu thiếu dữ liệu",
+            }
         }
 
         system = (
@@ -401,7 +429,6 @@ class NLGService:
             "solved_params": solved,
             "response_contract": {
                 "language": "vi",
-                "opening_prefix": "✅",
                 "format": "markdown",
                 "must_include": [
                     "tom tat thao tac",
@@ -476,7 +503,7 @@ class NLGService:
     def generate_modify_clarification(self, intent: Any) -> str:
         """Sinh câu hỏi clarification cho modify intent."""
         lines = [
-            "⚠️ Tôi nhận diện bạn muốn **chỉnh sửa mạch**, nhưng chưa rõ thao tác cụ thể.",
+            "Tôi nhận diện bạn muốn **chỉnh sửa mạch**, nhưng chưa rõ thao tác cụ thể.",
             "",
             "Vui lòng mô tả rõ hơn, ví dụ:",
             '- "Thêm resistor 10k vào mạch CE"',
@@ -503,7 +530,7 @@ class NLGService:
 
         if errors:
             lines.append("")
-            lines.append(f"🔴 **Lỗi ({len(errors)}):**")
+            lines.append(f"**Lỗi ({len(errors)}):**")
             for v in errors:
                 detail = f"  - **[{v.code}]** {v.message}"
                 if v.expected is not None:
@@ -512,7 +539,7 @@ class NLGService:
 
         if warnings:
             lines.append("")
-            lines.append(f"🟡 **Cảnh báo ({len(warnings)}):**")
+            lines.append(f" **Cảnh báo ({len(warnings)}):**")
             for v in warnings:
                 lines.append(f"  - **[{v.code}]** {v.message}")
 
@@ -527,7 +554,7 @@ class NLGService:
         if not actions:
             return None
 
-        lines = ["🔧 **Tự động sửa chữa:**"]
+        lines = [" **Tự động sửa chữa:**"]
         for a in actions:
             desc = a.get("description", "")
             lines.append(f"- {desc}")
@@ -749,7 +776,7 @@ class NLGService:
         if ctype in fet_types:
             return {
                 "family": "FET/JFET/MOSFET (CS/CD/CG)",
-                "key_params": ["gm", "RD", "RL", "IDSS", "VP (JFET)", "K", "Vth (MOSFET)"],
+                "key_params": ["gm", "RD", "RL", "VGS", "VDS", "IDSS", "VP (JFET)", "K", "Vth (MOSFET)"],
                 "workflow": [
                     "Xác định điểm Q: tính ID, VDS, VGS",
                     "Tính gm tại điểm Q (từ công thức hoặc datasheet)",

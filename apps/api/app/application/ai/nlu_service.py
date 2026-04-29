@@ -6,8 +6,8 @@ Phân tích ý definition từ user input thành CircuitIntent domain object.
 Luồng xử lý NLU:
  1. Rule-based parsing: regex + spec parser (nhanh, deterministic)
  2. LLM parsing: LLM Router theo mode Air/Pro (chính xác hơn, slow)
- 3. Hợp nhất: merge rule-based + LLM kết quả
- 4. Fallback: rule-based khi LLM không khả dụng hoặc fail
+ 3. Hợp nhất: merge regex + LLM kết quả
+ 4. Fallback: "không thực hiện được yêu cầu, vui lòng cung cấp thêm thông tin chi tiết".
 
 Module này chịu trách nhiệm:
  - Nhận user text → CircuitIntent entity
@@ -15,9 +15,9 @@ Module này chịu trách nhiệm:
  - Bảo đảm intent đủ để sinh mạch
 
 Nguyên tắc:
- - Adapter pattern: tầng application, phụ thuộc spec parser + LLM Router
- - Rule-based first: nhanh, consistent, không timeout
- - LLM enhance: độ chính xác cao hơn nếu có
+ - Nhận diện càng nhiều thông tin càng tốt (topology, gain, vcc, frequency, input/output, constraints...)
+ - Gửi yêu cầu cho LLM xử lý, trả về thông tin và IR.
+ - 
 """
 
 from __future__ import annotations

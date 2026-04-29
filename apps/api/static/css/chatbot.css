@@ -69,35 +69,38 @@ html, body {
     gap: 10px;
 }
 
-.system-logo {
+/* .system-logo {
     max-height: 55px;
     max-width: 120px;
     width: auto;
     height: auto;
     object-fit: contain;
     margin: 0 auto;
-}
+} */
 
 .header-left i {
+    padding-left: 20px;
     font-size: 20px;
+    display:flex;
+    align-items: center;
 }
 
 .header-left h1 {
     margin-top: 2px;
-    margin-left: -25px;
+    margin-left: 2px;
     font-size: 1.45rem;
     display: inline-block;
-    font-weight: 1000;
+    font-weight: 900;
 }
 
-.version-badge {
+/* .version-badge {
     background: rgba(255,255,255,0.2);
     padding: 2px 8px;
     border-radius: 10px;
     font-size: 1.1rem;
     font-weight: 500;
     align-self: center;
-}
+} */
 
 .header-right {
     display: flex;
