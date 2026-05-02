@@ -270,14 +270,41 @@ class KiCadSchExporter(ExporterPort):
         )
         label_positions = self._build_default_label_positions(circuit)
 
-        return self.quality_evaluator.evaluate_schematic(
-            circuit=circuit,
-            placements=placements,
-            wires=wires,
-            pin_positions=pin_positions,
-            label_positions=label_positions,
-            min_component_spacing=self.layout_planner.min_component_spacing,
+        # Backward/forward compatibility: some evaluator versions expose
+        # evaluate_schematic(...), newer simplified ones only expose evaluate(...).
+        if hasattr(self.quality_evaluator, "evaluate_schematic"):
+            return self.quality_evaluator.evaluate_schematic(
+                circuit=circuit,
+                placements=placements,
+                wires=wires,
+                pin_positions=pin_positions,
+                label_positions=label_positions,
+                min_component_spacing=self.layout_planner.min_component_spacing,
+            )
+
+        report = self.quality_evaluator.evaluate(
+            {
+                "circuit": circuit,
+                "placements": placements,
+                "wires": wires,
+                "pin_positions": pin_positions,
+                "label_positions": label_positions,
+                "min_component_spacing": self.layout_planner.min_component_spacing,
+            }
         )
+
+        # Provide legacy attributes expected by exporter logic.
+        if not hasattr(report, "objective"):
+            overall = float(getattr(report, "overall_score", 0.8) or 0.8)
+            report.objective = max(0.0, 1.0 - overall)
+        if not hasattr(report, "is_hard_valid"):
+            report.is_hard_valid = True
+        if not hasattr(report, "wire_crossing_count"):
+            report.wire_crossing_count = 0
+        if not hasattr(report, "wire_label_overlap_count"):
+            report.wire_label_overlap_count = 0
+
+        return report
 
     def _build_pin_position_map(
         self,

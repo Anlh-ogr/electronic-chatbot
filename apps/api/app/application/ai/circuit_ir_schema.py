@@ -6,9 +6,30 @@ machine-parseable before downstream EDA validation/compilation stages.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import List, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class CircuitIRMetadata(BaseModel):
+    """Strict, non-schema metadata projection for downstream services."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    circuit_name: str = Field(default="")
+    topology_classification: str = Field(default="")
+    topology_type: str = Field(default="")
+    stage_count: int = Field(default=0)
+    power_rail: str = Field(default="")
+    output_strategy: str = Field(default="")
+    interstage_coupling: str = Field(default="")
+    domain: str = Field(default="analog")
+    input_node: str = Field(default="")
+    input_net: str = Field(default="")
+    output_node: str = Field(default="")
+    output_net: str = Field(default="")
+    tran_step: str = Field(default="1u")
+    tran_stop: str = Field(default="5m")
 
 
 class Calculation(BaseModel):
@@ -16,14 +37,23 @@ class Calculation(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    target_component: str = Field(..., min_length=1, description="Target component reference, e.g. R1")
-    formula: str = Field(..., min_length=1, description="Formula text used to derive value")
-    calculated_value: float = Field(..., description="Computed numeric value")
-    unit: str = Field(..., min_length=1, description="Engineering unit, e.g. ohm, V, A")
-    vin: Optional[Union[float, str]] = Field(default=None, description="Input condition context, if applicable")
-    vout: Optional[Union[float, str]] = Field(default=None, description="Output target/result context, if applicable")
-    zin: Optional[Union[float, str]] = Field(default=None, description="Input impedance context, if applicable")
-    f_cutoff: Optional[Union[float, str]] = Field(default=None, description="Cutoff frequency context, if applicable")
+    target_component: str = Field(
+        ...,
+        validation_alias=AliasChoices("target_component", "name"),
+        description="Target component reference, e.g. R1",
+    )
+    formula: str = Field(..., description="Formula text used to derive value, e.g. 'R = Vbe / Iq'")
+    calculated_value: float = Field(
+        ...,
+        validation_alias=AliasChoices("calculated_value", "result"),
+        description="Computed numeric value",
+    )
+    unit: str = Field(..., description="Engineering unit, e.g. ohm, V, A, Hz, W")
+    vin: str = Field(default="", description="Input voltage condition, e.g. 1V peak or DC bias")
+    vout: str = Field(default="", description="Output target/result, e.g. 5V peak or expected output swing")
+    zin: str = Field(default="", description="Input impedance context, e.g. 1M for AC coupled stage")
+    f_cutoff: str = Field(default="", description="Cutoff frequency context, e.g. 1kHz for coupling network")
+    component_stage: str = Field(default="", description="Stage where component operates, e.g. 'input_stage', 'output_stage', 'bias_network'")
 
 
 class AnalysisAndMath(BaseModel):
@@ -31,12 +61,13 @@ class AnalysisAndMath(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    circuit_name: str = Field(..., min_length=1)
-    topology_classification: str = Field(..., min_length=1)
-    design_explanation: str = Field(..., min_length=1, description="Why this topology is selected and its advantages")
-    math_basis: str = Field(..., min_length=1, description="Core formulas and assumptions used")
-    expected_bom: List[str] = Field(default_factory=list)
-    calculations_table: List[Calculation] = Field(default_factory=list)
+    circuit_name: str = Field(..., description="Circuit name, e.g. 'Class AB Push-Pull Amplifier', 'Common Emitter BJT Amplifier'")
+    topology_classification: str = Field(..., description="Topology class, e.g. 'BJT Common Emitter', 'Op-Amp Inverting', 'Class AB Push-Pull', 'Complementary Push-Pull'")
+    design_explanation: str = Field(..., description="Why this topology is selected and its advantages: efficiency, distortion, input/output impedance, frequency response")
+    math_basis: str = Field(..., description="Core formulas and assumptions used: Ic=βIb, Av=Rc/re, output power, efficiency, etc.")
+    design_summary: str = Field(default="", description="Brief summary of design approach: stages, coupling, bias strategy, load matching")
+    expected_bom: List[str] = Field(default_factory=list, description="Expected bill of materials: transistor models, resistor values, capacitor values")
+    calculations_table: List[Calculation] = Field(default_factory=list, description="Detailed calculation steps for each component in each stage")
 
 
 class StageDetail(BaseModel):
@@ -45,10 +76,10 @@ class StageDetail(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage_index: int = Field(..., ge=1)
-    function: str = Field(..., min_length=1, description='Examples: "Voltage Gain", "Buffer"')
-    active_device: str = Field(..., min_length=1)
-    input_coupling: str = Field(..., min_length=1)
-    output_coupling: str = Field(..., min_length=1)
+    function: str = Field(..., description='Examples: "Voltage Gain", "Buffer", "Current Source", "Power Output", "Impedance Matching"')
+    active_device: str = Field(..., description="Active device reference or type: Q1 (BJT), U1 (Op-Amp), M1 (MOSFET), etc.")
+    input_coupling: str = Field(..., description='Coupling type: "RC Coupling", "Direct Coupling", "Transformer Coupling", "AC Coupling", "Capacitive Coupling"')
+    output_coupling: str = Field(..., description='Coupling type: "RC Coupling", "Direct Coupling", "Transformer Coupling", "None", "AC Coupling"')
 
 
 class StageArchitecture(BaseModel):
@@ -56,16 +87,9 @@ class StageArchitecture(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    topology_type: Literal["Single-stage", "Multi-stage", "Hybrid"]
-    stage_count: int = Field(..., ge=1)
-    stages: List[StageDetail] = Field(default_factory=list)
-
-    @field_validator("stages")
-    @classmethod
-    def _stages_not_empty(cls, value: List[StageDetail]) -> List[StageDetail]:
-        if not value:
-            raise ValueError("stages must contain at least one stage")
-        return value
+    topology_type: Literal["Single-stage", "Multi-stage", "Hybrid", "Push-Pull", "Complementary", "Differential"]
+    stage_count: int = Field(..., ge=1, description="Number of cascaded stages")
+    stages: List[StageDetail] = Field(default_factory=list, description="List of stage definitions")
 
 
 class PowerAndCoupling(BaseModel):
@@ -73,12 +97,14 @@ class PowerAndCoupling(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    power_rail: Literal["Single (VCC-GND)", "Symmetric (VCC-VEE)"]
-    output_strategy: str = Field(..., min_length=1)
+    power_rail: str = Field(..., description='Power rail description, e.g. "Single (VCC-GND)", "Symmetric (VCC-VEE)", "±12V Symmetric"')
+    output_strategy: str = Field(..., description='Examples: "Common Load", "Push-Pull", "Complementary Push-Pull", "Differential Pair Output"')
     interstage_coupling: Literal[
         "RC Coupling",
         "Direct Coupling",
         "Transformer Coupling",
+        "AC Coupling",
+        "Capacitive Coupling",
         "None",
     ]
 
@@ -88,20 +114,28 @@ class Component(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    ref_id: str = Field(..., min_length=1, description="Reference designator, e.g. R1, Q1, C2")
-    type: str = Field(..., min_length=1, description="Component type, e.g. resistor, bjt_npn")
-    value: Union[float, int, str] = Field(..., description="Nominal value or model string")
-    standardized_value: str = Field(..., min_length=1, description="Nearest E-series value, e.g. 4.7k")
-    operating_point_check: str = Field(..., min_length=1, description="DC operating-point verification")
-    footprint: Optional[str] = Field(default=None, description="KiCad footprint identifier")
+    id: str = Field(
+        ...,
+        validation_alias=AliasChoices("id", "ref_id"),
+        description="Reference designator, e.g. R1, Q1, C2",
+    )
+    type: str = Field(..., description="Component type, e.g. resistor, bjt_npn, opamp, mosfet, diode, capacitor, inductor")
+    value: str = Field(..., description="Nominal value or model string, e.g. 10k, 1u, TIP41C, LM741")
+    model: str = Field(default="Generic", description="Compatible model name for active devices; defaults to Generic if omitted")
+    standardized_value: str = Field(..., description="Nearest E-series value, e.g. 4.7k, or exact model name")
+    operating_point_check: str = Field(..., description="DC operating-point verification or operating region (e.g. 'Vce=5V, Ic=100mA' or 'Active region')")
+    footprint: str = Field(default="", description="KiCad footprint identifier, e.g. Package_TO_SOT_Bipolar:TO-220-3_Vertical")
+    kicad_symbol: str = Field(..., description="KiCad symbol library reference, e.g. Device:R, Device:C, Transistor_BJT:TIP41C, Amplifier_Operational:LM741")
 
-    @field_validator("ref_id")
+    @field_validator("id")
     @classmethod
     def _normalize_ref_id(cls, value: str) -> str:
-        normalized = value.strip().upper()
-        if not normalized:
-            raise ValueError("ref_id must not be empty")
-        return normalized
+        return str(value).strip().upper()
+
+    @property
+    def ref_id(self) -> str:
+        """Backward-compatible alias for older call sites."""
+        return self.id
 
 
 class Net(BaseModel):
@@ -109,7 +143,7 @@ class Net(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    net_name: str = Field(..., min_length=1, description='Net name, use "0" for ground')
+    net_name: str = Field(..., description='Net name, use "0" for ground')
     nodes: List[str] = Field(default_factory=list, description='Node refs like "R1:1", "Q1:B"')
 
     @field_validator("net_name")
@@ -117,8 +151,8 @@ class Net(BaseModel):
     def _normalize_net_name(cls, value: str) -> str:
         normalized = str(value).strip()
         if not normalized:
-            raise ValueError("net_name must not be empty")
-        if normalized.lower() in {"gnd", "ground", "vss"}:
+            return ""
+        if normalized.lower() in {"gnd", "ground", "vss", "0"}:
             return "0"
         return normalized.upper()
 
@@ -138,7 +172,7 @@ class Net(BaseModel):
             normalized.append(f"{ref}:{pin}")
 
         if not normalized:
-            raise ValueError("nodes must contain at least one node")
+            return []
         return normalized
 
 
@@ -147,58 +181,24 @@ class CircuitIR(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    is_valid_request: bool = Field(
-        default=True,
-        description="Set to FALSE if user input is missing critical I/O parameters.",
-    )
-    clarification_question: Optional[str] = Field(
-        default=None,
-        description="If is_valid_request is False, populate this with the clarification question.",
-    )
-    analysis: Optional[AnalysisAndMath] = Field(default=None)
-    architecture: Optional[StageArchitecture] = Field(default=None)
-    power_and_coupling: Optional[PowerAndCoupling] = Field(default=None)
-    components: Optional[List[Component]] = Field(default=None)
-    nets: Optional[List[Net]] = Field(default=None)
-    probe_nodes: Optional[List[str]] = Field(
-        default=None,
-        description='Nodes for ngspice plotting, e.g. ["IN", "OUT"]',
-    )
-
-    @field_validator("components")
-    @classmethod
-    def _components_not_empty(cls, value: Optional[List[Component]]) -> Optional[List[Component]]:
-        if value is not None and not value:
-            raise ValueError("components must not be empty")
-        return value
-
-    @field_validator("nets")
-    @classmethod
-    def _nets_not_empty(cls, value: Optional[List[Net]]) -> Optional[List[Net]]:
-        if value is not None and not value:
-            raise ValueError("nets must not be empty")
-        return value
-
-    @field_validator("nets")
-    @classmethod
-    def _ground_net_required(cls, value: Optional[List[Net]]) -> Optional[List[Net]]:
-        if value is not None and value and not any(net.net_name == "0" for net in value):
-            raise ValueError('Ground net must be explicitly named "0"')
-        return value
+    is_valid_request: bool = Field(..., description="Set to FALSE if user input is missing critical I/O parameters.")
+    clarification_question: str = Field(default="", description="If is_valid_request is False, populate this with the clarification question.")
+    analysis: AnalysisAndMath = Field(...)
+    architecture: StageArchitecture = Field(...)
+    power_and_coupling: PowerAndCoupling = Field(...)
+    components: List[Component] = Field(default_factory=list)
+    nets: List[Net] = Field(default_factory=list)
+    probe_nodes: List[str] = Field(default_factory=list, description='Nodes for ngspice plotting, e.g. ["IN", "OUT"]')
 
     @field_validator("probe_nodes")
     @classmethod
-    def _validate_probe_nodes(cls, value: Optional[List[str]]) -> Optional[List[str]]:
-        if value is None:
-            return None
+    def _validate_probe_nodes(cls, value: List[str]) -> List[str]:
         normalized: List[str] = []
         for item in value:
             node = str(item).strip()
             if not node:
                 continue
             normalized.append("0" if node.lower() in {"0", "gnd", "ground"} else node.upper())
-        if not normalized:
-            raise ValueError("probe_nodes must contain at least one node")
         return normalized
 
     @model_validator(mode="after")
@@ -207,18 +207,45 @@ class CircuitIR(BaseModel):
             return self
 
         missing: List[str] = []
-        if self.analysis is None:
-            missing.append("analysis")
-        if self.architecture is None:
-            missing.append("architecture")
-        if self.power_and_coupling is None:
-            missing.append("power_and_coupling")
-        if self.components is None:
+        if not self.analysis.circuit_name.strip():
+            missing.append("analysis.circuit_name")
+        if not self.analysis.topology_classification.strip():
+            missing.append("analysis.topology_classification")
+        if not self.analysis.design_explanation.strip():
+            missing.append("analysis.design_explanation")
+        if not self.analysis.math_basis.strip():
+            missing.append("analysis.math_basis")
+        if self.analysis.expected_bom is None:
+            missing.append("analysis.expected_bom")
+        if self.architecture.stage_count < 1:
+            missing.append("architecture.stage_count")
+        if not self.architecture.stages:
+            missing.append("architecture.stages")
+        if not self.power_and_coupling.output_strategy.strip():
+            missing.append("power_and_coupling.output_strategy")
+        if not self.components:
             missing.append("components")
-        if self.nets is None:
+        if not self.nets:
             missing.append("nets")
-        if self.probe_nodes is None:
+        if not self.probe_nodes:
             missing.append("probe_nodes")
+
+        if self.components and any(
+            not component.id.strip()
+            or not component.type.strip()
+            or not component.value.strip()
+            or not component.standardized_value.strip()
+            or not component.operating_point_check.strip()
+            or not component.kicad_symbol.strip()
+            for component in self.components
+        ):
+            missing.append("components.fields")
+
+        if self.nets and any(not net.net_name.strip() or not net.nodes for net in self.nets):
+            missing.append("nets.fields")
+
+        if self.nets and not any(self._normalize_net_name(net.net_name) == "0" for net in self.nets):
+            missing.append('nets.0')
 
         if missing:
             raise ValueError(
@@ -228,23 +255,28 @@ class CircuitIR(BaseModel):
         return self
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def metadata(self) -> CircuitIRMetadata:
         """Backward-compatible metadata projection for existing services."""
-        if self.analysis is None or self.architecture is None or self.power_and_coupling is None:
-            return {}
-        return {
-            "circuit_name": self.analysis.circuit_name,
-            "topology_classification": self.analysis.topology_classification,
-            "topology_type": self.architecture.topology_type,
-            "stage_count": self.architecture.stage_count,
-            "power_rail": self.power_and_coupling.power_rail,
-            "output_strategy": self.power_and_coupling.output_strategy,
-            "interstage_coupling": self.power_and_coupling.interstage_coupling,
-        }
+        return CircuitIRMetadata(
+            circuit_name=self.analysis.circuit_name,
+            topology_classification=self.analysis.topology_classification,
+            topology_type=self.architecture.topology_type,
+            stage_count=self.architecture.stage_count,
+            power_rail=self.power_and_coupling.power_rail,
+            output_strategy=self.power_and_coupling.output_strategy,
+            interstage_coupling=self.power_and_coupling.interstage_coupling,
+        )
 
     @property
     def calculations(self) -> List[Calculation]:
         """Backward-compatible access to legacy calculations list."""
-        if self.analysis is None:
-            return []
         return self.analysis.calculations_table
+
+    @staticmethod
+    def _normalize_net_name(value: str) -> str:
+        normalized = str(value).strip()
+        if not normalized:
+            return ""
+        if normalized.lower() in {"gnd", "ground", "vss", "0"}:
+            return "0"
+        return normalized.upper()

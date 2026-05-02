@@ -279,6 +279,8 @@ class NgSpiceSimulationService:
                 text = str(item).strip().lower()
                 if not text:
                     continue
+                if text in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
+                    continue
                 if text.startswith("v(") or text.startswith("i("):
                     normalized.append(text)
                 else:
@@ -719,6 +721,8 @@ class NgSpiceSimulationService:
         normalized: List[str] = []
         for probe in probes:
             value = str(probe).strip().lower()
+            if value in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
+                continue
             if value and value not in normalized:
                 normalized.append(value)
 
@@ -1146,7 +1150,7 @@ class NgspiceCompilerService:
         return None, None
 
     def _build_testbench(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> List[str]:
-        meta = ir.metadata if isinstance(ir.metadata, dict) else {}
+        meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         analog_mode = str(meta.get("domain", "analog")).strip().lower() != "digital"
 
         input_node = self._select_input_node(ir, pin_net_map)
@@ -1168,7 +1172,7 @@ class NgspiceCompilerService:
         return lines
 
     def _select_input_node(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> str:
-        meta = ir.metadata if isinstance(ir.metadata, dict) else {}
+        meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         explicit = str(meta.get("input_node") or meta.get("input_net") or "").strip()
         if explicit:
             return self._normalize_net_name(explicit)
@@ -1187,7 +1191,7 @@ class NgspiceCompilerService:
         return "in"
 
     def _select_output_node(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> str:
-        meta = ir.metadata if isinstance(ir.metadata, dict) else {}
+        meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         explicit = str(meta.get("output_node") or meta.get("output_net") or "").strip()
         if explicit:
             return self._normalize_net_name(explicit)

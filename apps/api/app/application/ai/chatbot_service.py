@@ -680,7 +680,7 @@ class ChatbotService:
                 db.rollback()
             except Exception:
                 pass
-            logger.warning("Failed to persist generated circuit/snapshot: %s", exc)
+            logger.error("DB Save failed, continuing in-memory: %s", exc)
         finally:
             db.close()
 
@@ -733,11 +733,9 @@ class ChatbotService:
     # ------------------------------------------------------------------ #
 
     def _handle_create(self, intent: CircuitIntent, response: ChatResponse, start: float, mode: LLMMode) -> ChatResponse:
-        """Flow tạo mạch mới: NLU → Clarify? → AI Core → Validate → Repair → NLG."""
+        """LLM-driven circuit design flow: NLU → generate_circuit_ir() → compile → respond."""
 
-        assumption_notes = self._apply_reasonable_defaults(intent)
-
-        # Clarification nếu thiếu thông tin
+        # ─── Step 1: Ask for clarification if insufficient parameters ───
         if intent.circuit_type == "unknown" or intent.confidence < 0.3:
             response.needs_clarification = True
             missing = []
@@ -763,355 +761,59 @@ class ChatbotService:
             response.processing_time_ms = (time.time() - start) * 1000
             return response
 
-        # AI Core pipeline
-        generation_intent = self._inject_feedback_hints(intent)
-        spec = self._intent_to_spec(generation_intent)
-        pipeline_result = self._ai_core.handle_spec(spec)
-        response.pipeline = pipeline_result.to_dict()
-        response.template_id = pipeline_result.plan.matched_template_id or "" if pipeline_result.plan else ""
-
-        # Reasoning fallback khi AI Core thất bại
-        if not pipeline_result.success:
-            reasoning_text = self._reasoning_fallback(intent, pipeline_result.error, mode=mode)
-            if reasoning_text:
-                response.success = True
-                response.message = reasoning_text
-                response.processing_time_ms = (time.time() - start) * 1000
-                return response
-
-        # ── Validate + Repair loop ──
-        if pipeline_result.success and pipeline_result.circuit:
-            circuit = pipeline_result.circuit
-            solved = pipeline_result.solved
-
-            circuit_data = circuit.circuit_data
-            solved_values = solved.values if solved else {}
-            gain_for_validation = self._resolve_gain_for_validation(
-                solved_values=solved_values,
-                fallback_gain=(solved.actual_gain if solved else None),
-            )
-            solved_for_validation = self._prepare_validation_metrics(
-                intent=intent,
-                solved_values=solved_values,
-                gain_actual=gain_for_validation,
-                stage_analysis=(solved.stage_analysis if solved else None),
-            )
-
-            # Validate
-            val_report = self._validator.validate(
-                circuit_data, intent.to_dict(), solved_for_validation,
-            )
-            response.validation = val_report.to_dict()
-
-            # Repair nếu có errors
-            if not val_report.passed:
-                repair_result = self._repair.repair(
-                    circuit_data, solved_values, intent.to_dict(), val_report,
-                )
-                response.repair = repair_result.to_dict()
-
-                if repair_result.repaired:
-                    circuit_data = repair_result.circuit_data
-                    solved_values = repair_result.solved_params
-                    response.validation = repair_result.final_report.to_dict() if repair_result.final_report else response.validation
-                    logger.info(f"Repair successful: {len(repair_result.actions)} actions")
-
-            # Final validation pass with latest solved/circuit state.
-            gain_for_validation = self._resolve_gain_for_validation(
-                solved_values=solved_values,
-                fallback_gain=(solved.actual_gain if solved else None),
-            )
-            solved_for_validation = self._prepare_validation_metrics(
-                intent=intent,
-                solved_values=solved_values,
-                gain_actual=gain_for_validation,
-                stage_analysis=(solved.stage_analysis if solved else None),
-            )
-            val_report = self._validator.validate(
-                circuit_data, intent.to_dict(), solved_for_validation,
-            )
-            response.validation = val_report.to_dict()
-
-            # Fail-fast gate: if hard constraints fail, retry pipeline with stricter strategy before returning.
-            if not val_report.passed and self._has_hard_constraint_errors(val_report):
-                failed_codes = self._extract_validation_error_codes(val_report)
-                retry_bundle = self._retry_pipeline_for_hard_constraints(
-                    intent=intent,
-                    failed_codes=failed_codes,
-                    max_attempts=2,
-                )
-                if retry_bundle:
-                    pipeline_result = retry_bundle["pipeline_result"]
-                    circuit = pipeline_result.circuit
-                    solved = pipeline_result.solved
-                    circuit_data = circuit.circuit_data if circuit else circuit_data
-                    solved_values = solved.values if solved else {}
-                    val_report = retry_bundle["validation_report"]
-
-                    response.pipeline = pipeline_result.to_dict()
-                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
-                    response.validation = val_report.to_dict()
-                    logger.info(
-                        "Hard-constraint regeneration succeeded with template=%s",
-                        response.template_id,
-                    )
-
-            if not val_report.passed and self._has_hard_constraint_errors(val_report):
-                failed_codes = self._extract_validation_error_codes(val_report)
-                alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
-                    intent=intent,
-                    failed_codes=failed_codes,
-                )
-                if alternative_bundle:
-                    pipeline_result = alternative_bundle["pipeline_result"]
-                    circuit = pipeline_result.circuit
-                    solved = pipeline_result.solved
-                    circuit_data = circuit.circuit_data if circuit else circuit_data
-                    solved_values = solved.values if solved else solved_values
-                    val_report = alternative_bundle["validation_report"]
-                    response.pipeline = pipeline_result.to_dict()
-                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
-                    response.validation = val_report.to_dict()
-                    response.suggestions.extend(alternative_bundle.get("relax_notes", []))
-
-            if not val_report.passed and self._has_hard_constraint_errors(val_report):
-                failed_codes = self._extract_validation_error_codes(val_report)
-                self._record_feedback_event(
-                    intent=intent,
-                    stage="validate",
-                    errors=[f"Hard constraints not satisfied: {', '.join(failed_codes)}"],
-                    suggestions=["Dieu chinh topology va tham so de dap ung hard constraints"],
-                    metadata={"failed_codes": failed_codes, "flow": "create"},
-                )
-                response.success = False
-                response.message = self._safe_error_response(
-                    error_msg=f"Hard constraints not satisfied after regeneration: {', '.join(failed_codes)}",
-                    stage="validate",
-                    circuit_type=intent.circuit_type,
-                    gain_target=intent.gain_target,
-                    vcc=intent.vcc,
-                    mode=mode,
-                )
-                response.processing_time_ms = (time.time() - start) * 1000
-                return response
-
-            gain_for_validation = self._resolve_gain_for_validation(
-                solved_values=solved_values,
-                fallback_gain=(solved.actual_gain if solved else None),
-            )
-            physics_payload = self._run_physics_validation(
-                intent=intent,
-                solved_values=solved_values,
-                circuit_data=circuit_data,
-                gain_actual=gain_for_validation,
-            )
-            self._attach_physics_validation(response, physics_payload)
-            if not physics_payload.get("passed", True):
-                local_fix = self._attempt_local_physics_autofix(
-                    intent=intent,
-                    solved_values=solved_values,
-                    circuit_data=circuit_data,
-                    gain_actual=gain_for_validation,
-                    physics_payload=physics_payload,
-                )
-                if local_fix:
-                    solved_values = local_fix["solved_values"]
-                    circuit_data = local_fix["circuit_data"]
-                    physics_payload = local_fix["physics_validation"]
-                    self._attach_physics_validation(response, physics_payload)
-
-                if not physics_payload.get("passed", True):
-                    retry_bundle = self._retry_pipeline_for_physics_failures(
-                        intent=intent,
-                        physics_payload=physics_payload,
-                        max_attempts=3,
-                    )
-                    if retry_bundle:
-                        pipeline_result = retry_bundle["pipeline_result"]
-                        circuit = pipeline_result.circuit
-                        solved = pipeline_result.solved
-                        circuit_data = circuit.circuit_data if circuit else circuit_data
-                        solved_values = solved.values if solved else {}
-                        val_report = retry_bundle["validation_report"]
-                        physics_payload = retry_bundle["physics_validation"]
-                        response.pipeline = pipeline_result.to_dict()
-                        response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
-                        response.validation = val_report.to_dict()
-                        self._attach_physics_validation(response, physics_payload)
-
-                if not physics_payload.get("passed", True):
-                    self._record_feedback_event(
-                        intent=intent,
-                        stage="physical_validate",
-                        errors=list(physics_payload.get("errors", [])),
-                        suggestions=list(physics_payload.get("suggestions", [])),
-                        metadata={"flow": "create"},
-                    )
-                    response.success = False
-                    response.message = self._safe_error_response(
-                        error_msg=(
-                            "Physical validation failed: "
-                            + "; ".join(physics_payload.get("errors", []))
-                        ),
-                        stage="physical_validate",
-                        circuit_type=intent.circuit_type,
-                        gain_target=intent.gain_target,
-                        vcc=intent.vcc,
-                        mode=mode,
-                    )
-                    response.processing_time_ms = (time.time() - start) * 1000
-                    return response
-
-            # Enrich circuit_data with simulation schema extracted from user prompt.
-            self._apply_simulation_requirements(intent, circuit_data)
-
-            response.success = True
-            response.params = solved_values
-            response.circuit_data = circuit_data
-            response.analysis = self._build_design_analysis(
-                intent=intent,
-                circuit_data=circuit_data,
-                solved_values=solved_values,
-                gain_formula=circuit.gain_formula,
-                gain_actual=solved.actual_gain if solved else None,
-                stage_analysis=(solved.stage_analysis if solved else None),
-            )
-            response.template_id = circuit.template_id
-
-            simulation_feedback = self._evaluate_simulation_feedback(
-                intent=intent,
-                analysis=response.analysis,
-            )
-            self._attach_simulation_feedback(response, simulation_feedback)
-
-            if not simulation_feedback.get("passed", True):
-                retry_bundle = self._retry_pipeline_for_simulation_feedback(
-                    intent=intent,
-                    simulation_feedback=simulation_feedback,
-                    max_attempts=self._simulation_retry_attempts,
-                )
-                if retry_bundle:
-                    pipeline_result = retry_bundle["pipeline_result"]
-                    circuit = pipeline_result.circuit
-                    solved = pipeline_result.solved
-                    circuit_data = circuit.circuit_data if circuit else circuit_data
-                    solved_values = solved.values if solved else {}
-                    val_report = retry_bundle["validation_report"]
-                    physics_payload = retry_bundle["physics_validation"]
-                    response.pipeline = pipeline_result.to_dict()
-                    response.template_id = (pipeline_result.plan.matched_template_id or "") if pipeline_result.plan else response.template_id
-                    response.validation = val_report.to_dict()
-                    self._attach_physics_validation(response, physics_payload)
-
-                    self._apply_simulation_requirements(intent, circuit_data)
-                    response.params = solved_values
-                    response.circuit_data = circuit_data
-                    response.analysis = self._build_design_analysis(
-                        intent=intent,
-                        circuit_data=circuit_data,
-                        solved_values=solved_values,
-                        gain_formula=circuit.gain_formula if circuit else "",
-                        gain_actual=solved.actual_gain if solved else None,
-                        stage_analysis=(solved.stage_analysis if solved else None),
-                    )
-                    simulation_feedback = self._evaluate_simulation_feedback(
-                        intent=intent,
-                        analysis=response.analysis,
-                    )
-                    self._attach_simulation_feedback(response, simulation_feedback)
-
-            if not simulation_feedback.get("passed", True):
-                self._record_feedback_event(
-                    intent=intent,
-                    stage="simulation_feedback",
-                    errors=list(simulation_feedback.get("errors", [])),
-                    suggestions=list(simulation_feedback.get("suggestions", [])),
-                    metadata={"flow": "create"},
-                )
-                response.success = False
-                response.message = self._safe_error_response(
-                    error_msg=(
-                        "Simulation feedback gate failed: "
-                        + "; ".join(simulation_feedback.get("errors", []))
-                    ),
-                    stage="simulation_feedback",
-                    circuit_type=intent.circuit_type,
-                    gain_target=intent.gain_target,
-                    vcc=intent.vcc,
-                    mode=mode,
-                )
-                response.processing_time_ms = (time.time() - start) * 1000
-                return response
-
-            analysis_gain = (
-                ((response.analysis or {}).get("parameters") or {}).get("gain_actual")
-                if isinstance(response.analysis, dict)
-                else None
-            )
-            gain_for_message = analysis_gain if isinstance(analysis_gain, (int, float)) else (solved.actual_gain if solved else None)
-
-            # Collect warnings
-            warnings = []
-            if assumption_notes:
-                warnings.extend(assumption_notes)
-            if circuit.validation and circuit.validation.warnings:
-                warnings.extend(circuit.validation.warnings)
-            if solved and solved.warnings:
-                warnings.extend(solved.warnings)
-            if val_report.warnings:
-                warnings.extend([v.message for v in val_report.warnings])
-
-            response.message = self._nlg.generate_success_response(
-                circuit_type=intent.circuit_type,
-                gain_actual=gain_for_message,
-                gain_target=intent.gain_target,
-                params=solved_values,
-                gain_formula=circuit.gain_formula,
-                warnings=warnings,
-                template_id=circuit.template_id,
-                simulation=(response.analysis or {}).get("simulation", {}),
-                stage_table=((response.analysis or {}).get("cascading", {}) or {}).get("stage_table", []),
-                mode=mode,
-            )
-            response.message = self._safe_text(
-                response.message,
-                "✅ Da hoan tat thiet ke va kiem tra, nhung NLG khong tra ve noi dung day du.",
-            )
-
-            # Nếu user gửi câu đa ý (vừa thiết kế vừa yêu cầu giải thích), append phần explain.
-            if "explain" in intent.requested_actions:
-                explain_text = self._reasoning_explain(intent, mode=mode)
-                if not explain_text:
-                    explain_text = self._rule_based_explain(intent)
-                if explain_text:
-                    response.message += "\n\n---\n\n" + explain_text
-
-            # Thêm thông tin repair vào message nếu có
-            if response.repair and response.repair.get("repaired"):
-                repair_summary = self._nlg.generate_repair_summary(
-                    response.repair.get("actions", []),
-                )
-                response.message += "\n\n" + repair_summary
-
-            if assumption_notes:
-                response.suggestions.extend([f"Gia dinh bo sung: {note}" for note in assumption_notes])
-
-            # Task 6 integration: attach end-to-end compiled artifacts to chat response.
-            self._attach_compile_artifacts_to_response(
-                response=response,
-                user_text=intent.raw_text,
-                mode=mode,
-            )
-        else:
+        # ─── Step 2: LLM generates complete CircuitIR ───
+        # The LLM is the SOLE engine for circuit generation (no ai_core rule-based fallback)
+        ir_result = self._router.generate_circuit_ir(
+            intent.raw_text,
+            mode=mode,
+            max_schema_retries=3,
+            max_completeness_retries=2,
+        )
+        
+        if ir_result is None:
+            logger.error("LLM failed to generate valid CircuitIR for: %s", intent.raw_text)
             response.success = False
-            response.message = self._safe_error_response(
-                error_msg=pipeline_result.error,
-                stage=pipeline_result.stage_reached,
-                circuit_type=intent.circuit_type,
-                gain_target=intent.gain_target,
-                vcc=intent.vcc,
-                mode=mode,
+            response.message = (
+                "❌ Hệ thống không thể sinh mạch từ yêu cầu này. "
+                "Vui lòng cung cấp chi tiết hơn về topology, gain, hoặc nguồn cấp."
             )
+            response.processing_time_ms = (time.time() - start) * 1000
+            return response
+
+        if not ir_result.is_valid_request:
+            logger.warning("LLM returned invalid request flag: %s", ir_result.clarification_question)
+            response.needs_clarification = True
+            response.success = False
+            response.message = ir_result.clarification_question or (
+                "Yêu cầu thiếu thông tin. Vui lòng cung cấp chi tiết về yêu cầu thiết kế."
+            )
+            response.processing_time_ms = (time.time() - start) * 1000
+            return response
+
+        # ─── Step 3: Set circuit_data from LLM IR and proceed to compilation ───
+        response.success = True
+        response.circuit_data = ir_result.model_dump(mode="json")
+        
+        # Build a simple success message from IR analysis
+        analysis = ir_result.analysis
+        if analysis:
+            response.message = (
+                f"✅ **{analysis.circuit_name}**\n\n"
+                f"**Topology**: {analysis.topology_classification}\n\n"
+                f"**Giải thích**: {analysis.design_explanation}\n\n"
+                f"**Công thức**: {analysis.math_basis}\n\n"
+            )
+            if analysis.expected_bom:
+                response.message += f"**Danh sách linh kiện**: {', '.join(analysis.expected_bom)}\n\n"
+        else:
+            response.message = "✅ Mạch đã được thiết kế thành công."
+
+        # ─── Step 4: Compile to KiCad and SPICE artifacts ───
+        self._attach_compile_artifacts_to_response(
+            response=response,
+            user_text=intent.raw_text,
+            mode=mode,
+        )
 
         response.processing_time_ms = (time.time() - start) * 1000
         return response
@@ -1211,7 +913,7 @@ class ChatbotService:
                 await ir_repo.update_status(ir_id, "compiled")
                 response.ir_id = ir_id
         except Exception as exc:
-            logger.warning("Persist compiled IR/artifacts failed (soft): %s", exc)
+            logger.error("DB Save failed, continuing in-memory: %s", exc)
 
     @staticmethod
     def _extract_circuit_id(circuit_payload: Dict[str, Any]) -> Optional[str]:

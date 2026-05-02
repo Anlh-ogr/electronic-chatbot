@@ -673,7 +673,16 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
     for comp in circuit_data.get("components", []):
         kicad_info = comp.get("kicad", {})
         comp_id = comp.get("id", "")
-        comp_type = comp.get("type", "resistor").lower()
+        comp_type = comp.get("type", "resistor").strip().lower()
+        # Normalize common legacy/short aliases to canonical IR types
+        if comp_type in {"power", "pwr", "vcc", "vdd", "vss", "vee", "vccg"}:
+            comp_type = "voltage_source"
+        if comp_type in {"power_port", "pwr_port", "vcc_port", "gnd_port"}:
+            comp_type = "port"
+        if comp_type in {"gnd", "ground", "0", "vss"}:
+            comp_type = "ground"
+        if comp_type in {"op-amp", "op_amp", "opamp", "op amp"}:
+            comp_type = "opamp"
 
         # Merge template position into render_style so manual coordinates can be honored.
         render_style = dict(comp.get("render_style", {}) or {})
@@ -698,22 +707,62 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
             and rail_id_norm in {"VCC", "VDD", "VSS", "VEE"}
         )
         if normalize_power_rails and is_power_rail_source:
-            power_rail_ids.add(comp_id)
+            power_rail_ids.add(str(comp_id).strip().upper())
             pins = ["1"]
 
         # Convert parameters: raw value → {"value": v}
         ir_params = {}
-        for key, val in comp.get("parameters", {}).items():
+        source_params = dict(comp.get("parameters", {}) or {})
+
+        if comp_type == "resistor" and "resistance" not in source_params:
+            fallback_resistance = comp.get("resistance") or comp.get("standardized_value") or comp.get("value")
+            if fallback_resistance not in (None, ""):
+                source_params["resistance"] = fallback_resistance
+        elif comp_type == "capacitor" and "capacitance" not in source_params:
+            fallback_capacitance = comp.get("capacitance") or comp.get("standardized_value") or comp.get("value")
+            if fallback_capacitance not in (None, ""):
+                source_params["capacitance"] = fallback_capacitance
+        elif comp_type == "inductor" and "inductance" not in source_params:
+            fallback_inductance = comp.get("inductance") or comp.get("standardized_value") or comp.get("value")
+            if fallback_inductance not in (None, ""):
+                source_params["inductance"] = fallback_inductance
+        elif comp_type == "voltage_source" and "voltage" not in source_params:
+            fallback_voltage = comp.get("voltage") or comp.get("value") or comp.get("standardized_value")
+            if fallback_voltage not in (None, ""):
+                source_params["voltage"] = fallback_voltage
+
+        for key, val in source_params.items():
+            # Normalize dict-shaped param values and ensure scalar values are stringified
             if isinstance(val, dict) and "value" in val:
-                ir_params[key] = val  # already in IR format
+                v = val.get("value")
+                u = val.get("unit")
+                ir_params[key] = {"value": str(v) if v is not None else "", "unit": u}
             else:
-                ir_params[key] = {"value": val}
+                ir_params[key] = {"value": str(val) if val is not None else ""}
+
+        # Ensure top-level component 'value' and standardized_value are strings for strict schemas
+        comp_value = comp.get("value")
+        standardized = comp.get("standardized_value") or comp.get("std_value")
+        if comp_value is not None:
+            ir_comp_value = str(comp_value)
+        elif "value" in ir_params:
+            ir_comp_value = str(ir_params.get("value", {}).get("value", ""))
+        else:
+            ir_comp_value = ""
+        if standardized is not None:
+            ir_standardized = str(standardized)
+        else:
+            ir_standardized = ir_comp_value
 
         ir_comp = {
             "id": comp_id,
             "type": comp_type,
             "pins": pins,
             "parameters": ir_params,
+            "value": ir_comp_value,
+            "standardized_value": ir_standardized,
+            "operating_point_check": comp.get("operating_point_check", ""),
+            "kicad_symbol": kicad_info.get("symbol_name") or comp.get("kicad_symbol") or "",
             "library_id": kicad_info.get("library_id"),
             "symbol_name": kicad_info.get("symbol_name"),
             "footprint": kicad_info.get("footprint"),
@@ -724,14 +773,28 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
 
     # Nets
     ir_nets = []
-    for net in circuit_data.get("nets", []):
+    for idx, net in enumerate(circuit_data.get("nets", []) or []):
         connected_pins = []
-        for conn in net.get("connections", []):
+        # Support both template-style connections and CircuitIR-style nodes.
+        net_connections = list(net.get("connections", []) or [])
+        if not net_connections:
+            for node in net.get("nodes", []) or []:
+                text = str(node or "").strip()
+                if ":" not in text:
+                    continue
+                ref, pin = text.split(":", 1)
+                ref = ref.strip()
+                pin = pin.strip()
+                if ref and pin:
+                    net_connections.append([ref, pin])
+
+        for conn in net_connections:
             if isinstance(conn, list) and len(conn) >= 2:
                 component_id = conn[0]
+                component_key = str(component_id).strip().upper()
                 pin_name = str(conn[1])
 
-                if component_id in power_rail_ids:
+                if component_key in power_rail_ids:
                     # Drop negative rail terminal links for one-pin power symbols.
                     if pin_name in {"-", "2", "neg", "NEG", "n", "N"}:
                         continue
@@ -744,17 +807,48 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
             elif isinstance(conn, dict):
                 conn_copy = dict(conn)
                 component_id = conn_copy.get("component_id")
+                component_key = str(component_id or "").strip().upper()
                 pin_name = str(conn_copy.get("pin_name", ""))
-                if component_id in power_rail_ids:
+                if component_key in power_rail_ids:
                     if pin_name in {"-", "2", "neg", "NEG", "n", "N"}:
                         continue
                     conn_copy["pin_name"] = "1"
                 connected_pins.append(conn_copy)  # already in IR format
 
-        ir_nets.append({
-            "name": net.get("name") or net.get("id", ""),
-            "connected_pins": connected_pins,
-        })
+        # Remove duplicate pin refs after rail normalization to satisfy Net invariants.
+        deduped: List[Dict[str, str]] = []
+        seen = set()
+        for cp in connected_pins:
+            comp_id = str(cp.get("component_id", "")).strip()
+            pin = str(cp.get("pin_name", "")).strip()
+            if not comp_id or not pin:
+                continue
+            key = (comp_id, pin)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append({"component_id": comp_id, "pin_name": pin})
+        connected_pins = deduped
+
+        # Normalize name: prefer explicit 'name' or common aliases, otherwise synthesize a stable name
+        raw_name = net.get("name") or net.get("net_name") or net.get("id") or net.get("netName") or ""
+        name = str(raw_name or "").strip()
+        if not name:
+            # try to derive from first connected pin, else synthesize index-based name
+            if connected_pins:
+                first = connected_pins[0]
+                comp = first.get("component_id") or first.get("component") or "NET"
+                pin = first.get("pin_name") or first.get("pin") or "1"
+                name = f"{comp}_{pin}".upper()
+            else:
+                name = f"NET_{idx+1}"
+
+        # Skip invalid empty nets to avoid Net entity hard-fail during export.
+        if connected_pins:
+            ir_nets.append({
+                "name": name,
+                "connected_pins": connected_pins,
+            })
 
     # Ports
     ir_ports = []
@@ -795,6 +889,29 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
                 pins_by_component[component_id] = []
             if pin_name not in pins_by_component[component_id]:
                 pins_by_component[component_id].append(pin_name)
+
+    # Create placeholder connector components for references present in nets but missing in components.
+    known_component_ids = {str(comp.get("id", "")).strip() for comp in ir_components if comp.get("id")}
+    for component_id, inferred_pins in pins_by_component.items():
+        if component_id in known_component_ids:
+            continue
+        fallback_pins = inferred_pins or ["1"]
+        ir_components.append({
+            "id": component_id,
+            "type": "connector",
+            "pins": fallback_pins,
+            "parameters": {},
+            "value": "",
+            "standardized_value": "",
+            "operating_point_check": "",
+            "kicad_symbol": "Connector:Conn_01x01",
+            "library_id": None,
+            "symbol_name": "Conn_01x01",
+            "footprint": None,
+            "symbol_version": None,
+            "render_style": {},
+        })
+        known_component_ids.add(component_id)
 
     single_pin_types = {"connector", "port", "ground", "voltage_source", "current_source"}
     for comp in ir_components:

@@ -478,15 +478,55 @@ class CircuitIRSerializer:
     # xây dựng các linh kiện từ dict      
     def _build_components(comp_data: list[dict]) -> dict[str, Component]:
         components = {} # lưu trữ linh kiện
+        active_device_types = {
+            ComponentType.BJT,
+            ComponentType.BJT_NPN,
+            ComponentType.BJT_PNP,
+            ComponentType.MOSFET,
+            ComponentType.MOSFET_N,
+            ComponentType.MOSFET_P,
+        }
         for data in comp_data:
+            # Accept legacy and alias names for component type
+            try:
+                comp_type = ComponentType.normalize(data.get("type", ""))
+            except Exception:
+                comp_type = ComponentType(data.get("type"))
+            params = {
+                key: ParameterValue(value=val["value"], unit=val.get("unit"))
+                for key, val in data.get("parameters", {}).items()
+            }
+            if comp_type == ComponentType.RESISTOR and "resistance" not in params:
+                fallback_resistance = data.get("resistance") or data.get("standardized_value") or data.get("value")
+                if fallback_resistance not in (None, ""):
+                    params["resistance"] = ParameterValue(str(fallback_resistance), None)
+            if comp_type in {ComponentType.CAPACITOR, ComponentType.CAPACITOR_POLARIZED} and "capacitance" not in params:
+                fallback_capacitance = data.get("capacitance") or data.get("standardized_value") or data.get("value")
+                if fallback_capacitance not in (None, ""):
+                    params["capacitance"] = ParameterValue(str(fallback_capacitance), None)
+            if comp_type == ComponentType.INDUCTOR and "inductance" not in params:
+                fallback_inductance = data.get("inductance") or data.get("standardized_value") or data.get("value")
+                if fallback_inductance not in (None, ""):
+                    params["inductance"] = ParameterValue(str(fallback_inductance), None)
+            if comp_type == ComponentType.VOLTAGE_SOURCE and "voltage" not in params:
+                fallback_voltage = data.get("voltage") or data.get("value") or data.get("standardized_value")
+                if fallback_voltage not in (None, ""):
+                    params["voltage"] = ParameterValue(str(fallback_voltage), None)
+            raw_model = str(
+                data.get("model")
+                or data.get("value")
+                or params.get("model", ParameterValue("Generic")).value
+                or "Generic"
+            ).strip()
+            if not raw_model:
+                raw_model = "Generic"
+            if comp_type in active_device_types and "model" not in params:
+                params["model"] = ParameterValue(raw_model, None)
             comp = Component(
                 id=data["id"],
-                type=ComponentType(data["type"]),
+                type=comp_type,
                 pins=tuple(data["pins"]),
-                parameters={
-                    key: ParameterValue(value=val["value"], unit=val.get("unit"))
-                    for key, val in data.get("parameters", {}).items()
-                },
+                parameters={**params},
                 # KiCad metadata (optional)
                 library_id=data.get("library_id"),
                 symbol_name=data.get("symbol_name"),
@@ -592,15 +632,50 @@ class CircuitIRSerializer:
     # giải mã component từ dict
     def _deserialize_component(data: list[dict]) -> dict[str, Component]:
         components = {}
+        active_device_types = {
+            ComponentType.BJT,
+            ComponentType.BJT_NPN,
+            ComponentType.BJT_PNP,
+            ComponentType.MOSFET,
+            ComponentType.MOSFET_N,
+            ComponentType.MOSFET_P,
+        }
         for comp_data in data:
+            # Accept legacy and alias names for component type
+            try:
+                comp_type = ComponentType.normalize(comp_data.get("type", ""))
+            except Exception:
+                comp_type = ComponentType(comp_data.get("type"))
+            params = {
+                key: ParameterValue(value=val["value"], unit=val.get("unit"))
+                for key, val in comp_data.get("parameters", {}).items()
+            }
+            if comp_type == ComponentType.RESISTOR and "resistance" not in params:
+                fallback_resistance = comp_data.get("resistance") or comp_data.get("standardized_value") or comp_data.get("value")
+                if fallback_resistance not in (None, ""):
+                    params["resistance"] = ParameterValue(str(fallback_resistance), None)
+            if comp_type in {ComponentType.CAPACITOR, ComponentType.CAPACITOR_POLARIZED} and "capacitance" not in params:
+                fallback_capacitance = comp_data.get("capacitance") or comp_data.get("standardized_value") or comp_data.get("value")
+                if fallback_capacitance not in (None, ""):
+                    params["capacitance"] = ParameterValue(str(fallback_capacitance), None)
+            if comp_type == ComponentType.INDUCTOR and "inductance" not in params:
+                fallback_inductance = comp_data.get("inductance") or comp_data.get("standardized_value") or comp_data.get("value")
+                if fallback_inductance not in (None, ""):
+                    params["inductance"] = ParameterValue(str(fallback_inductance), None)
+            if comp_type == ComponentType.VOLTAGE_SOURCE and "voltage" not in params:
+                fallback_voltage = comp_data.get("voltage") or comp_data.get("value") or comp_data.get("standardized_value")
+                if fallback_voltage not in (None, ""):
+                    params["voltage"] = ParameterValue(str(fallback_voltage), None)
+            raw_model = str(comp_data.get("model") or comp_data.get("value") or params.get("model", ParameterValue("Generic")).value or "Generic").strip()
+            if not raw_model:
+                raw_model = "Generic"
+            if comp_type in active_device_types and "model" not in params:
+                params["model"] = ParameterValue(raw_model, None)
             comp = Component(
                 id=comp_data["id"],
-                type=ComponentType(comp_data["type"]),
+                type=comp_type,
                 pins=tuple(comp_data["pins"]),
-                parameters={
-                    key: ParameterValue(value=val["value"], unit=val.get("unit"))
-                    for key, val in comp_data.get("parameters", {}).items()
-                },
+                parameters={**params},
                 # KiCad metadata (optional)
                 library_id=comp_data.get("library_id"),
                 symbol_name=comp_data.get("symbol_name"),

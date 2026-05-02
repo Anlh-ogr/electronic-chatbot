@@ -444,6 +444,8 @@ class KiCad8SchematicCompiler:
 
     def compile_to_sch(self, ir: CircuitIR) -> str:
         """Compile CircuitIR into a minimal valid KiCad 8 schematic string."""
+        from app.application.ai.kicad_symbol_library import get_kicad_symbol_mapper
+        
         placements = self._calculate_placement(ir)
         comp_by_ref = {comp.ref_id.strip().upper(): comp for comp in ir.components}
 
@@ -454,10 +456,22 @@ class KiCad8SchematicCompiler:
             '  (lib_symbols)',
         ]
 
+        mapper = get_kicad_symbol_mapper()
+
         for comp in ir.components:
             ref = comp.ref_id.strip().upper()
             x, y = placements.get(ref, (100.0, 100.0))
-            lib_id = self._resolve_lib_id(comp.type)
+            
+            # Strategy: Use kicad_symbol field if available, else resolve from component value/type
+            if comp.kicad_symbol and comp.kicad_symbol.strip():
+                lib_id = comp.kicad_symbol.strip()
+            else:
+                # Try resolving from component value (model name)
+                lib_id = mapper.lookup_by_model(str(comp.value or ""))
+                if not lib_id:
+                    # Fall back to type-based resolution
+                    lib_id = self._resolve_lib_id(comp.type)
+            
             ref_label = self._escape_text(ref)
             value_label = self._escape_text(str(comp.value))
             footprint = self._escape_text(comp.footprint or "")

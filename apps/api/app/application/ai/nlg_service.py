@@ -309,6 +309,10 @@ class NLGService:
 
         system = (
             "Ban la tro ly thiet ke mach dien tu. "
+            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
+            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
+            "CRITICAL: Hay dich moi tom tat ky thuat, giai thich, hoac mo ta bang tieng Anh trong payload/IR sang tieng Viet truoc khi tra loi. "
+            "Van ban tra ve cho nguoi dung phai dat muc 100% tieng Viet. "
             "Dung du lieu payload de tao phan hoi tieng Viet theo markdown. "
             "Tuan thu response_contract trong payload: dung du cac muc, dung thu tu, "
             "giu noi dung ky thuat ngan gon va nhat quan. "
@@ -360,6 +364,9 @@ class NLGService:
 
         system = (
             "Ban la tro ly thiet ke mach dien tu. "
+            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
+            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
+            "CRITICAL: Neu payload co doan tieng Anh, bat buoc dich sang tieng Viet truoc khi sinh cau tra loi. "
             "Dung payload de tao error response theo response_contract. "
             "Tap trung vao nguyen nhan ky thuat va huong khac phuc co the thuc hien ngay."
         )
@@ -398,6 +405,9 @@ class NLGService:
 
         system = (
             "Ban la tro ly thiet ke mach dien tu. "
+            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
+            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
+            "CRITICAL: Neu payload chua mo ta tieng Anh, hay dich sang tieng Viet truoc khi dat cau hoi cho nguoi dung. "
             "Dung payload de dat cau hoi bo sung thong tin theo response_contract. "
             "Ngan gon, than thien, de nguoi dung tra loi nhanh."
         )
@@ -440,6 +450,8 @@ class NLGService:
 
         system = (
             "Ban la tro ly thiet ke mach dien tu. "
+            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
+            "CRITICAL: Dich moi thong tin ky thuat bang tieng Anh trong payload sang tieng Viet truoc khi tra loi. "
             "Dung payload de tao tom tat ket qua chinh sua theo response_contract. "
             "Noi dung ngan gon, de doi chieu voi thay doi thuc te."
         )

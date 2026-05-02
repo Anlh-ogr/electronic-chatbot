@@ -21,7 +21,7 @@ English:
 # sqlalchemy.orm: ORM session management
 # sqlalchemy: Database queries + filtering
 # uuid: Generate unique circuit IDs
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 import uuid
@@ -142,14 +142,215 @@ class PostgresCircuitRepository:
         )
         if not latest_snapshot:
             return None
-        
-        # Deserialize (best-effort because some runtime payloads are non-canonical IR).
+
+        payload = latest_snapshot.circuit_data
+        if not isinstance(payload, dict):
+            return None
+
+        # First try canonical IR snapshot.
         try:
-            ir = CircuitIRSerializer.from_dict(latest_snapshot.circuit_data)
+            ir = CircuitIRSerializer.from_dict(payload)
             return ir.circuit
         except Exception as exc:
             logger.warning("Circuit %s has non-canonical snapshot payload: %s", circuit_id, exc)
+
+        # Fallback: hydrate from chatbot/compiled payload shape into canonical IR dict.
+        try:
+            coerced = self._coerce_snapshot_to_ir_dict(
+                payload=payload,
+                circuit_id=circuit_id,
+                default_name=(model.name or "Unnamed Circuit"),
+            )
+            if coerced is None:
+                return None
+            return CircuitIRSerializer.to_circuit(coerced)
+        except Exception as exc:
+            logger.warning("Circuit %s fallback snapshot coercion failed: %s", circuit_id, exc)
             return None
+
+    @staticmethod
+    def _normalize_component_type(raw_type: Any) -> str:
+        text = str(raw_type or "").strip().lower()
+        if text in {"power", "pwr", "vcc", "vdd", "vss", "vee", "vccg"}:
+            return "voltage_source"
+        if text in {"power_port", "pwr_port", "vcc_port", "gnd_port"}:
+            return "port"
+        if text in {"gnd", "ground", "0"}:
+            return "ground"
+        if text in {"op-amp", "op_amp", "opamp", "op amp"}:
+            return "opamp"
+        return text or "resistor"
+
+    @staticmethod
+    def _coerce_snapshot_to_ir_dict(
+        payload: Dict[str, Any],
+        circuit_id: str,
+        default_name: str,
+    ) -> Optional[Dict[str, Any]]:
+        # Already canonical enough for CircuitIRSerializer.to_circuit.
+        if all(key in payload for key in ("meta", "components", "nets", "ports", "constraints")):
+            return payload
+
+        components_raw = payload.get("components")
+        nets_raw = payload.get("nets")
+        if not isinstance(components_raw, list) or not isinstance(nets_raw, list):
+            return None
+
+        ir_components: List[Dict[str, Any]] = []
+        pins_by_component: Dict[str, List[str]] = {}
+
+        ir_nets: List[Dict[str, Any]] = []
+        for idx, net in enumerate(nets_raw):
+            if not isinstance(net, dict):
+                continue
+
+            connected_pins: List[Dict[str, str]] = []
+            net_nodes = list(net.get("nodes", []) or [])
+            net_connections = list(net.get("connections", []) or [])
+            if net_nodes and not net_connections:
+                for node in net_nodes:
+                    text = str(node or "").strip()
+                    if ":" not in text:
+                        continue
+                    ref, pin = text.split(":", 1)
+                    net_connections.append([ref.strip(), pin.strip()])
+
+            for conn in net_connections:
+                if isinstance(conn, list) and len(conn) >= 2:
+                    comp_id = str(conn[0] or "").strip()
+                    pin_name = str(conn[1] or "").strip()
+                elif isinstance(conn, dict):
+                    comp_id = str(conn.get("component_id") or conn.get("component") or "").strip()
+                    pin_name = str(conn.get("pin_name") or conn.get("pin") or "").strip()
+                else:
+                    continue
+
+                if not comp_id or not pin_name:
+                    continue
+                connected_pins.append({"component_id": comp_id, "pin_name": pin_name})
+                pins_by_component.setdefault(comp_id, [])
+                if pin_name not in pins_by_component[comp_id]:
+                    pins_by_component[comp_id].append(pin_name)
+
+            if not connected_pins:
+                continue
+
+            raw_name = net.get("name") or net.get("net_name") or net.get("id") or f"NET_{idx+1}"
+            net_name = str(raw_name or "").strip() or f"NET_{idx+1}"
+            ir_nets.append({"name": net_name, "connected_pins": connected_pins})
+
+        single_pin_types = {"connector", "port", "ground", "voltage_source", "current_source"}
+        for comp in components_raw:
+            if not isinstance(comp, dict):
+                continue
+
+            comp_id = str(comp.get("id") or comp.get("ref_id") or "").strip()
+            if not comp_id:
+                continue
+            comp_type = PostgresCircuitRepository._normalize_component_type(comp.get("type"))
+
+            source_params = dict(comp.get("parameters", {}) or {})
+            if comp_type == "resistor" and "resistance" not in source_params:
+                fallback = comp.get("resistance") or comp.get("standardized_value") or comp.get("value")
+                if fallback not in (None, ""):
+                    source_params["resistance"] = fallback
+            elif comp_type in {"capacitor", "capacitor_polarized"} and "capacitance" not in source_params:
+                fallback = comp.get("capacitance") or comp.get("standardized_value") or comp.get("value")
+                if fallback not in (None, ""):
+                    source_params["capacitance"] = fallback
+            elif comp_type == "inductor" and "inductance" not in source_params:
+                fallback = comp.get("inductance") or comp.get("standardized_value") or comp.get("value")
+                if fallback not in (None, ""):
+                    source_params["inductance"] = fallback
+            elif comp_type == "voltage_source" and "voltage" not in source_params:
+                fallback = comp.get("voltage") or comp.get("value") or comp.get("standardized_value")
+                if fallback not in (None, ""):
+                    source_params["voltage"] = fallback
+
+            ir_params: Dict[str, Dict[str, Any]] = {}
+            for key, value in source_params.items():
+                if isinstance(value, dict) and "value" in value:
+                    ir_params[key] = {
+                        "value": str(value.get("value") if value.get("value") is not None else ""),
+                        "unit": value.get("unit"),
+                    }
+                else:
+                    ir_params[key] = {"value": str(value) if value is not None else ""}
+
+            pins = list(comp.get("pins") or [])
+            if not pins:
+                pins = list(pins_by_component.get(comp_id, []))
+            if not pins:
+                pins = ["1"] if comp_type in single_pin_types else ["1", "2"]
+            if comp_type not in single_pin_types and len(pins) < 2:
+                if "2" not in pins:
+                    pins.append("2")
+
+            kicad_info = comp.get("kicad") if isinstance(comp.get("kicad"), dict) else {}
+            ir_components.append(
+                {
+                    "id": comp_id,
+                    "type": comp_type,
+                    "pins": pins,
+                    "parameters": ir_params,
+                    "library_id": comp.get("library_id") or kicad_info.get("library_id"),
+                    "symbol_name": comp.get("symbol_name") or kicad_info.get("symbol_name"),
+                    "footprint": comp.get("footprint") or kicad_info.get("footprint"),
+                    "symbol_version": comp.get("symbol_version") or kicad_info.get("symbol_version"),
+                    "render_style": dict(comp.get("render_style", {}) or {}),
+                }
+            )
+
+        # Add missing connector stubs referenced by nets.
+        known_ids = {c["id"] for c in ir_components}
+        for comp_id, inferred_pins in pins_by_component.items():
+            if comp_id in known_ids:
+                continue
+            ir_components.append(
+                {
+                    "id": comp_id,
+                    "type": "connector",
+                    "pins": inferred_pins or ["1"],
+                    "parameters": {},
+                    "library_id": None,
+                    "symbol_name": "Conn_01x01",
+                    "footprint": None,
+                    "symbol_version": None,
+                    "render_style": {},
+                }
+            )
+
+        ports_raw = payload.get("ports") if isinstance(payload.get("ports"), list) else []
+        ir_ports = []
+        for p in ports_raw:
+            if not isinstance(p, dict):
+                continue
+            ir_ports.append(
+                {
+                    "name": p.get("name") or p.get("id") or "",
+                    "net_name": p.get("net_name") or p.get("net") or "",
+                    "direction": str(p.get("direction") or p.get("type") or "input").lower(),
+                }
+            )
+
+        constraints_raw = payload.get("constraints") if isinstance(payload.get("constraints"), list) else []
+        ir_constraints = [c for c in constraints_raw if isinstance(c, dict)]
+
+        return {
+            "meta": {
+                "version": "1.0",
+                "schema_version": "1.0",
+                "circuit_id": circuit_id,
+                "circuit_name": str(payload.get("name") or payload.get("topology_type") or default_name or "circuit"),
+            },
+            "components": ir_components,
+            "nets": ir_nets,
+            "ports": ir_ports,
+            "constraints": ir_constraints,
+            "topology_type": payload.get("topology_type"),
+            "category": payload.get("category"),
+            "tags": payload.get("tags", []),
+        }
     
     async def list_all(self, limit: int = 100, offset: int = 0) -> List[dict]:
         """List all circuits with metadata.

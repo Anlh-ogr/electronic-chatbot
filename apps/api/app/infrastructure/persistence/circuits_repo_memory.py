@@ -35,6 +35,8 @@ from app.application.circuits.dtos import (
     PaginationRequest,
     CircuitFilter,
 )
+from app.db.database import SessionLocal
+from app.infrastructure.repositories.circuit_repository import PostgresCircuitRepository
 
 
 # ====== In-Memory Repository Implementation ======
@@ -101,10 +103,32 @@ class InMemoryCircuitRepository(CircuitRepositoryPort):
         result = self._circuits.get(circuit_id)
         if result:
             logger.info(f"Found circuit {circuit_id}")
-        else:
+            return result
+
+        # Fallback: hydrate from persisted snapshots in Postgres when memory cache misses.
+        logger.warning(f"Circuit {circuit_id} not found in memory repository, fallback to Postgres")
+        try:
+            uuid.UUID(str(circuit_id))
+        except Exception:
+            logger.warning(f"Skip Postgres fallback for non-UUID circuit_id: {circuit_id}")
             logger.warning(f"Circuit {circuit_id} not found in repository!")
-        
-        return result
+            return None
+
+        db = SessionLocal()
+        try:
+            pg_repo = PostgresCircuitRepository(db)
+            persisted = await pg_repo.get_by_id(circuit_id)
+            if persisted is not None:
+                self._circuits[circuit_id] = persisted
+                logger.info(f"Loaded circuit {circuit_id} from Postgres into memory cache")
+                return persisted
+        except Exception as exc:
+            logger.warning(f"Postgres fallback lookup failed for circuit {circuit_id}: {exc}")
+        finally:
+            db.close()
+
+        logger.warning(f"Circuit {circuit_id} not found in repository!")
+        return None
     
     async def list(
         self,

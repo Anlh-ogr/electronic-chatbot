@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 import time
 import uuid
+import logging
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -22,6 +23,9 @@ from app.db.chat_context_models import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class KnowledgeHit:
     chunk_id: str
@@ -31,6 +35,15 @@ class KnowledgeHit:
     content: str
     score: float
     metadata: Dict[str, Any]
+
+
+@dataclass
+class ChatRecord:
+    id: str
+    session_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class RetryableRepository:
@@ -54,6 +67,67 @@ class ChatHistoryRepository(RetryableRepository):
 
     def __init__(self, session: Session) -> None:
         self.session = session
+        self._chat_pk_column = self._detect_chat_pk_column()
+
+    def _detect_chat_pk_column(self) -> str:
+        """Detect chat primary key column name for schema compatibility.
+
+        Canonical schema uses chats.chat_id, but some existing environments still
+        have chats.id. We support both without disabling context persistence.
+        """
+        try:
+            rows = self.session.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'chats'
+                    """
+                )
+            ).fetchall()
+        except Exception as exc:  # pragma: no cover - runtime DB inspection guard
+            logger.warning("Failed to inspect chats table columns, defaulting to chat_id: %s", exc)
+            return "chat_id"
+
+        cols = {str(row[0]).strip().lower() for row in rows}
+        if "chat_id" in cols:
+            return "chat_id"
+        if "id" in cols:
+            logger.warning("Detected legacy chats.id schema. Repository will use compatibility mode.")
+            return "id"
+        return "chat_id"
+
+    def _chat_row(self, chat_id: str) -> Optional[ChatRecord]:
+        pk = self._chat_pk_column
+        row = self.session.execute(
+            text(
+                f"""
+                SELECT {pk} AS chat_pk, session_id, title, created_at, updated_at
+                FROM chats
+                WHERE {pk} = :chat_id
+                LIMIT 1
+                """
+            ),
+            {"chat_id": chat_id},
+        ).first()
+        if row is None:
+            return None
+
+        return ChatRecord(
+            id=str(row.chat_pk),
+            session_id=str(row.session_id),
+            title=str(row.title or "New Chat"),
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    def _touch_chat(self, chat_id: str, now: datetime) -> None:
+        pk = self._chat_pk_column
+        self.session.execute(
+            text(f"UPDATE chats SET updated_at = :now WHERE {pk} = :chat_id"),
+            {"now": now, "chat_id": chat_id},
+        )
 
     def create_chat(self, user_id: str, title: str = "New Chat", chat_id: Optional[str] = None) -> str:
         cid = chat_id or str(uuid.uuid4())
@@ -73,30 +147,42 @@ class ChatHistoryRepository(RetryableRepository):
             else:
                 session_model.last_active = now
 
-            existing_chat = (
-                self.session.query(ChatModel)
-                .filter(ChatModel.id == cid)
-                .first()
-            )
+            existing_chat = self._chat_row(cid)
             if existing_chat is not None:
-                existing_chat.title = title or existing_chat.title
-                existing_chat.updated_at = now
+                pk = self._chat_pk_column
+                self.session.execute(
+                    text(f"UPDATE chats SET title = :title, updated_at = :now WHERE {pk} = :chat_id"),
+                    {"title": title or existing_chat.title, "now": now, "chat_id": cid},
+                )
                 self.session.commit()
                 return cid
 
-            model = ChatModel(id=cid, session_id=sid, title=title)
-            self.session.add(model)
+            if self._chat_pk_column == "chat_id":
+                model = ChatModel(id=cid, session_id=sid, title=title)
+                self.session.add(model)
+            else:
+                self.session.execute(
+                    text(
+                        """
+                        INSERT INTO chats (id, session_id, title, created_at, updated_at)
+                        VALUES (:chat_id, :session_id, :title, :created_at, :updated_at)
+                        """
+                    ),
+                    {
+                        "chat_id": cid,
+                        "session_id": sid,
+                        "title": title,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
             self.session.commit()
             return cid
 
         return self._with_retry(_op)
 
-    def get_chat(self, chat_id: str) -> Optional[ChatModel]:
-        return (
-            self.session.query(ChatModel)
-            .filter(ChatModel.id == chat_id)
-            .first()
-        )
+    def get_chat(self, chat_id: str) -> Optional[ChatRecord]:
+        return self._chat_row(chat_id)
 
     def append_message(
         self,
@@ -110,11 +196,7 @@ class ChatHistoryRepository(RetryableRepository):
 
         def _op() -> str:
             now = datetime.utcnow()
-            chat = (
-                self.session.query(ChatModel)
-                .filter(ChatModel.id == chat_id)
-                .first()
-            )
+            chat = self._chat_row(chat_id)
             if chat is None:
                 raise ValueError(f"Chat '{chat_id}' not found")
 
@@ -126,9 +208,7 @@ class ChatHistoryRepository(RetryableRepository):
                 status=status,
             )
             self.session.add(msg)
-            self.session.query(ChatModel).filter(ChatModel.id == chat_id).update(
-                {"updated_at": now}
-            )
+            self._touch_chat(chat_id, now)
             self.session.query(SessionModel).filter(SessionModel.id == chat.session_id).update(
                 {"last_active": now}
             )
@@ -174,15 +254,9 @@ class ChatHistoryRepository(RetryableRepository):
             model.status = status
 
             now = datetime.utcnow()
-            self.session.query(ChatModel).filter(ChatModel.id == model.chat_id).update(
-                {"updated_at": now}
-            )
+            self._touch_chat(str(model.chat_id), now)
 
-            chat = (
-                self.session.query(ChatModel)
-                .filter(ChatModel.id == model.chat_id)
-                .first()
-            )
+            chat = self._chat_row(str(model.chat_id))
             if chat is not None:
                 self.session.query(SessionModel).filter(SessionModel.id == chat.session_id).update(
                     {"last_active": now}

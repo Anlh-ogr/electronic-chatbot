@@ -273,6 +273,9 @@ class CircuitIRValidator:
 
                 component = component_by_ref.get(ref_id)
                 if component is None:
+                    # Allow rail aliases that may appear as virtual nodes/components in some LLM netlists.
+                    if ref_id in {"VCC", "VDD", "VEE", "VSS", "GND", "GROUND", "0", "IN", "OUT", "VIN", "VOUT", "INPUT", "OUTPUT"}:
+                        continue
                     raise InvalidPinConnectionError(
                         f"Net '{net.net_name}' references unknown component '{ref_id}'"
                     )
@@ -294,6 +297,10 @@ class CircuitIRValidator:
             "pi": math.pi,
             "e": math.e,
         }
+
+        # Inject numeric context extracted from actual IR payload values
+        # (power rail, net names, and concrete supply references), not generic defaults.
+        table.update(self._extract_runtime_numeric_context(ir))
 
         for comp in ir.components:
             val = self._to_numeric(comp.value)
@@ -318,28 +325,42 @@ class CircuitIRValidator:
         if not raw:
             return None
 
-        expr = self._sanitize_formula_expression(raw)
+        expr, parallel_mode = self._sanitize_formula_expression(raw)
         if not expr:
             return None
+
+        if parallel_mode:
+            return self._safe_eval_with_ast(expr, symbol_table, parallel_mode=True)
 
         try:
             if sympify is not None:
                 value = sympify(expr, locals=symbol_table)
-                return float(value.evalf())
+                evaluated = value.evalf()
+                if evaluated is None:
+                    return None
+                return float(evaluated)
         except (SympifyError, TypeError, ValueError) as exc:
             logger.warning("sympy evaluation failed for formula '%s': %s", formula, exc)
         except Exception as exc:  # pragma: no cover - conservative runtime guard
             logger.warning("Unexpected sympy error for formula '%s': %s", formula, exc)
 
         try:
-            return float(self._safe_eval_with_ast(expr, symbol_table))
+            ast_value = self._safe_eval_with_ast(expr, symbol_table, parallel_mode=False)
+            if ast_value is None:
+                return None
+            return float(ast_value)
         except Exception as exc:
             logger.warning("AST evaluator failed for formula '%s': %s", formula, exc)
             return None
 
-    def _sanitize_formula_expression(self, formula: str) -> str:
+    def _sanitize_formula_expression(self, formula: str) -> tuple[str, bool]:
         expr = [part.strip() for part in formula.split("=") if part.strip()]
         candidate = expr[-1] if expr else formula
+
+        # Parallel operator compatibility: user/LLM may emit R1 || R2.
+        # Convert to // token and interpret it as parallel only when this marker appears.
+        parallel_mode = "||" in candidate
+        candidate = candidate.replace("||", "//")
 
         candidate = candidate.replace("×", "*").replace("÷", "/").replace("^", "**")
         candidate = candidate.replace(",", "")
@@ -357,9 +378,9 @@ class CircuitIRValidator:
         candidate = re.sub(r"(?<=\d)\s*[A-Za-zΩ]+", "", candidate)
         candidate = re.sub(r"[^0-9A-Za-z_+\-*/(). ]", " ", candidate)
         candidate = re.sub(r"\s+", " ", candidate).strip()
-        return candidate
+        return candidate, parallel_mode
 
-    def _safe_eval_with_ast(self, expression: str, symbols: Dict[str, float]) -> float:
+    def _safe_eval_with_ast(self, expression: str, symbols: Dict[str, float], parallel_mode: bool = False) -> Optional[float]:
         allowed_funcs = {
             "sqrt": math.sqrt,
             "sin": math.sin,
@@ -375,7 +396,11 @@ class CircuitIRValidator:
         names = dict(symbols)
         names.update({"pi": math.pi, "e": math.e})
 
-        node = ast.parse(expression, mode="eval")
+        try:
+            node = ast.parse(expression, mode="eval")
+        except (SyntaxError, ValueError) as exc:
+            logger.warning("AST parse failed for expression '%s': %s", expression, exc)
+            return None
 
         def _eval(n: ast.AST) -> float:
             if isinstance(n, ast.Expression):
@@ -385,11 +410,20 @@ class CircuitIRValidator:
             if isinstance(n, ast.Name):
                 key = n.id
                 if key in names:
-                    return float(names[key])
+                    value = names[key]
+                    if value is None:
+                        raise ValueError(f"Unknown symbol '{key}'")
+                    return float(value)
                 if key.upper() in names:
-                    return float(names[key.upper()])
+                    value = names[key.upper()]
+                    if value is None:
+                        raise ValueError(f"Unknown symbol '{key}'")
+                    return float(value)
                 if key.lower() in names:
-                    return float(names[key.lower()])
+                    value = names[key.lower()]
+                    if value is None:
+                        raise ValueError(f"Unknown symbol '{key}'")
+                    return float(value)
                 raise ValueError(f"Unknown symbol '{key}'")
             if isinstance(n, ast.BinOp):
                 left = _eval(n.left)
@@ -402,6 +436,15 @@ class CircuitIRValidator:
                     return left * right
                 if isinstance(n.op, ast.Div):
                     return left / right
+                if isinstance(n.op, ast.FloorDiv):
+                    # Only reinterpret // as parallel operator when input originally contained ||.
+                    # Otherwise, keep regular integer floor-division semantics.
+                    if parallel_mode:
+                        denom = left + right
+                        if abs(denom) < 1e-15:
+                            raise ValueError("Parallel operator denominator is zero")
+                        return (left * right) / denom
+                    return float(left // right)
                 if isinstance(n.op, ast.Pow):
                     return left ** right
                 if isinstance(n.op, ast.Mod):
@@ -423,7 +466,111 @@ class CircuitIRValidator:
                 return float(func(*args))
             raise ValueError(f"Unsupported AST node: {type(n).__name__}")
 
-        return float(_eval(node))
+        try:
+            return float(_eval(node))
+        except Exception as exc:
+            message = str(exc)
+            if "Unknown symbol" in message:
+                logger.debug("AST evaluation skipped for expression '%s': %s", expression, exc)
+            else:
+                logger.warning("AST evaluation failed for expression '%s': %s", expression, exc)
+            return None
+
+    def _extract_runtime_numeric_context(self, ir: CircuitIR) -> Dict[str, float]:
+        context: Dict[str, float] = {}
+
+        power_rail = ""
+        if ir.power_and_coupling is not None:
+            power_rail = str(ir.power_and_coupling.power_rail or "")
+        self._merge_context(context, self._extract_supply_from_text(power_rail))
+
+        for net in ir.nets:
+            self._merge_context(context, self._extract_supply_from_text(net.net_name))
+
+        for probe in ir.probe_nodes:
+            self._merge_context(context, self._extract_supply_from_text(probe))
+
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            numeric_value = self._extract_voltage_value(str(comp.value or ""))
+            if numeric_value is None:
+                continue
+
+            if ref in {"VCC", "VDD", "VPLUS", "VPOS"}:
+                self._add_supply_aliases(context, positive=numeric_value, negative=None)
+            elif ref in {"VEE", "VSS", "VNEG", "V-"}:
+                self._add_supply_aliases(context, positive=None, negative=numeric_value)
+            elif ref in {"VCC_VEE", "VPLUS_VMINUS", "VPP"}:
+                self._add_supply_aliases(context, positive=abs(numeric_value), negative=-abs(numeric_value))
+
+        return context
+
+    def _merge_context(self, target: Dict[str, float], source: Dict[str, float]) -> None:
+        for key, value in source.items():
+            target[key] = float(value)
+            target[key.lower()] = float(value)
+
+    def _extract_supply_from_text(self, raw_text: str) -> Dict[str, float]:
+        text = str(raw_text or "").strip()
+        if not text:
+            return {}
+
+        result: Dict[str, float] = {}
+
+        plus_minus_match = re.search(r"±\s*(\d+(?:\.\d+)?)\s*V?", text, flags=re.IGNORECASE)
+        if plus_minus_match:
+            magnitude = float(plus_minus_match.group(1))
+            self._add_supply_aliases(result, positive=magnitude, negative=-magnitude)
+            return result
+
+        signed_values = [
+            float(item.replace(" ", ""))
+            for item in re.findall(r"([+-]\s*\d+(?:\.\d+)?)\s*V", text, flags=re.IGNORECASE)
+        ]
+        if signed_values:
+            positive = max((v for v in signed_values if v > 0), default=None)
+            negative = min((v for v in signed_values if v < 0), default=None)
+            self._add_supply_aliases(result, positive=positive, negative=negative)
+            return result
+
+        net_like = text.upper().replace(" ", "")
+        simple_voltage = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)V", net_like)
+        if simple_voltage:
+            value = float(simple_voltage.group(1))
+            if value >= 0:
+                self._add_supply_aliases(result, positive=value, negative=None)
+            else:
+                self._add_supply_aliases(result, positive=None, negative=value)
+
+        return result
+
+    def _add_supply_aliases(
+        self,
+        target: Dict[str, float],
+        *,
+        positive: Optional[float],
+        negative: Optional[float],
+    ) -> None:
+        if positive is not None:
+            for key in ("VCC", "VDD", "VPLUS", "VPOS"):
+                target[key] = float(positive)
+        if negative is not None:
+            for key in ("VEE", "VSS", "VNEG", "VMINUS"):
+                target[key] = float(negative)
+
+    def _extract_voltage_value(self, value: str) -> Optional[float]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+
+        pm = re.fullmatch(r"±\s*(\d+(?:\.\d+)?)\s*V?", text, flags=re.IGNORECASE)
+        if pm:
+            return float(pm.group(1))
+
+        match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s*V?", text, flags=re.IGNORECASE)
+        if match:
+            return float(match.group(1))
+        return None
 
     @staticmethod
     def _to_numeric(value: Any) -> Optional[float]:
