@@ -1,0 +1,9 @@
+Single-database Alembic migration environment.
+
+Run migrations from apps/api:
+
+  .venv\\Scripts\\python.exe -m alembic upgrade head
+
+Create a revision:
+
+  .venv\\Scripts\\python.exe -m alembic revision -m "message"
