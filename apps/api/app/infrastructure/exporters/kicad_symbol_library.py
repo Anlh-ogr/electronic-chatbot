@@ -80,7 +80,7 @@ class KiCadSymbolLibrary:
         },
         
         "bjt": {
-            "lib_id": "Transistor_BJT:Q_NPN_BCE",
+            "lib_id": "Transistor_BJT:BC547",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
@@ -132,7 +132,7 @@ class KiCadSymbolLibrary:
         },
         
         "voltage_source": {
-            "lib_id": "Simulation_SPICE:VDC",
+            "lib_id": "Device:V",
             "ref_prefix": "V",
             "pins": [
                 (0, 5.08, 270),    # Pin +
@@ -189,7 +189,7 @@ class KiCadSymbolLibrary:
         },
         
         "vcc": {
-            "lib_id": "Simulation_SPICE:VCC",
+            "lib_id": "power:VCC",
             "ref_prefix": "#PWR",
             "is_power": True,
             "pin_type": "power_in",
@@ -241,6 +241,26 @@ class KiCadSymbolLibrary:
                 '          (fill (type none))',
                 '        )',
             ]
+        },
+
+        "power_symbol": {
+            "lib_id": "power:VCC",
+            "ref_prefix": "#PWR",
+            "is_power": True,
+            "pin_type": "power_in",
+            "pin_length": 0,
+            "pins": [
+                (0, 0, 90),
+            ],
+            "graphics": [
+                '        (polyline',
+                '          (pts',
+                '            (xy 0 0) (xy 0 1.27)',
+                '          )',
+                '          (stroke (width 0) (type default))',
+                '          (fill (type none))',
+                '        )',
+            ],
         },
         
         "port": {
@@ -808,7 +828,7 @@ class KiCadSymbolLibrary:
         
         # ── Current source ──────────────────────────────────────────────
         "current_source": {
-            "lib_id": "Simulation_SPICE:IDC",
+            "lib_id": "Device:I",
             "ref_prefix": "I",
             "pins": [
                 (0, 5.08, 270),    # Pin +
@@ -850,6 +870,11 @@ class KiCadSymbolLibrary:
     ) -> str:
         comp_type = (component_type or "").lower()
         comp_id_norm = (component_id or "").strip().lower()
+
+        if comp_type == "power_symbol":
+            if comp_id_norm in ("gnd", "ground", "vss", "vee", "0"):
+                return "ground"
+            return "power_symbol"
 
         # Use a dedicated one-pin symbol for power rails named like VCC/VDD/VSS/VEE.
         if comp_type == "voltage_source":

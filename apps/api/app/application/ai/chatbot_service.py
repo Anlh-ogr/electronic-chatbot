@@ -90,6 +90,7 @@ class ChatResponse:
     mode: str = "air"
     suggestions: List[str] = field(default_factory=list)
     validation: Optional[Dict] = None  # validation report
+    validation_error: Optional[str] = None  # IR validation/normalization error (for HTTP 400)
     repair: Optional[Dict] = None      # repair result (nếu đã sửa)
     physics_validation: Optional[Dict] = None
     session_id: Optional[str] = None
@@ -127,6 +128,8 @@ class ChatResponse:
             d["suggestions"] = self.suggestions
         if self.validation:
             d["validation"] = self.validation
+        if self.validation_error:
+            d["validation_error"] = self.validation_error
         if self.repair:
             d["repair"] = self.repair
         if self.physics_validation:
@@ -615,8 +618,45 @@ class ChatbotService:
     ) -> None:
         db = SessionLocal()
         try:
-            if not isinstance(circuit_data, dict) or not circuit_data:
+            # Strict null guard
+            if circuit_data is None:
+                logger.error("Attempting to save NULL circuit_data to DB! chat_id=%s message_id=%s", chat_id, message_id)
                 return
+
+            # Normalize pydantic models / JSON strings to dict
+            normalized: dict | None = None
+            try:
+                if isinstance(circuit_data, str):
+                    try:
+                        normalized = json.loads(circuit_data)
+                    except Exception:
+                        logger.error("circuit_data is a string but not valid JSON; aborting DB save")
+                        return
+                elif hasattr(circuit_data, "model_dump"):
+                    try:
+                        # Prefer python-mode dump to obtain dict
+                        normalized = circuit_data.model_dump(mode="python")
+                    except Exception:
+                        try:
+                            normalized = circuit_data.model_dump()
+                        except Exception:
+                            normalized = None
+                elif isinstance(circuit_data, dict):
+                    normalized = dict(circuit_data)
+                else:
+                    # Try to coerce to dict if possible
+                    try:
+                        normalized = dict(circuit_data)
+                    except Exception:
+                        normalized = None
+            except Exception:
+                normalized = None
+
+            if not isinstance(normalized, dict) or not normalized:
+                logger.error("Invalid or empty circuit_data provided for DB save; aborting. chat_id=%s message_id=%s", chat_id, message_id)
+                return
+
+            circuit_data = normalized
 
             meta = circuit_data.get("meta") if isinstance(circuit_data.get("meta"), dict) else {}
             circuit_name = (
@@ -866,20 +906,37 @@ class ChatbotService:
 
         circuit_payload = response.circuit_data if isinstance(response.circuit_data, dict) else {}
         circuit_id = self._extract_circuit_id(circuit_payload)
+        
+        # Auto-generate circuit_id if not present in LLM payload
         if not circuit_id:
-            logger.warning("Skip IR persistence: missing circuit_id in response payload")
-            return
+            circuit_id = str(uuid.uuid4())
+            logger.debug("Auto-generated circuit_id for persistence: %s", circuit_id)
+            # Inject circuit_id into payload so it's available for artifact references
+            if not isinstance(circuit_payload.get("meta"), dict):
+                circuit_payload["meta"] = {}
+            circuit_payload["meta"]["circuit_id"] = circuit_id
+            circuit_payload["circuit_id"] = circuit_id
 
         try:
             ir = CircuitIR.model_validate(ir_payload)
         except Exception as exc:
             logger.warning("Skip IR persistence: compiled payload is not valid CircuitIR (%s)", exc)
+            # Store validation error in response for HTTP 400 return
+            response.validation_error = f"CircuitIR validation failed: {str(exc)}"
             return
 
         try:
             async with async_session() as session:
                 ir_repo = CircuitIRRepository(session)
                 artifact_repo = CircuitArtifactRepository(session)
+
+                # Ensure parent circuits row exists first (FK constraint ordering)
+                await ir_repo.ensure_circuit_exists(
+                    circuit_id=circuit_id,
+                    circuit_name=ir_payload.get("meta", {}).get("circuit_name", "Unnamed"),
+                    session_id=chat_id,
+                    message_id=message_id,
+                )
 
                 ir_id = await ir_repo.save_ir(
                     ir=ir,
@@ -912,6 +969,11 @@ class ChatbotService:
 
                 await ir_repo.update_status(ir_id, "compiled")
                 response.ir_id = ir_id
+        except ValueError as ve:
+            # Net normalization or validation error
+            logger.warning("IR validation error: %s", ve)
+            response.validation_error = str(ve)
+            return
         except Exception as exc:
             logger.error("DB Save failed, continuing in-memory: %s", exc)
 

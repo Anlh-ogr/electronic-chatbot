@@ -1332,6 +1332,9 @@ async function exportAndRenderKiCanvas(templateData, container, placeholder, cir
 
         // Wait for KiCanvas custom element to be defined
         await customElements.whenDefined('kicanvas-embed');
+        console.log('KiCanvas embed defined:', customElements.get('kicanvas-embed') ? 'yes' : 'no');
+        console.log('KiCanvas source file URL:', fileUrl);
+        console.log('KiCanvas fetched content length:', kicadContent.length);
 
         // Create KiCanvas embed with INLINE source
         const kicanvas = document.createElement('kicanvas-embed');
@@ -1347,7 +1350,15 @@ async function exportAndRenderKiCanvas(templateData, container, placeholder, cir
         // Use inline <kicanvas-source> with content directly embedded
         const source = document.createElement('kicanvas-source');
         source.textContent = kicadContent;
+        console.log('KiCanvas inline source attached:', source.textContent.length);
         kicanvas.appendChild(source);
+
+        kicanvas.addEventListener('error', (event) => {
+            console.error('KiCanvas embed error event:', event);
+        });
+        kicanvas.addEventListener('load', (event) => {
+            console.log('KiCanvas embed load event:', event);
+        });
 
         container.appendChild(kicanvas);
 

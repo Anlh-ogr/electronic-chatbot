@@ -493,6 +493,9 @@ class RoutingGrid:
 
 class LayoutPlanner:
     """Advanced EDA layout planner for schematic generation."""
+
+    STAGE_X_SPACING_MILS = 4000.0
+    STAGE_ROLE_Y_OFFSET = 600.0
     
     def __init__(
         self,
@@ -598,11 +601,17 @@ class LayoutPlanner:
         Returns:
             Dict mapping component_id → (x, y)
         """
+        signal_flow = getattr(circuit, "signal_flow", None)
+        if signal_flow and getattr(signal_flow, "main_chain", None):
+            return self._place_components_by_signal_flow(circuit, signal_flow)
+
         placements: Dict[str, Tuple[float, float]] = {}
+        preserve_exact_coordinates = self._should_preserve_exact_coordinates(circuit)
         
         # Detect op-amp and choose compact profile for all circuit types.
         is_opamp = self._detect_opamp_circuit(circuit)
-        use_manual_positions = False
+        # Honor explicit render_style positions from IR when provided.
+        use_manual_positions = True
         x_spacing, y_spacing, columns = self._compact_grid_profile(
             component_count=len(circuit.components),
             is_opamp=is_opamp,
@@ -686,14 +695,140 @@ class LayoutPlanner:
         self._place_centered_row(power_ids, top_y, center_x, rail_spacing, placements)
         self._place_centered_row(ground_ids, bottom_y, center_x, rail_spacing, placements)
 
-        placements = self._resolve_component_overlaps(
-            placements,
-            min_spacing=self.min_component_spacing,
-        )
+        if not preserve_exact_coordinates:
+            placements = self._resolve_component_overlaps(
+                placements,
+                min_spacing=self.min_component_spacing,
+            )
+            placements = self._fit_placements_to_sheet(placements, is_opamp=is_opamp)
         placements = self._snap_placements_to_grid(placements, self.grid_snap)
-        placements = self._fit_placements_to_sheet(placements, is_opamp=is_opamp)
         placements = self._snap_placements_to_grid(placements, self.grid_snap)
         return placements
+
+    def _place_components_by_signal_flow(self, circuit: Circuit, signal_flow) -> Dict[str, Tuple[float, float]]:
+        """Stage-first placement driven by semantic signal flow.
+
+        This is intentionally a skeleton: it establishes the X-axis stage lanes
+        and basic component clustering, while wiring/routing stays delegated to
+        the existing routing helpers and exporter layer.
+        """
+        placements: Dict[str, Tuple[float, float]] = {}
+        stage_order = self._normalize_stage_chain(getattr(signal_flow, "main_chain", ()))
+        if not stage_order:
+            return {}
+
+        stage_x_map = self._build_stage_x_map(stage_order)
+        grouped = self._group_components_by_stage(circuit)
+        stage_center_y = 0.0
+
+        for stage_id in stage_order:
+            x_base = stage_x_map[stage_id]
+            stage_components = grouped.get(stage_id, [])
+            role_buckets: Dict[str, List[str]] = {
+                "active": [],
+                "power": [],
+                "ground": [],
+                "coupling": [],
+                "other": [],
+            }
+
+            for comp_id in stage_components:
+                component = circuit.components.get(comp_id)
+                role = self._classify_stage_role(comp_id, component)
+                role_buckets.setdefault(role, []).append(comp_id)
+
+            self._stack_stage_role(role_buckets.get("active", []), placements, x_base, stage_center_y, self.STAGE_ROLE_Y_OFFSET * 0.2)
+            self._stack_stage_role(role_buckets.get("power", []), placements, x_base, stage_center_y - self.STAGE_ROLE_Y_OFFSET, self.STAGE_ROLE_Y_OFFSET * 0.15)
+            self._stack_stage_role(role_buckets.get("ground", []), placements, x_base, stage_center_y + self.STAGE_ROLE_Y_OFFSET, self.STAGE_ROLE_Y_OFFSET * 0.15)
+            self._stack_stage_role(role_buckets.get("other", []), placements, x_base, stage_center_y + (self.STAGE_ROLE_Y_OFFSET * 0.35), self.STAGE_ROLE_Y_OFFSET * 0.12)
+
+            next_stage_x = stage_x_map.get(self._next_stage_id(stage_order, stage_id), x_base + self.STAGE_X_SPACING_MILS)
+            coupling_x = x_base + ((next_stage_x - x_base) / 2.0)
+            self._stack_stage_role(role_buckets.get("coupling", []), placements, coupling_x, stage_center_y, self.STAGE_ROLE_Y_OFFSET * 0.1)
+
+        # Keep unassigned components on the first stage lane as a fallback.
+        assigned = set(placements.keys())
+        fallback_stage_x = stage_x_map[stage_order[0]]
+        for comp_id, component in circuit.components.items():
+            if comp_id in assigned:
+                continue
+            role = self._classify_stage_role(comp_id, component)
+            if role == "power":
+                placements[comp_id] = (fallback_stage_x, stage_center_y - self.STAGE_ROLE_Y_OFFSET)
+            elif role == "ground":
+                placements[comp_id] = (fallback_stage_x, stage_center_y + self.STAGE_ROLE_Y_OFFSET)
+            elif role == "coupling":
+                placements[comp_id] = (fallback_stage_x + (self.STAGE_X_SPACING_MILS / 2.0), stage_center_y)
+            else:
+                placements[comp_id] = (fallback_stage_x, stage_center_y)
+
+        return self._snap_placements_to_grid(placements, self.grid_snap)
+
+    def _normalize_stage_chain(self, main_chain) -> List[str]:
+        chain: List[str] = []
+        for item in main_chain or ():
+            text = str(item).strip()
+            if text and text not in chain:
+                chain.append(text)
+        return chain
+
+    def _build_stage_x_map(self, stage_order: List[str]) -> Dict[str, float]:
+        return {
+            stage_id: float(index) * self.STAGE_X_SPACING_MILS
+            for index, stage_id in enumerate(stage_order)
+        }
+
+    def _group_components_by_stage(self, circuit: Circuit) -> Dict[str, List[str]]:
+        grouped: Dict[str, List[str]] = defaultdict(list)
+        for comp_id, component in circuit.components.items():
+            stage_id = getattr(component, "stage", None)
+            if stage_id is None:
+                continue
+            stage_key = str(stage_id).strip()
+            if stage_key:
+                grouped[stage_key].append(comp_id)
+        return grouped
+
+    def _classify_stage_role(self, comp_id: str, component) -> str:
+        comp_type = self._component_type_value(component)
+        cid = comp_id.lower()
+        if self._is_ground_component(comp_id, component):
+            return "ground"
+        if self._is_power_component(comp_id, component):
+            return "power"
+        if self._is_coupling_component(comp_type, cid):
+            return "coupling"
+        if self._is_active_component(comp_type):
+            return "active"
+        return "other"
+
+    def _stack_stage_role(
+        self,
+        comp_ids: List[str],
+        placements: Dict[str, Tuple[float, float]],
+        base_x: float,
+        base_y: float,
+        y_step: float,
+    ) -> None:
+        for index, comp_id in enumerate(comp_ids):
+            placements[comp_id] = (base_x, base_y + (index * y_step))
+
+    @staticmethod
+    def _next_stage_id(stage_order: List[str], stage_id: str) -> Optional[str]:
+        try:
+            index = stage_order.index(stage_id)
+        except ValueError:
+            return None
+        if index + 1 >= len(stage_order):
+            return None
+        return stage_order[index + 1]
+
+    @staticmethod
+    def _should_preserve_exact_coordinates(circuit: Circuit) -> bool:
+        topology = (getattr(circuit, "topology_type", None) or "").strip().lower()
+        if not topology:
+            return False
+        return any(token in topology for token in ("ce", "cb", "cc", "common_emitter", "common_base", "common_collector"))
 
     @staticmethod
     def _snap_value(value: float, step: float) -> float:
@@ -1228,6 +1363,11 @@ class LayoutPlanner:
             comp_pos = placements.get(comp_id)
             has_power_conn, has_ground_conn = self._component_rail_connectivity(circuit, comp_id)
 
+            manual_rotation = self._manual_rotation_from_render_style(component)
+            if manual_rotation is not None:
+                rotations[comp_id] = manual_rotation
+                continue
+
             if comp_type in ("voltage_source", "current_source", "ground"):
                 rotations[comp_id] = 90
                 continue
@@ -1543,12 +1683,40 @@ class LayoutPlanner:
         if not isinstance(position, dict):
             return None
         
-        scale = 2.54
-        center_x = 127.0
-        center_y = 95.0
-        x = center_x + (float(position.get("x", 0.0)) * scale)
-        y = center_y - (float(position.get("y", 0.0)) * scale)
+        # Treat render_style.position as direct schematic coordinates so IR can
+        # control exact placement around a logical origin (e.g. Q1 at 0,0).
+        x = float(position.get("x", 0.0))
+        y = float(position.get("y", 0.0))
         return (x, y)
+
+    def _manual_rotation_from_render_style(self, component) -> Optional[int]:
+        """Get explicit schematic rotation from render_style/orientation hints."""
+        render_style = getattr(component, "render_style", None)
+        if not render_style:
+            return None
+
+        orientation = render_style.get("orientation")
+        if orientation is None:
+            orientation = render_style.get("rotation")
+        if orientation is None:
+            orientation = getattr(component, "orientation", None)
+
+        if orientation is None:
+            return None
+
+        text = str(orientation).strip().lower()
+        if not text:
+            return None
+
+        if text in {"horizontal", "h", "landscape"}:
+            return 0
+        if text in {"vertical", "v", "portrait"}:
+            return 90
+
+        try:
+            return int(float(text)) % 360
+        except ValueError:
+            return None
     
     @staticmethod
     def _order_points_for_shorter_routes(

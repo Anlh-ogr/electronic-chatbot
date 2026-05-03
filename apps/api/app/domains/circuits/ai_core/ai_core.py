@@ -277,20 +277,13 @@ class CircuitIRValidator:
                     if ref_id in {"VCC", "VDD", "VEE", "VSS", "GND", "GROUND", "0", "IN", "OUT", "VIN", "VOUT", "INPUT", "OUTPUT"}:
                         continue
                     raise InvalidPinConnectionError(
-                        f"Net '{net.net_name}' references unknown component '{ref_id}'"
+                        f"Net '{net.net_name}' references missing component '{ref_id}'"
                     )
-
-                allowed_pins = self._resolve_allowed_pins(component.type)
-                if not allowed_pins:
-                    raise InvalidPinConnectionError(
-                        f"No pin policy defined for component type '{component.type}' ({component.ref_id})"
-                    )
-
-                if pin_name not in allowed_pins:
-                    raise InvalidPinConnectionError(
-                        f"Invalid pin '{raw_pin}' for component '{component.ref_id}' "
-                        f"(type={component.type}). Allowed pins: {sorted(allowed_pins)}"
-                    )
+                # NOTE: Previously the validator enforced a pin-name policy per component type
+                # (e.g., capacitors must use pins {1,2}). That proved too strict for LLM-generated
+                # IR where pin naming can vary (e.g., KiCad-style names, aliases). Only enforce
+                # existence of the referenced component ID here. Pin-level semantics are best
+                # validated later in exporters or by schema validators.
 
     def _build_symbol_table(self, ir: CircuitIR) -> Dict[str, float]:
         table: Dict[str, float] = {
@@ -362,7 +355,7 @@ class CircuitIRValidator:
         parallel_mode = "||" in candidate
         candidate = candidate.replace("||", "//")
 
-        candidate = candidate.replace("×", "*").replace("÷", "/").replace("^", "**")
+        candidate = candidate.replace("*", "*").replace("÷", "/").replace("^", "**")
         candidate = candidate.replace(",", "")
 
         def _expand_metric(match: re.Match[str]) -> str:

@@ -90,6 +90,42 @@ class ExportKiCadSchUseCase:
         try:
             # Get circuit
             circuit = await self._get_circuit(request.circuit_id)
+
+            # SCH debug: log circuit shape received by use case
+            try:
+                cid = request.circuit_id or (circuit.id if getattr(circuit, 'id', None) else None)
+            except Exception:
+                cid = request.circuit_id
+            logger.info(
+                "[SCH DEBUG] UseCase fetched circuit_id=%s components=%d nets=%d",
+                cid,
+                len(getattr(circuit, 'components', {})),
+                len(getattr(circuit, 'nets', {})),
+            )
+            # Debug: component/net counts and source inference
+            component_count = len(getattr(circuit, 'components', {}))
+            net_count = len(getattr(circuit, 'nets', {}))
+            repo_name = getattr(self.repository, '__class__', type(self.repository)).__name__
+            if 'Postgres' in repo_name:
+                source = 'postgres'
+            elif 'Memory' in repo_name or 'InMemory' in repo_name:
+                source = 'memory'
+            else:
+                source = repo_name
+            logger.debug(
+                "Export start: circuit=%s component_count=%d net_count=%d source=%s",
+                request.circuit_id,
+                component_count,
+                net_count,
+                source,
+            )
+
+            # Fail fast on empty circuit
+            if component_count == 0 or net_count == 0:
+                raise ExportError(
+                    format_type=request.format.value,
+                    reason=f"Empty circuit: components={component_count}, nets={net_count}",
+                )
             
             # Validate format
             if request.format != ExportFormat.KICAD:
@@ -109,6 +145,12 @@ class ExportKiCadSchUseCase:
             
             # Save to storage
             file_path = await self._save_artifact(filename, kicad_content)
+
+            # Log artifact info
+            try:
+                logger.debug("Export finished: file=%s size=%d", str(file_path), file_path.stat().st_size)
+            except Exception:
+                logger.debug("Export finished: file=%s", str(file_path))
 
             oracle_report = await self._run_oracle_validation(
                 file_path=file_path,
@@ -331,9 +373,10 @@ class KiCad8SchematicCompiler:
         "npn": "Device:Q_NPN_BCE",
         "pnp": "Device:Q_PNP_BCE",
         "diode": "Device:D",
-        "voltage_source": "Simulation_SPICE:V",
-        "current_source": "Simulation_SPICE:I",
+        "voltage_source": "Device:V",
+        "current_source": "Device:I",
         "opamp": "Amplifier_Operational:LM741",
+        "power_symbol": "power:VCC",
     }
 
     _TYPE_ALIASES: Dict[str, str] = {
@@ -359,6 +402,7 @@ class KiCad8SchematicCompiler:
         "isource": "current_source",
         "opamp": "opamp",
         "op_amp": "opamp",
+        "power_symbol": "power_symbol",
     }
 
     _PIN_OFFSETS: Dict[str, Dict[str, Tuple[float, float]]] = {
@@ -447,6 +491,7 @@ class KiCad8SchematicCompiler:
         from app.application.ai.kicad_symbol_library import get_kicad_symbol_mapper
         
         placements = self._calculate_placement(ir)
+        power_counter = 0
         comp_by_ref = {comp.ref_id.strip().upper(): comp for comp in ir.components}
 
         lines: List[str] = [
@@ -463,28 +508,44 @@ class KiCad8SchematicCompiler:
             x, y = placements.get(ref, (100.0, 100.0))
             
             # Strategy: Use kicad_symbol field if available, else resolve from component value/type
-            if comp.kicad_symbol and comp.kicad_symbol.strip():
+            is_power_symbol = str(comp.type or "").strip().lower() == "power_symbol"
+            if is_power_symbol:
+                if ref in {"GND", "GROUND", "VSS", "VEE", "0"}:
+                    lib_id = "power:GND"
+                else:
+                    lib_id = "power:VCC"
+                power_counter += 1
+                ref_tag = f"#PWR{power_counter:02d}"
+            elif comp.kicad_symbol and comp.kicad_symbol.strip():
                 lib_id = comp.kicad_symbol.strip()
             else:
                 # Try resolving from component value (model name)
                 lib_id = mapper.lookup_by_model(str(comp.value or ""))
                 if not lib_id:
                     # Fall back to type-based resolution
-                    lib_id = self._resolve_lib_id(comp.type)
+                    lib_id = self._resolve_lib_id(comp.type, ref)
             
             ref_label = self._escape_text(ref)
             value_label = self._escape_text(str(comp.value))
-            footprint = self._escape_text(comp.footprint or "")
+            footprint = "" if is_power_symbol else self._escape_text(comp.footprint or "")
 
-            lines.extend(
-                [
-                    f'  (symbol (lib_id "{lib_id}") (at {x:.3f} {y:.3f} 0) (unit 1) (in_bom yes) (on_board yes) (uuid "{uuid.uuid4().hex}")',
-                    f'    (property "Reference" "{ref_label}" (at {x:.3f} {y - 20.0:.3f} 0) (effects (font (size 1.27 1.27))))',
-                    f'    (property "Value" "{value_label}" (at {x:.3f} {y + 20.0:.3f} 0) (effects (font (size 1.27 1.27))))',
-                    f'    (property "Footprint" "{footprint}" (at {x:.3f} {y:.3f} 0) (effects (font (size 1.27 1.27)) hide))',
-                    '  )',
-                ]
-            )
+            symbol_lines = []
+            # Header line
+            symbol_lines.append(f'  (symbol (lib_id "{lib_id}") (at {x:.3f} {y:.3f} 0) (unit 1) (in_bom yes) (on_board yes) (uuid "{uuid.uuid4().hex}" )')
+            # Reference and Value
+            if is_power_symbol:
+                symbol_lines.append(f'    (property "Reference" "{ref_tag}" (at {x:.3f} {y - 20.0:.3f} 0) (effects (font (size 1.27 1.27)) hide))')
+                symbol_lines.append(f'    (property "Value" "{value_label}" (at {x:.3f} {y + 20.0:.3f} 0) (effects (font (size 1.27 1.27))))')
+                # Ensure a single pin "1" for power symbols
+                symbol_lines.append(f'    (pin "1" (uuid "{uuid.uuid4().hex}"))')
+            else:
+                symbol_lines.append(f'    (property "Reference" "{ref_label}" (at {x:.3f} {y - 20.0:.3f} 0) (effects (font (size 1.27 1.27))))')
+                symbol_lines.append(f'    (property "Value" "{value_label}" (at {x:.3f} {y + 20.0:.3f} 0) (effects (font (size 1.27 1.27))))')
+                if not is_power_symbol:
+                    symbol_lines.append(f'    (property "Footprint" "{footprint}" (at {x:.3f} {y:.3f} 0) (effects (font (size 1.27 1.27)) hide))')
+            # Close symbol block
+            symbol_lines.append('  )')
+            lines.extend(symbol_lines)
 
         for net in ir.nets:
             points: List[Tuple[float, float]] = []
@@ -549,8 +610,13 @@ class KiCad8SchematicCompiler:
             )
         return placement
 
-    def _resolve_lib_id(self, comp_type: str) -> str:
+    def _resolve_lib_id(self, comp_type: str, comp_id: str = "") -> str:
         raw = str(comp_type or "").strip().lower()
+        comp_id_norm = str(comp_id or "").strip().upper()
+        if raw == "power_symbol":
+            if comp_id_norm in {"GND", "GROUND", "VSS", "VEE", "0"}:
+                return "power:GND"
+            return "power:VCC"
         canonical = self._TYPE_ALIASES.get(raw)
         if canonical is None:
             for key, alias in self._TYPE_ALIASES.items():

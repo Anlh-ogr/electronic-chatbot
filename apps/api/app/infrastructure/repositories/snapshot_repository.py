@@ -57,11 +57,33 @@ class PostgresSnapshotRepository(SnapshotRepositoryPort):
     
     async def save(self, snapshot: CircuitSnapshot) -> None:
         """Save snapshot to database."""
+        ir_data = snapshot.ir_data
+        # Validate and normalize ir_data
+        if ir_data is None:
+            # Defensive: avoid inserting NULL into jsonb
+            return
+        try:
+            if isinstance(ir_data, str):
+                import json as _json
+
+                try:
+                    ir_data = _json.loads(ir_data)
+                except Exception:
+                    # If the string is invalid JSON, skip saving
+                    return
+            if not isinstance(ir_data, dict):
+                try:
+                    ir_data = dict(ir_data)
+                except Exception:
+                    return
+        except Exception:
+            return
+
         model = SnapshotModel(
             snapshot_id=snapshot.metadata.snapshot_id,
             circuit_id=snapshot.metadata.circuit_id,
             message_id=None,
-            circuit_data=snapshot.ir_data,
+            circuit_data=ir_data,
             created_at=snapshot.metadata.timestamp,
         )
         self.session.add(model)

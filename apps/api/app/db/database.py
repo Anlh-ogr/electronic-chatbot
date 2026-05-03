@@ -15,10 +15,8 @@ English:
 - Optimization: pool_pre_ping to check connections, max_overflow for spikes
 """
 
-# ====== Lý do sử dụng thư viện ======
-# sqlalchemy: ORM framework cho database operations
-# os: Load DATABASE_URL từ environment variables
 from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from typing import Generator
@@ -53,9 +51,7 @@ SYNC_DATABASE_URL = _normalize_sync_database_url(DATABASE_URL)
 # Create engine
 engine = create_engine(
     SYNC_DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20
+    poolclass=NullPool,
 )
 
 # Session factory

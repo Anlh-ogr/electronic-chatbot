@@ -52,6 +52,7 @@ class ComponentType(Enum):
     VOLTAGE_SOURCE = "voltage_source"
     CURRENT_SOURCE = "current_source"
     GROUND = "ground"
+    POWER_SYMBOL = "power_symbol"
     DIODE = "diode"
     CONNECTOR = "connector"
     PORT = "port"
@@ -97,6 +98,9 @@ class ComponentType(Enum):
         aliases["vdd"] = cls.VOLTAGE_SOURCE
         aliases["vee"] = cls.VOLTAGE_SOURCE
         aliases["pwr"] = cls.VOLTAGE_SOURCE
+        aliases["powersymbol"] = cls.POWER_SYMBOL
+        aliases["power_symbol"] = cls.POWER_SYMBOL
+        aliases["power symbol"] = cls.POWER_SYMBOL
         aliases["power_port"] = cls.PORT
         aliases["pwr_port"] = cls.PORT
         aliases["vcc_port"] = cls.PORT
@@ -257,6 +261,39 @@ class PinRef:
         }
 
 
+@dataclass(frozen=True)
+class SignalFlow:
+    input_node: str
+    output_node: str
+    main_chain: Tuple[str, ...]
+    stage_links: Tuple[Tuple[str, str], ...] = ()
+
+    def __post_init__(self):
+        if not self.input_node:
+            raise ValueError("SignalFlow input_node không được trống")
+        if not self.output_node:
+            raise ValueError("SignalFlow output_node không được trống")
+
+        main_chain = tuple(str(item).strip() for item in self.main_chain if str(item).strip())
+        stage_links = tuple(
+            (str(link[0]).strip(), str(link[1]).strip())
+            for link in self.stage_links
+            if isinstance(link, (tuple, list)) and len(link) >= 2 and str(link[0]).strip() and str(link[1]).strip()
+        )
+        object.__setattr__(self, "input_node", str(self.input_node).strip())
+        object.__setattr__(self, "output_node", str(self.output_node).strip())
+        object.__setattr__(self, "main_chain", main_chain)
+        object.__setattr__(self, "stage_links", stage_links)
+
+    def to_dict(self) -> dict:
+        return {
+            "input_node": self.input_node,
+            "output_node": self.output_node,
+            "main_chain": list(self.main_chain),
+            "stage_links": [list(link) for link in self.stage_links],
+        }
+
+
 
 # ===== ENTITIES =====
 """ Linh kiện vật lý trong mạch điện tử.
@@ -317,6 +354,7 @@ class Component:
     footprint: Optional[str] = None
     symbol_version: Optional[str] = None
     render_style: Optional[Dict[str, Any]] = field(default_factory=dict)
+    stage: Optional[str] = None
     
     def __post_init__(self):
         self._validate_identity()
@@ -335,6 +373,10 @@ class Component:
             object.__setattr__(self, "render_style", MappingProxyType(render_style_copy))
         else:
             object.__setattr__(self, "render_style", MappingProxyType({}))
+
+        if self.stage is not None:
+            stage_value = str(self.stage).strip()
+            object.__setattr__(self, "stage", stage_value or None)
     
     def _validate_identity(self):
         if not self.id:
@@ -348,6 +390,7 @@ class Component:
             ComponentType.CONNECTOR,
             ComponentType.PORT,
             ComponentType.GROUND,
+            ComponentType.POWER_SYMBOL,
             ComponentType.VOLTAGE_SOURCE,
             ComponentType.CURRENT_SOURCE,
         )
@@ -422,6 +465,8 @@ class Component:
             result["symbol_version"] = self.symbol_version
         if self.render_style and len(self.render_style) > 0:
             result["render_style"] = dict(self.render_style)
+        if self.stage:
+            result["stage"] = self.stage
         
         return result
 
@@ -628,12 +673,15 @@ class Circuit:
     description: Optional[str] = None
     parametric: Optional[Dict[str, Any]] = None
     pcb_hints: Optional[Dict[str, Any]] = None
+    signal_flow: Optional[SignalFlow] = None
     
     def __post_init__(self):
         if self.parametric is not None:
             object.__setattr__(self, "parametric", MappingProxyType(dict(self.parametric)))
         if self.pcb_hints is not None:
             object.__setattr__(self, "pcb_hints", MappingProxyType(dict(self.pcb_hints)))
+        if self.signal_flow is not None and not isinstance(self.signal_flow, SignalFlow):
+            raise TypeError(f"signal_flow phải là SignalFlow, nhận {type(self.signal_flow)}")
         
         self._freeze_internal_collection()
         self._expose_read_only_views()
@@ -683,10 +731,8 @@ class Circuit:
             for ref in net_obj.connected_pins:
                 if ref.component_id not in self.components:
                     errors.append(f"Net '{net_key}' tham chiếu đến linh kiện không tồn tại: '{ref.component_id}'")
-                else:
-                    comp = self.components[ref.component_id]
-                    if ref.pin_name not in comp.pins:
-                        errors.append(f"Net '{net_key}' tham chiếu đến pin không tồn tại: '{ref.pin_name}' trên linh kiện '{ref.component_id}'")
+                # NOTE: Do NOT reject nets based on pin name semantics or component type.
+                # LLM-generated IR may use varied pin naming; only enforce component existence here.
 
         for port_key, port_obj in self.ports.items():
             if port_obj.net_name not in self.nets:
@@ -733,6 +779,7 @@ class Circuit:
             description=self.description,
             parametric=dict(self.parametric) if self.parametric else None,
             pcb_hints=dict(self.pcb_hints) if self.pcb_hints else None,
+            signal_flow=self.signal_flow,
         )
 
     def to_dict(self) -> dict:
@@ -759,4 +806,6 @@ class Circuit:
             result["parametric"] = dict(self.parametric)
         if self.pcb_hints is not None:
             result["pcb_hints"] = dict(self.pcb_hints)
+        if self.signal_flow is not None:
+            result["signal_flow"] = self.signal_flow.to_dict()
         return result

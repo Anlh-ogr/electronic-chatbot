@@ -23,9 +23,10 @@ English:
 # uuid: Generate unique circuit IDs
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
 import uuid
 import logging
+import re
 
 # ====== Domain & Application layers ======
 from app.domains.circuits.entities import Circuit
@@ -107,6 +108,11 @@ class PostgresCircuitRepository:
             self.session.add(model)
 
         # Persist latest circuit IR into snapshots table (Neon schema source of truth).
+        if ir_data is None:
+            logger.error("Attempting to save NULL ir_data for circuit: %s; aborting snapshot insert", cid)
+            self.session.commit()
+            return cid
+
         snapshot_model = SnapshotModel(
             snapshot_id=str(uuid.uuid4()),
             circuit_id=cid,
@@ -130,9 +136,6 @@ class PostgresCircuitRepository:
         model = self.session.query(CircuitModel).filter(
             CircuitModel.circuit_id == circuit_id
         ).first()
-        
-        if not model:
-            return None
 
         latest_snapshot = (
             self.session.query(SnapshotModel)
@@ -140,32 +143,87 @@ class PostgresCircuitRepository:
             .order_by(desc(SnapshotModel.created_at), desc(SnapshotModel.snapshot_id))
             .first()
         )
-        if not latest_snapshot:
-            return None
 
-        payload = latest_snapshot.circuit_data
-        if not isinstance(payload, dict):
-            return None
+        default_name = (model.name if model is not None else None) or "Unnamed Circuit"
 
-        # First try canonical IR snapshot.
+        payload = None
+        if latest_snapshot is not None:
+            payload = latest_snapshot.circuit_data
+            if payload is None or (isinstance(payload, str) and not payload.strip()) or (
+                isinstance(payload, (dict, list, tuple, set)) and len(payload) == 0
+            ):
+                logger.critical(
+                    "Snapshot payload is completely missing or null in Postgres for circuit_id: %s",
+                    circuit_id,
+                )
+                payload = None
+            elif not isinstance(payload, dict):
+                logger.critical(
+                    "Snapshot payload is completely missing or null in Postgres for circuit_id: %s",
+                    circuit_id,
+                )
+                payload = None
+
+        if payload is not None:
+            # First try canonical IR snapshot.
+            try:
+                ir = CircuitIRSerializer.from_dict(payload)
+                return ir.circuit
+            except Exception as exc:
+                logger.warning("Circuit %s has non-canonical snapshot payload: %s", circuit_id, exc)
+
+            # Fallback: hydrate from chatbot/compiled payload shape into canonical IR dict.
+            try:
+                coerced = self._coerce_snapshot_to_ir_dict(
+                    payload=payload,
+                    circuit_id=circuit_id,
+                    default_name=default_name,
+                )
+                if coerced is None:
+                    return None
+                return CircuitIRSerializer.to_circuit(coerced)
+            except Exception as exc:
+                logger.warning("Circuit %s fallback snapshot coercion failed: %s", circuit_id, exc)
+                return None
+
+        # Final fallback: some flows persist canonical CircuitIR into circuit_irs instead of snapshots.
         try:
-            ir = CircuitIRSerializer.from_dict(payload)
-            return ir.circuit
-        except Exception as exc:
-            logger.warning("Circuit %s has non-canonical snapshot payload: %s", circuit_id, exc)
+            row = (
+                self.session.execute(
+                    text(
+                        """
+                        SELECT ir_json, circuit_name, topology_type
+                        FROM circuit_irs
+                        WHERE circuit_id = :circuit_id
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"circuit_id": circuit_id},
+                )
+            ).mappings().first()
+            if row is None:
+                logger.warning("Circuit %s not found in repository!", circuit_id)
+                return None
 
-        # Fallback: hydrate from chatbot/compiled payload shape into canonical IR dict.
-        try:
+            ir_json = row.get("ir_json")
+            if not isinstance(ir_json, dict):
+                logger.warning("Circuit %s circuit_irs payload is not a dict", circuit_id)
+                return None
+
             coerced = self._coerce_snapshot_to_ir_dict(
-                payload=payload,
+                payload=ir_json,
                 circuit_id=circuit_id,
-                default_name=(model.name or "Unnamed Circuit"),
+                default_name=str(row.get("circuit_name") or default_name or "Unnamed Circuit"),
             )
             if coerced is None:
+                logger.warning("Circuit %s circuit_irs fallback coercion returned no payload", circuit_id)
                 return None
+
+            logger.info("Loaded circuit %s from circuit_irs fallback", circuit_id)
             return CircuitIRSerializer.to_circuit(coerced)
         except Exception as exc:
-            logger.warning("Circuit %s fallback snapshot coercion failed: %s", circuit_id, exc)
+            logger.warning("Circuit %s circuit_irs fallback lookup failed: %s", circuit_id, exc)
             return None
 
     @staticmethod
@@ -183,10 +241,22 @@ class PostgresCircuitRepository:
 
     @staticmethod
     def _coerce_snapshot_to_ir_dict(
-        payload: Dict[str, Any],
+        payload: Any,
         circuit_id: str,
         default_name: str,
     ) -> Optional[Dict[str, Any]]:
+        if payload is None or (isinstance(payload, str) and not payload.strip()) or (
+            isinstance(payload, (dict, list, tuple, set)) and len(payload) == 0
+        ):
+            logger.critical(
+                "Snapshot payload is completely missing or null in Postgres for circuit_id: %s",
+                circuit_id,
+            )
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
         # Already canonical enough for CircuitIRSerializer.to_circuit.
         if all(key in payload for key in ("meta", "components", "nets", "ports", "constraints")):
             return payload
@@ -277,14 +347,38 @@ class PostgresCircuitRepository:
                 else:
                     ir_params[key] = {"value": str(value) if value is not None else ""}
 
-            pins = list(comp.get("pins") or [])
+            # Normalize pins into a list of strings. Accept formats: list, comma-separated string, dict, or missing.
+            raw_pins = comp.get("pins")
+            pins: List[str] = []
+            if isinstance(raw_pins, list):
+                pins = [str(p).strip() for p in raw_pins if p is not None and str(p).strip()]
+            elif isinstance(raw_pins, str):
+                # comma or space separated
+                parts = [p.strip() for p in re.split(r"[,\s]+", raw_pins) if p.strip()]
+                pins = parts
+            elif isinstance(raw_pins, dict):
+                # dict of pin_name -> meta
+                pins = [str(k).strip() for k in raw_pins.keys() if str(k).strip()]
+
             if not pins:
                 pins = list(pins_by_component.get(comp_id, []))
+
             if not pins:
                 pins = ["1"] if comp_type in single_pin_types else ["1", "2"]
-            if comp_type not in single_pin_types and len(pins) < 2:
-                if "2" not in pins:
-                    pins.append("2")
+
+            # Ensure multi-pin components have at least two unique pins
+            if comp_type not in single_pin_types:
+                # remove empty and dedupe while preserving order
+                seen = set()
+                ordered = []
+                for p in pins:
+                    if p not in seen:
+                        seen.add(p)
+                        ordered.append(p)
+                pins = ordered
+                if len(pins) < 2:
+                    if "2" not in pins:
+                        pins.append("2")
 
             kicad_info = comp.get("kicad") if isinstance(comp.get("kicad"), dict) else {}
             ir_components.append(

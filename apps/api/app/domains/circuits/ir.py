@@ -16,7 +16,7 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Dict, List, Any, Optional
 from .entities import (
-    ComponentType, Component, Net, Port, Constraint, Circuit, ParameterValue, PinRef, PortDirection
+    ComponentType, Component, Net, Port, Constraint, Circuit, ParameterValue, PinRef, PortDirection, SignalFlow
 )
 
 """ Lý do sử dụng thư viện
@@ -159,6 +159,8 @@ class CircuitIRSerializer:
             result["parametric"] = dict(circuit.parametric)
         if circuit.pcb_hints is not None:
             result["pcb_hints"] = dict(circuit.pcb_hints)
+        if circuit.signal_flow is not None:
+            result["signal_flow"] = circuit.signal_flow.to_dict()
         return result
     
     # đưa thông tin linh kiện vào dict (bao gồm KiCad metadata nếu có)
@@ -183,8 +185,30 @@ class CircuitIRSerializer:
             result["symbol_version"] = comp.symbol_version
         if comp.render_style and len(comp.render_style) > 0:
             result["render_style"] = dict(comp.render_style)
+        if getattr(comp, "stage", None):
+            result["stage"] = comp.stage
         
         return result
+
+    def _build_signal_flow(signal_flow_data: Any) -> Optional[SignalFlow]:
+        if not isinstance(signal_flow_data, dict):
+            return None
+
+        main_chain_raw = signal_flow_data.get("main_chain", [])
+        stage_links_raw = signal_flow_data.get("stage_links", [])
+        main_chain = tuple(str(item).strip() for item in main_chain_raw if str(item).strip()) if isinstance(main_chain_raw, list) else ()
+        stage_links = tuple(
+            (str(link[0]).strip(), str(link[1]).strip())
+            for link in stage_links_raw
+            if isinstance(link, (list, tuple)) and len(link) >= 2 and str(link[0]).strip() and str(link[1]).strip()
+        ) if isinstance(stage_links_raw, list) else ()
+
+        return SignalFlow(
+            input_node=str(signal_flow_data.get("input_node", "")).strip(),
+            output_node=str(signal_flow_data.get("output_node", "")).strip(),
+            main_chain=main_chain,
+            stage_links=stage_links,
+        )
     # đưa thông tin net vào dict
     def _nets_to_dict(net: Net) -> Dict[str, Any]:
         return {
@@ -403,6 +427,8 @@ class CircuitIRSerializer:
     @staticmethod
     def to_circuit(ir_data: Dict[str, Any]) -> Circuit:
         CircuitIRSerializer._validate_schema(ir_data)
+        # Normalize and validate nets before building circuit
+        ir_data = CircuitIRSerializer._normalize_and_validate_nets(ir_data)
         components = CircuitIRSerializer._build_components(ir_data["components"])
         nets = CircuitIRSerializer._build_nets(ir_data["nets"])
         ports = CircuitIRSerializer._build_ports(ir_data["ports"])
@@ -475,6 +501,102 @@ class CircuitIRSerializer:
         missing = required - ir_data.keys()
         if missing:
             raise ValueError(f"IR thiếu phần bắt buộc: {', '.join(missing)}")
+
+    @staticmethod
+    def _normalize_and_validate_nets(ir_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate and normalize nets: enforce invariant that one pin belongs to exactly one net.
+        
+        This function:
+        1. Detects pins that appear in multiple nets
+        2. For coupling capacitors (input/output ports), intelligently splits nets
+        3. Fails fast with structured error if conflict cannot be resolved
+        
+        Returns normalized ir_data with corrected nets, or raises ValidationError.
+        """
+        nets = ir_data.get("nets", [])
+        if not nets:
+            return ir_data
+        
+        # Build pin -> net mapping to detect duplicates
+        pin_to_nets: Dict[str, List[str]] = {}
+        for net_dict in nets:
+            net_name = net_dict.get("name", "")
+            for pin_ref in net_dict.get("connected_pins", []):
+                component_id = pin_ref.get("component_id", "")
+                pin_name = pin_ref.get("pin_name", "")
+                pin_key = f"{component_id}.{pin_name}"
+                
+                if pin_key not in pin_to_nets:
+                    pin_to_nets[pin_key] = []
+                pin_to_nets[pin_key].append(net_name)
+        
+        # Check for duplicates
+        duplicates = {pin: nets_list for pin, nets_list in pin_to_nets.items() if len(nets_list) > 1}
+        if duplicates:
+            # If duplicates exist, try to auto-merge common ground/net aliases into canonical 'GND'
+            def _is_ground_name(n: str) -> bool:
+                if not n:
+                    return False
+                ln = str(n).strip().lower()
+                return ln in {"gnd", "ground", "vss", "0", "agnd"} or ln.startswith("gnd")
+
+            # Collect nets that should be merged into GND when they appear in any duplicate set
+            nets_to_merge: set = set()
+            for pin, conflicting_nets in duplicates.items():
+                if any(_is_ground_name(nm) for nm in conflicting_nets):
+                    nets_to_merge.update(conflicting_nets)
+
+            if nets_to_merge:
+                # Replace matching net names with canonical 'GND'
+                for net_dict in nets:
+                    if net_dict.get("name") in nets_to_merge:
+                        net_dict["name"] = "GND"
+
+                # Merge nets with the same name by combining connected_pins (unique)
+                merged: Dict[str, list[dict]] = {}
+                for net_dict in nets:
+                    name = net_dict.get("name")
+                    connected = net_dict.get("connected_pins", [])
+                    if name not in merged:
+                        merged[name] = []
+                    # append unique connected pins
+                    existing = {(p.get("component_id"), p.get("pin_name")) for p in merged[name]}
+                    for p in connected:
+                        key = (p.get("component_id"), p.get("pin_name"))
+                        if key not in existing:
+                            merged[name].append(p)
+                            existing.add(key)
+
+                # Rebuild nets list
+                new_nets = []
+                for name, conns in merged.items():
+                    new_nets.append({"name": name, "connected_pins": conns})
+
+                ir_data["nets"] = new_nets
+
+                # Rebuild pin_to_nets mapping after merge and re-check duplicates
+                pin_to_nets = {}
+                for net_dict in ir_data.get("nets", []):
+                    net_name = net_dict.get("name", "")
+                    for pin_ref in net_dict.get("connected_pins", []):
+                        component_id = pin_ref.get("component_id", "")
+                        pin_name = pin_ref.get("pin_name", "")
+                        pin_key = f"{component_id}.{pin_name}"
+                        pin_to_nets.setdefault(pin_key, []).append(net_name)
+
+                duplicates = {pin: nets_list for pin, nets_list in pin_to_nets.items() if len(nets_list) > 1}
+
+            # If duplicates still remain, fail with structured error
+            if duplicates:
+                error_details = {pin: list(set(nets_list)) for pin, nets_list in duplicates.items()}
+                raise ValueError(
+                    f"Net normalization error: Pin(s) referenced by multiple nets: {error_details}. "
+                    f"Each physical pin must belong to exactly one net. "
+                    f"If this is a coupling capacitor, ensure one side (e.g., input/output port) is on a separate net."
+                )
+
+        return ir_data
+
     # xây dựng các linh kiện từ dict      
     def _build_components(comp_data: list[dict]) -> dict[str, Component]:
         components = {} # lưu trữ linh kiện
@@ -522,6 +644,7 @@ class CircuitIRSerializer:
                 raw_model = "Generic"
             if comp_type in active_device_types and "model" not in params:
                 params["model"] = ParameterValue(raw_model, None)
+            stage_value = data.get("stage") or data.get("component_stage")
             comp = Component(
                 id=data["id"],
                 type=comp_type,
@@ -532,7 +655,8 @@ class CircuitIRSerializer:
                 symbol_name=data.get("symbol_name"),
                 footprint=data.get("footprint"),
                 symbol_version=data.get("symbol_version"),
-                render_style=data.get("render_style", {})
+                render_style=data.get("render_style", {}),
+                stage=str(stage_value).strip() if stage_value is not None else None,
             )
             components[comp.id] = comp
         return components
@@ -749,6 +873,7 @@ class CircuitIRSerializer:
                 "description": ir_data.get("description"),
                 "parametric": ir_data.get("parametric"),
                 "pcb_hints": ir_data.get("pcb_hints"),
+                "signal_flow": CircuitIRSerializer._build_signal_flow(ir_data.get("signal_flow")),
             }
     
         return Circuit(

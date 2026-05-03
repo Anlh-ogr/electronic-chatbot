@@ -33,6 +33,9 @@ from app.application.circuits.errors import ExportError
 # ====== Infrastructure - Layout & Serialization ======
 from app.infrastructure.exporters.layout_planner import LayoutPlanner
 from app.infrastructure.exporters.kicad_sch_serializer import KiCadSchSerializer
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class KiCadSchExporter(ExporterPort):
@@ -75,7 +78,16 @@ class KiCadSchExporter(ExporterPort):
             )
         
         try:
+            # Debug: surface circuit shape early to detect upstream empty payloads
+            cid = getattr(circuit, "id", None)
+            comp_count = len(getattr(circuit, "components", {}))
+            net_count = len(getattr(circuit, "nets", {}))
+            logger.info(f"[SCH DEBUG] Generating SCH for circuit_id={cid}, components={comp_count}, nets={net_count}")
             self._last_layout_quality_report = None
+
+            # Fail-fast: ensure circuit has components and nets
+            if not getattr(circuit, 'components', None) or not getattr(circuit, 'nets', None):
+                raise ExportError(format_type=format_type.value, reason=f"Empty circuit: components={len(getattr(circuit,'components',{}))}, nets={len(getattr(circuit,'nets',{}))}")
 
             # Convert to IR first
             ir = self._create_ir(circuit)
@@ -220,6 +232,14 @@ class KiCadSchExporter(ExporterPort):
 
         for idx, scale in enumerate(scales):
             placements = self.layout_planner.place_components(circuit, spacing_scale=scale)
+            # Detect pathological placement results (empty or very large coords) and
+            # fallback to a simple deterministic grid placement to avoid overlaps.
+            try:
+                if not placements or any(abs(x) > 1000 or abs(y) > 1000 for x, y in placements.values()):
+                    logger.info("LayoutPlanner returned invalid placements, using simple grid placement fallback")
+                    placements = self._simple_grid_placement(circuit)
+            except Exception:
+                placements = self._simple_grid_placement(circuit)
             rotations = self.layout_planner.infer_component_rotations(circuit, placements)
             wires = self._plan_wires(circuit, placements, pin_offsets, rotations)
 
@@ -253,6 +273,80 @@ class KiCadSchExporter(ExporterPort):
             pass
 
         return best_placements, best_wires, best_rotations
+
+    def _simple_grid_placement(self, circuit: Circuit) -> Dict[str, tuple]:
+        """Place components on a simple grid to avoid overlaps.
+
+        - spacing: 150mm
+        - start: x=100, y=100
+        - 4 columns per row
+        Power symbols (voltage_source, power_symbol, ground) will be placed
+        near the first non-power component found on their nets when possible.
+        """
+        from app.domains.circuits.entities import ComponentType
+
+        spacing = 150.0
+        start_x = 100.0
+        start_y = 100.0
+        cols = 4
+
+        placements: Dict[str, tuple] = {}
+        power_candidates: Dict[str, object] = {}
+
+        # First place non-power components in grid order
+        col = 0
+        row = 0
+        for comp_id, comp in circuit.components.items():
+            ctype = getattr(comp, 'type', None)
+            is_power = False
+            try:
+                is_power = (ctype == ComponentType.POWER_SYMBOL or ctype == ComponentType.VOLTAGE_SOURCE or ctype == ComponentType.GROUND)
+            except Exception:
+                is_power = False
+
+            if is_power:
+                power_candidates[comp_id] = comp
+                continue
+
+            x = start_x + col * spacing
+            y = start_y + row * spacing
+            placements[comp_id] = (float(x), float(y))
+            col += 1
+            if col >= cols:
+                col = 0
+                row += 1
+
+        # Place power symbols near connected components when possible
+        for power_id, power_comp in power_candidates.items():
+            # find nets that include this power component
+            near_pos = None
+            for net in circuit.nets.values():
+                for ref in net.connected_pins:
+                    if ref.component_id == power_id:
+                        # find another component on this net
+                        for other_ref in net.connected_pins:
+                            if other_ref.component_id != power_id and other_ref.component_id in placements:
+                                ox, oy = placements[other_ref.component_id]
+                                near_pos = (ox - 30.0, oy)
+                                break
+                        if near_pos is not None:
+                            break
+                if near_pos is not None:
+                    break
+
+            if near_pos is None:
+                # place at next grid slot
+                x = start_x + col * spacing
+                y = start_y + row * spacing
+                placements[power_id] = (float(x), float(y))
+                col += 1
+                if col >= cols:
+                    col = 0
+                    row += 1
+            else:
+                placements[power_id] = (float(near_pos[0]), float(near_pos[1]))
+
+        return placements
 
     def _evaluate_layout_quality(
         self,

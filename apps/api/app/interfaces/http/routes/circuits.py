@@ -457,6 +457,12 @@ async def export_circuit_to_kicad(
         )
     
     except ExportError as e:
+        reason = str(e.details.get("reason") if isinstance(e.details, dict) else e.message)
+        if "Empty circuit" in reason or "empty circuit" in reason.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "export_empty", "message": reason, "details": e.details},
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -942,6 +948,17 @@ async def get_kicad_schematic_content(
         logger.info(f"Executing export use case...")
         response = await use_case.execute(request)
         logger.info(f"Export completed: {response.file_path}")
+
+        # Fail-fast: ensure exported metadata reports non-zero components/nets
+        meta = getattr(response, "metadata", {}) or {}
+        comp_count = int(meta.get("component_count") or 0)
+        net_count = int(meta.get("net_count") or 0)
+        if comp_count == 0 or net_count == 0:
+            logger.error("Export result empty: components=%s nets=%s", comp_count, net_count)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "export_empty", "message": "Export produced empty circuit (no components or nets)"},
+            )
         
         # Read file content if exists
         from pathlib import Path

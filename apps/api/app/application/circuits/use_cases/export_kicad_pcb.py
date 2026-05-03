@@ -82,6 +82,33 @@ class ExportKiCadPCBUseCase:
         try:
             # Get circuit
             circuit = await self._get_circuit(request.circuit_id)
+
+            # Debug: component/net counts and source inference
+            component_count = len(getattr(circuit, 'components', {}))
+            net_count = len(getattr(circuit, 'nets', {}))
+            repo_name = getattr(self.repository, '__class__', type(self.repository)).__name__
+            if 'Postgres' in repo_name:
+                source = 'postgres'
+            elif 'Memory' in repo_name or 'InMemory' in repo_name:
+                source = 'memory'
+            else:
+                source = repo_name
+            # Use logger from module
+            import logging
+            logging.getLogger(__name__).debug(
+                "PCB export start: circuit=%s component_count=%d net_count=%d source=%s",
+                request.circuit_id,
+                component_count,
+                net_count,
+                source,
+            )
+
+            # Fail fast on empty circuit
+            if component_count == 0 or net_count == 0:
+                raise ExportError(
+                    format_type=request.format.value,
+                    reason=f"Empty circuit: components={component_count}, nets={net_count}",
+                )
             
             # Validate format
             if request.format != ExportFormat.KICAD_PCB:

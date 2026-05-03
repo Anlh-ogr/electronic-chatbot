@@ -18,6 +18,70 @@ class CircuitIRRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def ensure_circuit_exists(
+        self,
+        circuit_id: str,
+        circuit_name: str,
+        session_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+    ) -> str:
+        """Ensure parent row in circuits table exists before inserting into circuit_irs.
+        
+        This satisfies the FK constraint circuit_irs.circuit_id -> circuits.circuit_id.
+        Returns circuit_id if inserted, or if row already exists.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Check if circuit already exists
+        result = await self.session.execute(
+            text("SELECT circuit_id FROM circuits WHERE circuit_id = :circuit_id"),
+            {"circuit_id": circuit_id},
+        )
+        existing = result.scalar()
+        if existing:
+            logger.debug("Circuit already exists: circuit_id=%s", circuit_id)
+            return circuit_id
+        
+        # Insert parent circuit row
+        await self.session.execute(
+            text(
+                """
+                INSERT INTO circuits (
+                    circuit_id,
+                    session_id,
+                    message_id,
+                    name,
+                    description,
+                    created_at,
+                    updated_at
+                ) VALUES (
+                    :circuit_id,
+                    :session_id,
+                    :message_id,
+                    :name,
+                    :description,
+                    now(),
+                    now()
+                )
+                """
+            ),
+            {
+                "circuit_id": circuit_id,
+                "session_id": session_id,
+                "message_id": message_id,
+                "name": circuit_name or "Unnamed Circuit",
+                "description": "Auto-generated circuit from IR persistence",
+            },
+        )
+        await self.session.commit()
+        logger.info(
+            "Circuit row inserted successfully: circuit_id=%s, name=%s",
+            circuit_id,
+            circuit_name,
+        )
+        return circuit_id
+
     async def save_ir(
         self,
         ir: CircuitIR,

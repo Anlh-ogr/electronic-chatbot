@@ -69,6 +69,21 @@ class AnalysisAndMath(BaseModel):
     expected_bom: List[str] = Field(default_factory=list, description="Expected bill of materials: transistor models, resistor values, capacitor values")
     calculations_table: List[Calculation] = Field(default_factory=list, description="Detailed calculation steps for each component in each stage")
 
+    @field_validator("calculations_table", mode="before")
+    @classmethod
+    def _fallback_calculations_table(cls, v):
+        import logging
+        logger = logging.getLogger(__name__)
+        # If not a list at all, replace with empty list to avoid hard failure
+        if not isinstance(v, list):
+            logger.warning("calculations_table malformed: expected list, got %s; using []", type(v).__name__)
+            return []
+        # Keep only dict entries (Calculation expects dict-like input)
+        valid_items = [item for item in v if isinstance(item, dict)]
+        if len(valid_items) != len(v):
+            logger.warning("Dropped malformed items from calculations_table (expected dict entries)")
+        return valid_items
+
 
 class StageDetail(BaseModel):
     """Single stage definition in multi-stage architecture."""
@@ -91,6 +106,33 @@ class StageArchitecture(BaseModel):
     stage_count: int = Field(..., ge=1, description="Number of cascaded stages")
     stages: List[StageDetail] = Field(default_factory=list, description="List of stage definitions")
 
+    @field_validator("topology_type", mode="before")
+    @classmethod
+    def _fallback_topology_type(cls, v):
+        import logging
+        logger = logging.getLogger(__name__)
+        allowed = {"Single-stage", "Multi-stage", "Hybrid", "Push-Pull", "Complementary", "Differential"}
+        try:
+            if isinstance(v, str) and v in allowed:
+                return v
+        except Exception:
+            pass
+        logger.warning("Invalid topology_type '%s' received; defaulting to 'Single-stage'", v)
+        return "Single-stage"
+
+    @field_validator("stages", mode="before")
+    @classmethod
+    def _fallback_stages(cls, v):
+        import logging
+        logger = logging.getLogger(__name__)
+        if not isinstance(v, list):
+            logger.warning("stages malformed: expected list, got %s; using []", type(v).__name__)
+            return []
+        valid = [item for item in v if isinstance(item, dict)]
+        if len(valid) != len(v):
+            logger.warning("Dropped malformed items from stages (expected dict entries)")
+        return valid
+
 
 class PowerAndCoupling(BaseModel):
     """Power strategy and inter-stage coupling strategy."""
@@ -107,6 +149,63 @@ class PowerAndCoupling(BaseModel):
         "Capacitive Coupling",
         "None",
     ]
+
+    @field_validator("interstage_coupling", mode="before")
+    @classmethod
+    def _fallback_interstage_coupling(cls, v):
+        import logging
+        logger = logging.getLogger(__name__)
+        allowed = {"RC Coupling", "Direct Coupling", "Transformer Coupling", "AC Coupling", "Capacitive Coupling", "None"}
+        if isinstance(v, str) and v in allowed:
+            return v
+        logger.warning("Invalid interstage_coupling '%s' received; defaulting to 'None'", v)
+        return "None"
+
+
+class SignalFlow(BaseModel):
+    """Directed semantic flow for layout and wiring."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_node: str = Field(..., description="Semantic input node, e.g. IN")
+    output_node: str = Field(..., description="Semantic output node, e.g. OUT")
+    main_chain: List[str] = Field(default_factory=list, description="Ordered stage identifiers as strings")
+    stage_links: List[List[str]] = Field(default_factory=list, description="Directed edges between stages")
+
+    @field_validator("input_node", "output_node")
+    @classmethod
+    def _normalize_node_name(cls, value: str) -> str:
+        return str(value).strip().upper()
+
+    @field_validator("main_chain", mode="before")
+    @classmethod
+    def _normalize_main_chain(cls, value) -> List[str]:
+        import logging
+        logger = logging.getLogger(__name__)
+        if not isinstance(value, list):
+            logger.warning("main_chain malformed: expected list, got %s; using []", type(value).__name__)
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @field_validator("stage_links", mode="before")
+    @classmethod
+    def _normalize_stage_links(cls, value) -> List[List[str]]:
+        import logging
+        logger = logging.getLogger(__name__)
+        if not isinstance(value, list):
+            logger.warning("stage_links malformed: expected list, got %s; using []", type(value).__name__)
+            return []
+        links: List[List[str]] = []
+        for pair in value:
+            if not isinstance(pair, list) or len(pair) < 2:
+                continue
+            left = str(pair[0]).strip()
+            right = str(pair[1]).strip()
+            if left and right:
+                links.append([left, right])
+        if len(links) != len(value):
+            logger.warning("Dropped malformed items from stage_links (expected list-of-list entries)")
+        return links
 
 
 class Component(BaseModel):
@@ -126,6 +225,7 @@ class Component(BaseModel):
     operating_point_check: str = Field(..., description="DC operating-point verification or operating region (e.g. 'Vce=5V, Ic=100mA' or 'Active region')")
     footprint: str = Field(default="", description="KiCad footprint identifier, e.g. Package_TO_SOT_Bipolar:TO-220-3_Vertical")
     kicad_symbol: str = Field(..., description="KiCad symbol library reference, e.g. Device:R, Device:C, Transistor_BJT:TIP41C, Amplifier_Operational:LM741")
+    stage: str = Field(default="", validation_alias=AliasChoices("stage", "component_stage"), description="Semantic stage identifier, e.g. '1', '2', '3'")
 
     @field_validator("id")
     @classmethod
@@ -181,11 +281,18 @@ class CircuitIR(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    thought_process: str = Field(
+        default="",
+        alias="_thought_process_",
+        exclude=True,
+        description="Opaque LLM calculation note; accepted for parsing but ignored downstream",
+    )
     is_valid_request: bool = Field(..., description="Set to FALSE if user input is missing critical I/O parameters.")
     clarification_question: str = Field(default="", description="If is_valid_request is False, populate this with the clarification question.")
     analysis: AnalysisAndMath = Field(...)
     architecture: StageArchitecture = Field(...)
     power_and_coupling: PowerAndCoupling = Field(...)
+    signal_flow: SignalFlow = Field(...)
     components: List[Component] = Field(default_factory=list)
     nets: List[Net] = Field(default_factory=list)
     probe_nodes: List[str] = Field(default_factory=list, description='Nodes for ngspice plotting, e.g. ["IN", "OUT"]')
@@ -217,18 +324,10 @@ class CircuitIR(BaseModel):
             missing.append("analysis.math_basis")
         if self.analysis.expected_bom is None:
             missing.append("analysis.expected_bom")
-        if self.architecture.stage_count < 1:
-            missing.append("architecture.stage_count")
-        if not self.architecture.stages:
-            missing.append("architecture.stages")
-        if not self.power_and_coupling.output_strategy.strip():
-            missing.append("power_and_coupling.output_strategy")
         if not self.components:
             missing.append("components")
         if not self.nets:
             missing.append("nets")
-        if not self.probe_nodes:
-            missing.append("probe_nodes")
 
         if self.components and any(
             not component.id.strip()

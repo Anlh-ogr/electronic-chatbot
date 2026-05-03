@@ -269,128 +269,101 @@ class LLMRouter:
             return None
 
         system_prompt = """
-You are an Electronic Design Automation expert specializing in Analog Amplifier Architectures (BJT, FET, Opamp, Class A/B/AB/C/D, Darlington, Multi-stage).
-Your ONLY job is to generate a complete, physically-plausible CircuitIR JSON object.
-Every response must be VALID JSON ONLY. No markdown, no explanations, no code fences.
+You are an EDA expert generating a CircuitIR JSON for Analog Amplifiers (BJT, FET, Opamp, Class A-D, Multi-stage).
+Output strictly VALID JSON ONLY. No markdown, no explanations, no code fences.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
-║                    MANDATORY OUTPUT STRUCTURE (ALL REQUIRED)                   ║
+║                            CORE DESIGN INVARIANTS                              ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
-When is_valid_request=true, you MUST populate ALL of these fields with actual data:
-✓ analysis: (object) Circuit name, topology, design explanation, math basis, BOM, calculations
-✓ architecture: (object) Topology type, stage count, list of stages with active devices
-✓ power_and_coupling: (object) Power rail, output strategy, interstage coupling
-✓ components: (array) Complete component list with refs, types, values, footprints
-✓ nets: (array) All electrical nets with pin-level node references
-✓ probe_nodes: (array) Nodes for waveform plotting, e.g. ["IN", "OUT", "VCC"]
-
-FAILURE TO POPULATE ALL REQUIRED FIELDS WHEN is_valid_request=true IS NOT ACCEPTABLE.
-If you cannot generate a complete circuit, set is_valid_request=false with clarification_question.
+1. Node Uniqueness (CRITICAL): A physical component pin (e.g., C2:2, Q1:1) MUST belong to EXACTLY ONE net. Never connect an INPUT/OUTPUT coupling capacitor directly to a device pin using the same net. Example: `IN` net -> C1:1; `BASE` net -> C1:2, Q1:2.
+2. Power Symbols: VCC, VDD, VEE, VSS, and GND must be explicit items in `components` array with type="PowerSymbol". They have 1 pin ("1") and no footprint.
+3. BJT CE Gain: If Av is specified, strictly use Split Emitter (RE1, RE2). AC bypass CE across RE2 only. RC/RE1 ≈ Av.
+4. Op-Amp: Always include power supply decoupling capacitors (0.1uF) close to VCC/VEE pins.
+5. FET/MOSFET: Gate draws no DC current; ensure proper DC bias resistor to GND or VDD.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
-║                            DESIGN RULES                                        ║
+║                                SCHEMA RULES                                    ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
-Rule 1 - Schema Enforcement (STRICT):
-- `topology_type` MUST BE EXACTLY ONE OF: "Single-stage", "Multi-stage", "Hybrid", "Push-Pull", "Complementary", "Differential". DO NOT invent other names.
-- `interstage_coupling` MUST BE EXACTLY ONE OF: "RC Coupling", "Direct Coupling", "Transformer Coupling", "AC Coupling", "Capacitive Coupling", "None".
-- ALL node strings inside `nets[].nodes` MUST contain a colon ":". E.g., do NOT put "0" or "VCC" inside `nodes`. Use "GND:1" or "VCC:1" if routing to a power port component.
-
-Rule 2 - Component Specifications:
-- Every component must have: id, type, value, standardized_value, operating_point_check, footprint, kicad_symbol
-- CRITICAL: Resistors must have values like "10k", Capacitors like "10uF".
-- kicad_symbol MUST be a valid KiCad library reference (e.g., "Device:R", "Transistor_BJT:BC547").
-
-Rule 3 - Complete Netlist Definition:
-- Ground net MUST be named exactly "0" in `net_name`.
-- Power supply nets must be named "+12V", "-12V", "VCC" in `net_name`.
-- INSIDE the `nodes` array, EVERY single item MUST follow `REF:PIN` format.
-  - Correct: `{"net_name": "0", "nodes": ["R1:2", "C1:2"]}`
-  - FATAL ERROR: `{"net_name": "0", "nodes": ["R1:2", "0"]}` (node "0" violates REF:PIN)
-
-Rule 4 - Topology-Specific Requirements:
-- For Class C: MUST include LC tank circuit tuned to fo. Bias below cutoff.
-- For Class D: MUST include PWM/Gate driver IC and output LC filter.
-- For Op-Amp Differential: 4 matched resistors for CMRR.
-
-Rule 5 - Calculation Formulas (AST Parseable):
-- Arrays like `stages` and `calculations_table` MUST contain valid JSON objects.
-- `formula` MUST be a valid, parseable math string.
-    - DO NOT use undefined variables. If you use "Vcc", it must be clear and present in the circuit context.
-    - Do NOT split one object into multiple text rows, markdown rows, or pseudo-YAML lines.
-    - Do NOT use empty strings for unknown numeric context; use "0" or "N/A".
-    - `calculated_value` MUST be numeric.
-    - `stage_index` MUST be an integer.
-    - `vin`, `vout`, `zin`, `f_cutoff`, and `component_stage` MUST stay as strings.
-    - Example calculation object:
-        {"target_component": "Rc", "formula": "Vcc / 2", "calculated_value": 6, "unit": "V", "vin": "0", "vout": "0", "zin": "0", "f_cutoff": "0", "component_stage": "1"}
-
-Rule 6 - Language Policy:
-- analysis.design_explanation, analysis.math_basis, and analysis.design_summary MUST be written in Vietnamese.
+R1. STRICT DATA TYPES:
+    - `calculations_table` MUST be a List of Objects (List of Dictionaries). NEVER output a list of strings here.
+    - `architecture.stages` MUST be a List of Objects (List of Dictionaries). NEVER output a list of strings here.
+    - `signal_flow.stage_links` MUST be a List of Lists of strings (e.g., `[["1", "2"], ["2", "3"]]`).
+R2. Allowed topology_type: "Single-stage", "Multi-stage", "Hybrid", "Push-Pull", "Complementary", "Differential".
+R3. Allowed interstage_coupling: "RC", "Direct", "Transformer", "AC", "Capacitive", "None".
+R4. Netlist format: Ground MUST be "0". Power nets must be "+12V", "-12V", etc. Nodes MUST strictly use "REF:PIN" format (e.g., "R1:1"). Never put "0" or "VCC" inside the nodes array.
+R5. Math AST: `formula` must be parseable math without undefined vars. Use "0" or "N/A" for unknown numeric strings. `stage_index` is integer. `calculated_value` must be a string or number.
+R6. Language: `design_explanation`, `math_basis`, and `design_summary` MUST be in Vietnamese.
+R7. Fail-fast: If unable to design, set is_valid_request=false and provide clarification_question.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
-║                   JSON SKELETON (Topology-Agnostic Template)                   ║
+║                        JSON SKELETON (DO NOT COPY VALUES)                      ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
-DO NOT COPY THESE VALUES. THIS IS ONLY TO SHOW THE EXACT JSON STRUCTURE AND TYPES.
-REPLACE ALL PLACEHOLDERS (<...>) WITH ACTUAL DESIGN DATA BASED ON USER REQUEST.
 
 {
   "is_valid_request": true,
+  "_thought_process_": "<Short internal reasoning/calculations>",
   "analysis": {
-    "circuit_name": "<Generate appropriate name based on request>",
-    "topology_classification": "<e.g. Common Emitter / Non-Inverting / Push-Pull>",
-    "design_explanation": "<Vietnamese: Giải thích nguyên lý chi tiết mạch này>",
-    "math_basis": "<Vietnamese: Liệt kê các công thức tính toán liên quan>",
-    "design_summary": "<Vietnamese: Tóm tắt thông số và chức năng>",
-    "expected_bom": ["<Part1>", "<Part2>", "<Value1>", "<Value2>"],
+    "circuit_name": "<Contextual name>",
+    "topology_classification": "<e.g., Common Source / Differential>",
+    "design_explanation": "<Vietnamese explanation>",
+    "math_basis": "<Vietnamese formulas>",
+    "design_summary": "<Vietnamese summary>",
+    "expected_bom": ["<Part1>", "<Part2>"],
     "calculations_table": [
       {
-        "target_component": "<Component ID, e.g. R1>",
-        "formula": "<Parseable Math, e.g. (Vcc - Vce) / Ic>",
-                "calculated_value": 4700,
-        "unit": "<Unit, e.g. Ohm>",
-        "vin": "<Number or '0' if N/A>",
-        "vout": "<Number or '0' if N/A>",
-        "zin": "<Number or '0' if N/A>",
-        "f_cutoff": "<Number or '0' if N/A>",
-                "component_stage": "1"
+        "target_component": "<ID>",
+        "formula": "<Math>",
+        "calculated_value": "4700",
+        "unit": "<e.g., Ohm>",
+        "vin": "0", "vout": "0", "zin": "0", "f_cutoff": "0",
+        "component_stage": "1"
       }
     ]
   },
   "architecture": {
-    "topology_type": "<MUST BE: Single-stage, Multi-stage, Hybrid, Push-Pull, Complementary, or Differential>",
+    "topology_type": "<See R2>",
     "stage_count": 1,
     "stages": [
       {
-                "stage_index": 1,
-        "function": "<Function, e.g. Voltage Gain>",
-        "active_device": "<ID of active device, e.g. Q1, U1>",
-        "input_coupling": "<MUST BE: RC Coupling, Direct Coupling, Transformer Coupling, AC Coupling, Capacitive Coupling, or None>",
-        "output_coupling": "<MUST BE: RC Coupling, Direct Coupling, Transformer Coupling, AC Coupling, Capacitive Coupling, or None>"
+        "stage_index": 1,
+        "function": "<e.g., Voltage Gain>",
+        "active_device": "<ID>",
+        "input_coupling": "<See R3>",
+        "output_coupling": "<See R3>"
       }
     ]
   },
   "power_and_coupling": {
-    "power_rail": "<e.g. Symmetric ±15V or Single +12V>",
-    "output_strategy": "<e.g. Single-ended or Push-Pull>",
-    "interstage_coupling": "<MUST BE: RC Coupling, Direct Coupling, Transformer Coupling, AC Coupling, Capacitive Coupling, or None>"
+    "power_rail": "<e.g., Single +12V>",
+    "output_strategy": "<e.g., Single-ended>",
+    "interstage_coupling": "<See R3>"
+  },
+  "signal_flow": {
+    "input_node": "IN",
+    "output_node": "OUT",
+    "main_chain": ["1", "2"],
+    "stage_links": [
+      ["1", "2"]
+    ]
   },
   "components": [
     {
-      "id": "<e.g. R1, Q1, U1>",
-      "type": "<e.g. resistor, capacitor, bjt_npn, opamp>",
-      "value": "<e.g. 10k, 100uF, BC547>",
-      "standardized_value": "<e.g. 10k>",
-      "model": "<e.g. Generic, BC547>",
-      "operating_point_check": "<e.g. Vce=5V, Ic=1mA>",
-      "footprint": "<Valid KiCad Footprint>",
-      "kicad_symbol": "<Valid KiCad Symbol, e.g. Device:R>"
+      "id": "R1",
+      "type": "<resistor|capacitor|bjt_npn|mosfet_n|opamp|PowerSymbol>",
+      "value": "10k",
+      "standardized_value": "10k",
+      "model": "Generic",
+      "operating_point_check": "Vce=5V",
+      "stage": "1",
+      "footprint": "<KiCad footprint>",
+      "kicad_symbol": "Device:R"
     }
   ],
   "nets": [
-    {"net_name": "<e.g. VCC>", "nodes": ["<REF:PIN>", "<REF:PIN>"]},
-    {"net_name": "0", "nodes": ["<REF:PIN>", "<REF:PIN>"]}
+    {"net_name": "VCC", "nodes": ["VCC:1", "R1:1"]},
+    {"net_name": "0", "nodes": ["GND:1", "R2:2"]}
   ],
   "probe_nodes": ["IN", "OUT"]
 }
@@ -581,6 +554,27 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                 _flush_current()
                 continue
 
+            # If the line contains multiple comma-separated key:value pairs, parse them all.
+            text = str(raw_item or "").strip()
+            if ":" in text and "," in text:
+                parts = [p.strip() for p in text.split(",") if p.strip()]
+                any_parsed = False
+                for part in parts:
+                    parsed = LLMRouter._split_key_value_entry(part)
+                    if parsed is None:
+                        continue
+                    any_parsed = True
+                    key, value = parsed
+                    if current and key == starter_key:
+                        _flush_current()
+                    current[key] = LLMRouter._coerce_scalar_value(
+                        value,
+                        as_number=bool(numeric_keys and key in numeric_keys),
+                        as_int=bool(integer_keys and key in integer_keys),
+                    )
+                if any_parsed:
+                    continue
+
             parsed = LLMRouter._split_key_value_entry(raw_item)
             if parsed is None:
                 # Stray text line (e.g. "AC Coupling") - ignore instead of poisoning the list.
@@ -597,6 +591,70 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
             )
 
         _flush_current()
+
+        # If we couldn't parse any objects from key:value style lines, try another
+        # heuristic: the model sometimes emits a flattened sequence of tokens
+        # alternating header/key names and values (e.g. ['target_component','Rc','formula','Rc/(re+RE1)',...]).
+        if not objects:
+            tokens: List[str] = [str(x).strip() for x in items if x is not None and str(x).strip()]
+            if tokens:
+                # Find indices where a starter_key occurrence repeats so we can derive header length.
+                lower_tokens = [t.lower() for t in tokens]
+                try:
+                    starter_l = starter_key.lower()
+                    indices = [i for i, t in enumerate(lower_tokens) if t == starter_l]
+                except Exception:
+                    indices = []
+
+                if len(indices) >= 2 and indices[0] == 0:
+                    header_len = indices[1] - indices[0]
+                    if header_len > 1 and len(tokens) % header_len == 0:
+                        header = tokens[0:header_len]
+                        chunks = [tokens[i : i + header_len] for i in range(0, len(tokens), header_len)]
+                        for chunk in chunks:
+                            d: Dict[str, Any] = {}
+                            for j, h in enumerate(header):
+                                key = h
+                                value = chunk[j]
+                                d[key] = LLMRouter._coerce_scalar_value(
+                                    value,
+                                    as_number=bool(numeric_keys and key in numeric_keys),
+                                    as_int=bool(integer_keys and key in integer_keys),
+                                )
+                            objects.append(d)
+
+                # Fallback: try to interpret pairs as alternating key/value
+                if not objects and len(tokens) >= 2 and len(tokens) % 2 == 0:
+                    evens = tokens[0::2]
+                    odds = tokens[1::2]
+                    # If even-position tokens are unique keys, assume a single flattened record
+                    if len(set(evens)) == len(evens) and len(evens) > 1 and all(
+                        re.fullmatch(r"[A-Za-z_ ][A-Za-z0-9_ ]{0,40}", e) for e in evens
+                    ):
+                        d: Dict[str, Any] = {}
+                        for k, v in zip(evens, odds):
+                            d[k] = LLMRouter._coerce_scalar_value(
+                                v,
+                                as_number=bool(numeric_keys and k in numeric_keys),
+                                as_int=bool(integer_keys and k in integer_keys),
+                            )
+                        objects.append(d)
+                    else:
+                        # Otherwise fall back to creating small single-key dicts so we don't lose data
+                        possible = True
+                        for i in range(0, min(20, len(tokens)), 2):
+                            if not re.fullmatch(r"[A-Za-z_ ][A-Za-z0-9_ ]{0,40}", tokens[i]):
+                                possible = False
+                                break
+                        if possible:
+                            for i in range(0, len(tokens), 2):
+                                k = tokens[i]
+                                v = tokens[i + 1]
+                                objects.append({k: LLMRouter._coerce_scalar_value(
+                                    v,
+                                    as_number=bool(numeric_keys and k in numeric_keys),
+                                    as_int=bool(integer_keys and k in integer_keys),
+                                )})
 
         return objects if objects else items
 

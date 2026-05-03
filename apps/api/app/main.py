@@ -57,6 +57,30 @@ app.include_router(circuits_router)
 app.include_router(snapshots_router)
 
 
+# ====== Global Exception Handlers ======
+@app.exception_handler(ValueError)
+async def value_error_exception_handler(request, exc: ValueError):
+    """Convert ValueError to HTTP 400 Bad Request.
+    
+    This catches validation errors from CircuitIR normalization/validation,
+    net conflict detection, and schema enforcement failures, returning
+    structured error responses instead of 500 Internal Server Error.
+    """
+    import logging
+    from fastapi.responses import JSONResponse
+    
+    logger = logging.getLogger(__name__)
+    logger.warning("ValueError caught by global handler: %s", str(exc))
+    
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "validation_error",
+            "message": str(exc),
+        },
+    )
+
+
 @app.on_event("startup")
 async def startup_background_workers() -> None:
     """Bootstrap persistent background workers (industrial routing queue)."""

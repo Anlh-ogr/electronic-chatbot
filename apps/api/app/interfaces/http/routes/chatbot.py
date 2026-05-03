@@ -71,6 +71,7 @@ class ChatResponseModel(BaseModel):
     params: Optional[Dict[str, Any]] = Field(None, description="Solved parameters")
     analysis: Optional[Dict[str, Any]] = Field(None, description="Structured engineering analysis")
     circuit_data: Optional[Dict[str, Any]] = Field(None, description="Circuit IR data")
+    validation_error: Optional[str] = Field(None, description="IR validation/normalization error")
     suggestions: List[str] = Field(default_factory=list, description="Suggested queries")
     session_id: Optional[str] = Field(None, description="Resolved session id")
     user_message_id: Optional[str] = Field(None, description="Persisted user message id")
@@ -248,6 +249,16 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             mode=request.mode,
         )
 
+        # Check for IR validation errors (net conflicts, etc.)
+        if result.validation_error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "ir_validation_failed",
+                    "message": result.validation_error,
+                },
+            )
+
         return ChatResponseModel(
             message=result.message,
             success=result.success,
@@ -260,6 +271,7 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             params=result.params,
             analysis=result.analysis,
             circuit_data=result.circuit_data,
+            validation_error=result.validation_error,
             suggestions=result.suggestions,
             session_id=result.session_id,
             user_message_id=result.user_message_id,
@@ -273,6 +285,8 @@ async def chat(request: ChatRequest) -> ChatResponseModel:
             ir_id=result.ir_id,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Chat endpoint error: {e}", exc_info=True)
         raise HTTPException(
@@ -674,6 +688,8 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
         kicad_info = comp.get("kicad", {})
         comp_id = comp.get("id", "")
         comp_type = comp.get("type", "resistor").strip().lower()
+        if comp_type in {"powersymbol", "power_symbol", "power symbol"}:
+            comp_type = "power_symbol"
         # Normalize common legacy/short aliases to canonical IR types
         if comp_type in {"power", "pwr", "vcc", "vdd", "vss", "vee", "vccg"}:
             comp_type = "voltage_source"
@@ -706,6 +722,9 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
             comp_type in {"voltage_source", "current_source"}
             and rail_id_norm in {"VCC", "VDD", "VSS", "VEE"}
         )
+        if comp_type == "power_symbol":
+            power_rail_ids.add(str(comp_id).strip().upper())
+            pins = ["1"]
         if normalize_power_rails and is_power_rail_source:
             power_rail_ids.add(str(comp_id).strip().upper())
             pins = ["1"]
@@ -765,7 +784,7 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
             "kicad_symbol": kicad_info.get("symbol_name") or comp.get("kicad_symbol") or "",
             "library_id": kicad_info.get("library_id"),
             "symbol_name": kicad_info.get("symbol_name"),
-            "footprint": kicad_info.get("footprint"),
+            "footprint": None if comp_type == "power_symbol" else kicad_info.get("footprint"),
             "symbol_version": kicad_info.get("symbol_version"),
             "render_style": render_style,
         }
@@ -983,6 +1002,13 @@ async def export_kicad(request: ExportKicadRequest):
             "size": len(kicad_content),
         }
 
+    except ValueError as ve:
+        # Validation errors (net conflicts, schema violations, etc.) → HTTP 400
+        logger.warning("KiCad export validation error: %s", str(ve))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "export_validation_failed", "message": str(ve)},
+        )
     except Exception as e:
         logger.error(f"KiCad export error: {e}", exc_info=True)
         raise HTTPException(
@@ -1028,6 +1054,13 @@ async def export_pcb(request: ExportKicadRequest):
             "size": len(pcb_content),
         }
 
+    except ValueError as ve:
+        # Validation errors (net conflicts, schema violations, etc.) → HTTP 400
+        logger.warning("PCB export validation error: %s", str(ve))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "export_validation_failed", "message": str(ve)},
+        )
     except Exception as e:
         logger.error(f"PCB export error: {e}", exc_info=True)
         raise HTTPException(

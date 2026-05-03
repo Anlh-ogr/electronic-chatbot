@@ -70,6 +70,8 @@ class KiCadSchSerializer:
         
         # Generate root UUID
         self._root_uuid = self._generate_uuid()
+        # Power symbol reference counter (used to generate #PWR01, #PWR02, ...)
+        self._power_ref_counter = 0
         
         lines = []
         
@@ -228,42 +230,68 @@ class KiCadSchSerializer:
         """
         symbol_def = KiCadSymbolLibrary.get_symbol_def(component.type.value, comp_id, len(component.pins))
         lib_id = symbol_def['lib_id']
-        ref = component.id
-        value = self._get_component_value(component)
-        uuid = self._generate_uuid()
+        is_power = bool(symbol_def.get('is_power'))
+        # instance identifiers
+        instance_uuid = self._generate_uuid()
+
+        # For power symbols, generate a hidden reference tag like #PWR01 and ensure
+        # a Value property is present (e.g., VCC/GND). For non-power components use
+        # their normal reference ID (e.g., R1, Q2).
+        if is_power:
+            self._power_ref_counter = getattr(self, '_power_ref_counter', 0) + 1
+            ref_property_value = f"#PWR{self._power_ref_counter:02d}"
+            value = str(component.id).strip().upper() or 'PWR'
+            ref = ref_property_value
+        else:
+            ref = component.id
+            value = self._get_component_value(component)
         
         lines = [
             f'  (symbol (lib_id "{lib_id}")',
             f'    (at {x} {y} {rotation})',
             '    (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no)',
             '    (fields_autoplaced yes)',
-            f'    (uuid "{uuid}")',
-            f'    (property "Reference" "{ref}" (at {x+2.0} {y+1.7} 0)',
-            '      (effects (font (size 1.27 1.27)))',
-            '    )',
-            f'    (property "Value" "{value}" (at {x+2.0} {y-1.7} 0)',
-            '      (effects (font (size 1.27 1.27)))',
-            '    )',
-            f'    (property "Footprint" "" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) (hide yes))',
-            '    )',
-            f'    (property "Datasheet" "" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) (hide yes))',
-            '    )',
-            f'    (property "Description" "{component.type.value}" (at {x} {y} 0)',
-            '      (effects (font (size 1.27 1.27)) (hide yes))',
-            '    )',
+            f'    (uuid "{instance_uuid}")',
         ]
-        
-        # Pin UUIDs
-        for pin_idx in range(len(component.pins)):
-            lines.append(f'    (pin "{pin_idx + 1}" (uuid "{self._generate_uuid()}"))')
-        
-        # Instances block
-        instance_path = f'"/{self._root_uuid}"'
-        lines.append('    (instances')
-        lines.append(f'      (project "" (path {instance_path} (reference "{ref}") (unit 1)))')
+
+        # Reference property: hide for power symbols
+        if is_power:
+            lines.append(f'    (property "Reference" "{ref}" (at {x+2.0} {y+1.7} 0)')
+            lines.append('      (effects (font (size 1.27 1.27)) (hide yes))')
+            lines.append('    )')
+            # Value property should contain the rail name (e.g., VCC, GND)
+            lines.append(f'    (property "Value" "{value}" (at {x+2.0} {y-1.7} 0)')
+            lines.append('      (effects (font (size 1.27 1.27)))')
+            lines.append('    )')
+        else:
+            lines.append(f'    (property "Reference" "{ref}" (at {x+2.0} {y+1.7} 0)')
+            lines.append('      (effects (font (size 1.27 1.27)))')
+            lines.append('    )')
+            lines.append(f'    (property "Value" "{value}" (at {x+2.0} {y-1.7} 0)')
+            lines.append('      (effects (font (size 1.27 1.27)))')
+            lines.append('    )')
+
+        # Footprint / Datasheet / Description (kept hidden by default)
+        lines.append(f'    (property "Footprint" "" (at {x} {y} 0)')
+        lines.append('      (effects (font (size 1.27 1.27)) (hide yes))')
         lines.append('    )')
+        lines.append(f'    (property "Datasheet" "" (at {x} {y} 0)')
+        lines.append('      (effects (font (size 1.27 1.27)) (hide yes))')
+        lines.append('    )')
+        lines.append(f'    (property "Description" "{component.type.value}" (at {x} {y} 0)')
+        lines.append('      (effects (font (size 1.27 1.27)) (hide yes))')
+        lines.append('    )')
+        
+        # Pin UUIDs — ensure power symbols always expose a single pin numbered "1"
+        if is_power:
+            lines.append(f'    (pin "1" (uuid "{self._generate_uuid()}"))')
+        else:
+            for pin_idx in range(len(component.pins)):
+                lines.append(f'    (pin "{pin_idx + 1}" (uuid "{self._generate_uuid()}"))')
+        
+        # Instances block (no project-level instance data required here)
+        lines.append('    (instances)')
+        # Close symbol block
         lines.append('  )')
         
         return lines
