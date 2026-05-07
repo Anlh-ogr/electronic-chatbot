@@ -37,7 +37,9 @@ import os
 from pydantic import BaseModel, SecretStr
 
 # ====== Load Configuration ======
-load_dotenv(dotenv_path=Path(".env.local"))
+_HERE = Path(__file__).resolve().parent             # app/core/
+_ROOT = _HERE.parent.parent                         # project root (apps/api/)
+load_dotenv(dotenv_path=_ROOT / ".env.local")
 
 
 # ====== Settings Configuration Class ======
@@ -52,6 +54,11 @@ class Settings(BaseModel):
     database_url: SecretStr
     kicad_files_path: Path
     static_files_path: Path
+    # Feature flags
+    enable_agr_placement: bool = True
+    enable_pcb_export: bool = True
+    enable_ngspice_sim: bool = True
+    enable_neon_db: bool = True
 
     @property
     def db_url(self) -> str:
@@ -91,6 +98,10 @@ def get_settings() -> Settings:
         database_url=url,
         kicad_files_path=Path(kicad_path).expanduser().resolve(),
         static_files_path=static_path,
+        enable_agr_placement=(os.getenv("ENABLE_AGR_PLACEMENT", "true").strip().lower() in {"1","true","yes","on"}),
+        enable_pcb_export=(os.getenv("ENABLE_PCB_EXPORT", "true").strip().lower() in {"1","true","yes","on"}),
+        enable_ngspice_sim=(os.getenv("ENABLE_NGSPICE_SIM", "true").strip().lower() in {"1","true","yes","on"}),
+        enable_neon_db=(os.getenv("ENABLE_NEON_DB", "true").strip().lower() in {"1","true","yes","on"}),
     )
     
 settings = get_settings()

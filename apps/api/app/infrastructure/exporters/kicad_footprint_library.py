@@ -97,41 +97,41 @@ _FOOTPRINT_DEFS: Dict[str, Dict] = {
         "pin_map": {"1": "1", "2": "2"},
     },
 
-    # ── Capacitor Disc (5 mm pitch) ────────────────────────────
+    # ── Capacitor Disc (2.5 mm pitch) ────────────────────────────
     "capacitor": {
-        "footprint": "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm",
+        "footprint": "Capacitor_THT:C_Disc_D3.8mm_W2.6mm_P2.50mm",
         "description": "Capacitor, Disc, Through-Hole",
         "pads": [
             {"number": "1", "type": "thru_hole", "shape": "circle",
              "at": (0, 0), "size": (1.6, 1.6), "drill": 0.8},
             {"number": "2", "type": "thru_hole", "shape": "circle",
-             "at": (5.0, 0), "size": (1.6, 1.6), "drill": 0.8},
+             "at": (2.5, 0), "size": (1.6, 1.6), "drill": 0.8},
         ],
         "drawings": [
-            *_circle(2.5, 0, 2.5, "F.SilkS"),
-            *_circle(2.5, 0, 2.5, "F.Fab", 0.10),
-            *_rect(-1.05, -2.9, 6.05, 2.9, "F.CrtYd", 0.05),
+            *_circle(1.25, 0, 1.9, "F.SilkS"),
+            *_circle(1.25, 0, 1.9, "F.Fab", 0.10),
+            *_rect(-1.05, -2.2, 3.55, 2.2, "F.CrtYd", 0.05),
         ],
         "pin_map": {"1": "1", "2": "2"},
     },
 
-    # ── Capacitor Electrolytic Radial (2.5 mm pitch) ──────────
+    # ── Capacitor Electrolytic Radial (2.0 mm pitch) ──────────
     "capacitor_polarized": {
-        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.50mm",
+        "footprint": "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm",
         "description": "Capacitor, Electrolytic, Radial",
         "pads": [
             {"number": "1", "type": "thru_hole", "shape": "rect",
              "at": (0, 0), "size": (1.6, 1.6), "drill": 0.8},
             {"number": "2", "type": "thru_hole", "shape": "circle",
-             "at": (2.5, 0), "size": (1.6, 1.6), "drill": 0.8},
+             "at": (2.0, 0), "size": (1.6, 1.6), "drill": 0.8},
         ],
         "drawings": [
-            *_circle(1.25, 0, 2.5, "F.SilkS"),
+            *_circle(1.0, 0, 2.2, "F.SilkS"),
             # + marker near pad 1
             _line(-1.0, -0.5, -1.0, 0.5, "F.SilkS"),
             _line(-1.5, 0, -0.5, 0, "F.SilkS"),
-            *_circle(1.25, 0, 2.5, "F.Fab", 0.10),
-            *_rect(-1.55, -2.8, 4.05, 2.8, "F.CrtYd", 0.05),
+            *_circle(1.0, 0, 2.2, "F.Fab", 0.10),
+            *_rect(-1.55, -2.5, 3.55, 2.5, "F.CrtYd", 0.05),
         ],
         "pin_map": {"1": "1", "2": "2"},
     },

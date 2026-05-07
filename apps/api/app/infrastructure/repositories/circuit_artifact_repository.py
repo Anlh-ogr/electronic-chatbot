@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.structured_logger import log_stage
+
 
 class CircuitArtifactRepository:
     """Persistence adapter for generated circuit artifacts."""
@@ -24,6 +26,38 @@ class CircuitArtifactRepository:
         download_url: Optional[str],
         file_size_bytes: Optional[int] = None,
     ) -> str:
+        # GUARD: Check if a valid artifact already exists for this circuit_id+ir_id+type
+        # If so, skip the duplicate save and return the existing ID.
+        existing = await self.session.execute(
+            text(
+                """
+                SELECT artifact_id, file_size_bytes
+                FROM circuit_artifacts
+                WHERE circuit_id = :circuit_id
+                  AND ir_id = :ir_id
+                  AND artifact_type = :artifact_type
+                  AND file_size_bytes IS NOT NULL
+                LIMIT 1
+                """
+            ),
+            {
+                "circuit_id": circuit_id,
+                "ir_id": ir_id,
+                "artifact_type": artifact_type,
+            },
+        )
+        existing_row = existing.mappings().first()
+        if existing_row is not None:
+            existing_id = existing_row.get("artifact_id")
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"Artifact {artifact_type} already exists for circuit_id={circuit_id}, "
+                f"ir_id={ir_id} (id={existing_id}); skipping duplicate save with file_size_bytes={file_size_bytes}"
+            )
+            return str(existing_id)
+        
+        # No duplicate found; proceed with insert
         artifact_id = str(uuid.uuid4())
         await self.session.execute(
             text(
@@ -58,6 +92,16 @@ class CircuitArtifactRepository:
             },
         )
         await self.session.commit()
+        log_stage(
+            "DB",
+            operation="save_artifact",
+            persisted=True,
+            artifact_id=artifact_id,
+            circuit_id=circuit_id,
+            ir_id=ir_id,
+            artifact_type=artifact_type,
+            file_size_bytes=file_size_bytes,
+        )
         return artifact_id
 
     async def get_artifacts_for_ir(self, ir_id: str) -> List[Dict[str, Any]]:

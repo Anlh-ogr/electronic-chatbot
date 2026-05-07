@@ -22,7 +22,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
 from pydantic import BaseModel, ValidationError
 
@@ -35,9 +35,21 @@ if TYPE_CHECKING:
 
 PromptContent = Any
 
+_VERTEX_OUTPUT_TOKEN_CAP = 8192
+
 
 def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
+
+
+def _cap_vertex_output_tokens(value: Optional[int]) -> int:
+    try:
+        requested = int(value) if value is not None else _VERTEX_OUTPUT_TOKEN_CAP
+    except (TypeError, ValueError):
+        requested = _VERTEX_OUTPUT_TOKEN_CAP
+    if requested <= 0:
+        requested = _VERTEX_OUTPUT_TOKEN_CAP
+    return min(requested, _VERTEX_OUTPUT_TOKEN_CAP)
 
 class LLMRole(str, Enum):
     GENERAL = "general"
@@ -141,7 +153,7 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
     pro_timeout = _first_float_env(["Google_Cloud_Pro_Timeout_Sec"], 45.0)
     ultra_timeout = _first_float_env(["Google_Cloud_Ultra_Timeout_Sec"], 60.0)
     
-    fast_tokens = _first_int_env(["Google_Cloud_Fast_Max_Tokens"], 8192)
+    fast_tokens = _first_int_env(["Google_Cloud_Fast_Max_Tokens"], 16384)
     think_tokens = _first_int_env(["Google_Cloud_Think_Max_Tokens"], 12288)
     pro_tokens = _first_int_env(["Google_Cloud_Pro_Max_Tokens"], 16384)
     ultra_tokens = _first_int_env(["Google_Cloud_Ultra_Max_Tokens"], 24576)
@@ -254,12 +266,21 @@ class LLMRouter:
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def generate_circuit_ir(self,requirements: str,*,mode: Optional[LLMMode] = None,max_schema_retries: Optional[int] = None,max_completeness_retries: int = 2,) -> Optional["CircuitIR"]:
+    def generate_circuit_ir(
+        self,
+        requirements: str,
+        *,
+        mode: Optional[LLMMode] = None,
+        max_schema_retries: Optional[int] = None,
+        max_completeness_retries: int = 2,
+    ) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
         """Generate CircuitIR JSON via Gemini and parse directly to CircuitIR.
-        
+
         Implements a two-level retry strategy:
         1. Schema retries (via chat_json) - fix JSON parsing errors
-        2. Completeness retries - ensure all required fields are populated
+        2. Validation retries - fix schema/physics failures
+
+        Returns a structured error dict on final validation failure.
         """
         from app.application.ai.circuit_ir_schema import CircuitIR
 
@@ -269,110 +290,142 @@ class LLMRouter:
             return None
 
         system_prompt = """
-You are an EDA expert generating a CircuitIR JSON for Analog Amplifiers (BJT, FET, Opamp, Class A-D, Multi-stage).
+You are an EDA expert generating a CircuitIR JSON for analog amplifier designs.
 Output strictly VALID JSON ONLY. No markdown, no explanations, no code fences.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║                            CORE DESIGN INVARIANTS                              ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
-1. Node Uniqueness (CRITICAL): A physical component pin (e.g., C2:2, Q1:1) MUST belong to EXACTLY ONE net. Never connect an INPUT/OUTPUT coupling capacitor directly to a device pin using the same net. Example: `IN` net -> C1:1; `BASE` net -> C1:2, Q1:2.
-2. Power Symbols: VCC, VDD, VEE, VSS, and GND must be explicit items in `components` array with type="PowerSymbol". They have 1 pin ("1") and no footprint.
-3. BJT CE Gain: If Av is specified, strictly use Split Emitter (RE1, RE2). AC bypass CE across RE2 only. RC/RE1 ≈ Av.
-4. Op-Amp: Always include power supply decoupling capacitors (0.1uF) close to VCC/VEE pins.
-5. FET/MOSFET: Gate draws no DC current; ensure proper DC bias resistor to GND or VDD.
+1. Node Uniqueness (CRITICAL): A physical component pin (e.g., C2:2, Q1:B) MUST belong to EXACTLY ONE net.
+2. Power/Ground: Include explicit components for power_supply and ground. Use one-pin symbols (pin "1").
+3. Probe nodes: MUST include IN, OUT, VCC or VDD, and 0.
+4. BJT CE Gain: If Av is specified, strictly use split emitter (RE1, RE2). AC bypass CE across RE2 only.
+5. Op-Amp: Always include power supply decoupling capacitors (0.1uF) close to VCC/VEE pins.
+6. FET/MOSFET: Gate draws no DC current; ensure proper DC bias resistor to GND or VDD.
+7. Multistage: Output separate stage objects in architecture.stages for each stage.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║                                SCHEMA RULES                                    ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
-R1. STRICT DATA TYPES:
-    - `calculations_table` MUST be a List of Objects (List of Dictionaries). NEVER output a list of strings here.
-    - `architecture.stages` MUST be a List of Objects (List of Dictionaries). NEVER output a list of strings here.
-    - `signal_flow.stage_links` MUST be a List of Lists of strings (e.g., `[["1", "2"], ["2", "3"]]`).
-R2. Allowed topology_type: "Single-stage", "Multi-stage", "Hybrid", "Push-Pull", "Complementary", "Differential".
-R3. Allowed interstage_coupling: "RC", "Direct", "Transformer", "AC", "Capacitive", "None".
-R4. Netlist format: Ground MUST be "0". Power nets must be "+12V", "-12V", etc. Nodes MUST strictly use "REF:PIN" format (e.g., "R1:1"). Never put "0" or "VCC" inside the nodes array.
-R5. Math AST: `formula` must be parseable math without undefined vars. Use "0" or "N/A" for unknown numeric strings. `stage_index` is integer. `calculated_value` must be a string or number.
-R6. Language: `design_explanation`, `math_basis`, and `design_summary` MUST be in Vietnamese.
-R7. Fail-fast: If unable to design, set is_valid_request=false and provide clarification_question.
+R1. Component fields REQUIRED:
+        - ref (unique, e.g., Q1, R1, C1, U1, M1)
+        - type: bjt_npn | bjt_pnp | mosfet_n | mosfet_p | jfet_n | jfet_p | opamp_ic |
+                        resistor | capacitor | inductor | transformer | power_supply | ground | connector
+        - value with units (ohm, k, uF, nF, mH, V, A)
+        - model (SPICE model string, e.g., BC547, LM741, IRF540)
+        - role: bias_top | bias_bottom | load | degeneration | bypass_cap |
+                        coupling_in | coupling_out | feedback | output_pair_top |
+                        output_pair_bottom | supply | ground | gate_drive | lc_filter |
+                        stage_bridge | unknown_passive
+        - topology_stage (integer, 0-based stage index)
+R2. Pin naming MUST follow:
+        - BJT: Q1:B, Q1:C, Q1:E
+        - MOSFET/JFET: M1:G, M1:D, M1:S
+        - Op-Amp: U1:+, U1:-, U1:OUT, U1:VS+, U1:VS-
+        - Resistor: R1:1, R1:2
+        - Capacitor: C1:1, C1:2
+        - Inductor: L1:1, L1:2
+        - Power/Ground: VCC:1, GND:1
+R2b. Include connector components for IN and OUT (type "connector", pin "1").
+R3. Nets:
+        - Ground MUST be net_name "0".
+        - Nodes MUST use "REF:PIN" format.
+        - Include at least one supply net (VCC, VDD, or +/- rail).
+R4. Stages (multistage only): Each stage has id, topology, active_device_ref, coupling_to_next.
+        coupling_to_next: rc | direct | transformer | null
+R5. Calculated values MUST include: gain_dB, bandwidth_Hz, input_impedance_ohm,
+        output_impedance_ohm, IC_mA or ID_mA, VCE_V or VDS_V.
+R6. Do not hardcode example topology values; select based on the user request.
+R7. Component count is variable; do not assume fixed R/C count.
+R8. CRITICAL: All component values MUST strictly include units (e.g. '10k', '100uF', '2N3904', '8ohm'). Do not output dimensionless numbers for resistors, capacitors, loads, or supply values.
+R9. CRITICAL: calculated_values MUST be a flat JSON object (Dictionary), NOT a list, string, or nested array.
+R10. design_explanation, math_basis, and design_summary MUST be in Vietnamese.
+R10b. Keep design_explanation under 300 words, math_basis under 200 words, design_summary under 100 words. Be concise.
+R11. Fail-fast: If unable to design, set is_valid_request=false and provide clarification_question.
 
 ╔════════════════════════════════════════════════════════════════════════════════╗
 ║                        JSON SKELETON (DO NOT COPY VALUES)                      ║
 ╚════════════════════════════════════════════════════════════════════════════════╝
 
 {
-  "is_valid_request": true,
-  "_thought_process_": "<Short internal reasoning/calculations>",
-  "analysis": {
-    "circuit_name": "<Contextual name>",
-    "topology_classification": "<e.g., Common Source / Differential>",
-    "design_explanation": "<Vietnamese explanation>",
-    "math_basis": "<Vietnamese formulas>",
-    "design_summary": "<Vietnamese summary>",
-    "expected_bom": ["<Part1>", "<Part2>"],
-    "calculations_table": [
-      {
-        "target_component": "<ID>",
-        "formula": "<Math>",
-        "calculated_value": "4700",
-        "unit": "<e.g., Ohm>",
-        "vin": "0", "vout": "0", "zin": "0", "f_cutoff": "0",
-        "component_stage": "1"
-      }
-    ]
-  },
-  "architecture": {
-    "topology_type": "<See R2>",
-    "stage_count": 1,
-    "stages": [
-      {
-        "stage_index": 1,
-        "function": "<e.g., Voltage Gain>",
-        "active_device": "<ID>",
-        "input_coupling": "<See R3>",
-        "output_coupling": "<See R3>"
-      }
-    ]
-  },
-  "power_and_coupling": {
-    "power_rail": "<e.g., Single +12V>",
-    "output_strategy": "<e.g., Single-ended>",
-    "interstage_coupling": "<See R3>"
-  },
-  "signal_flow": {
-    "input_node": "IN",
-    "output_node": "OUT",
-    "main_chain": ["1", "2"],
-    "stage_links": [
-      ["1", "2"]
-    ]
-  },
-  "components": [
-    {
-      "id": "R1",
-      "type": "<resistor|capacitor|bjt_npn|mosfet_n|opamp|PowerSymbol>",
-      "value": "10k",
-      "standardized_value": "10k",
-      "model": "Generic",
-      "operating_point_check": "Vce=5V",
-      "stage": "1",
-      "footprint": "<KiCad footprint>",
-      "kicad_symbol": "Device:R"
-    }
-  ],
-  "nets": [
-    {"net_name": "VCC", "nodes": ["VCC:1", "R1:1"]},
-    {"net_name": "0", "nodes": ["GND:1", "R2:2"]}
-  ],
-  "probe_nodes": ["IN", "OUT"]
+    "is_valid_request": true,
+    "_thought_process_": "<Short internal reasoning/calculations>",
+    "analysis": {
+        "circuit_name": "<Contextual name>",
+        "topology_classification": "<e.g., Common Source / Differential>",
+        "design_explanation": "<Vietnamese explanation>",
+        "math_basis": "<Vietnamese formulas>",
+        "design_summary": "<Vietnamese summary>",
+        "expected_bom": ["<Part1>", "<Part2>"],
+        "calculations_table": [
+            {
+                "target_component": "<ID>",
+                "formula": "<Math>",
+                "calculated_value": "4700",
+                "unit": "ohm",
+                "vin": "0", "vout": "0", "zin": "0", "f_cutoff": "0",
+                "component_stage": "0"
+            }
+        ],
+        "calculated_values": {
+            "gain_dB": 20.0,
+            "bandwidth_Hz": 100000.0,
+            "input_impedance_ohm": 10000.0,
+            "output_impedance_ohm": 200.0,
+            "IC_mA": 2.0,
+            "VCE_V": 6.0
+        }
+    },
+    "architecture": {
+        "topology_type": "Single-stage",
+        "stage_count": 1,
+        "stages": [
+            {
+                "id": "S1",
+                "topology": "common_emitter",
+                "active_device_ref": "Q1",
+                "coupling_to_next": null
+            }
+        ]
+    },
+    "power_and_coupling": {
+        "power_rail": "Single +12V",
+        "output_strategy": "Single-ended",
+        "interstage_coupling": "RC Coupling"
+    },
+    "signal_flow": {
+        "input_node": "IN",
+        "output_node": "OUT",
+        "main_chain": ["S1"],
+        "stage_links": []
+    },
+    "components": [
+        {
+            "ref": "R1",
+            "type": "resistor",
+            "value": "10k",
+            "model": "Generic",
+            "role": "load",
+            "topology_stage": 0
+        }
+    ],
+    "nets": [
+        {"net_name": "VCC", "nodes": ["VCC:1", "R1:1"]},
+        {"net_name": "0", "nodes": ["GND:1", "R1:2"]}
+    ],
+    "probe_nodes": ["IN", "OUT", "VCC", "0"]
 }
 
 NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
 """.strip()
 
+        last_error_fields: List[str] = []
+        last_error_message = ""
+
         for retry_attempt in range(max_completeness_retries + 1):
-            request_payload = {
+            request_payload: Dict[str, Any] = {
                 "task": "circuit.ir.generate.v1",
                 "requirements": req_text,
                 "retry_attempt": retry_attempt,
@@ -382,6 +435,11 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                     "schema_name": "CircuitIR",
                 },
             }
+            if last_error_fields:
+                request_payload["validation_feedback"] = {
+                    "failed_fields": last_error_fields,
+                    "message": last_error_message,
+                }
 
             obj = self.chat_json(
                 LLMRole.GENERAL,
@@ -391,59 +449,51 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                 response_model=CircuitIR,
                 max_schema_retries=max_schema_retries,
             )
-            
+
             if obj is None:
-                logger.warning("chat_json returned None at retry attempt %d/%d", retry_attempt, max_completeness_retries)
+                logger.warning(
+                    "chat_json returned None at retry attempt %d/%d",
+                    retry_attempt,
+                    max_completeness_retries,
+                )
                 continue
 
             try:
                 ir = CircuitIR.model_validate(obj)
-                
-                # Check completeness: if is_valid_request=True, ALL required fields must be non-null
-                if ir.is_valid_request:
-                    missing_fields = []
-                    if ir.analysis is None:
-                        missing_fields.append("analysis")
-                    if ir.architecture is None:
-                        missing_fields.append("architecture")
-                    if ir.power_and_coupling is None:
-                        missing_fields.append("power_and_coupling")
-                    if ir.components is None or not ir.components:
-                        missing_fields.append("components")
-                    if ir.nets is None or not ir.nets:
-                        missing_fields.append("nets")
-                    if ir.probe_nodes is None or not ir.probe_nodes:
-                        missing_fields.append("probe_nodes")
-                    
-                    if missing_fields:
-                        logger.warning(
-                            "CircuitIR incomplete at retry %d/%d: missing fields [%s]",
-                            retry_attempt,
-                            max_completeness_retries,
-                            ", ".join(missing_fields),
-                        )
-                        if retry_attempt < max_completeness_retries:
-                            # Retry with explicit reminder
-                            continue
-                        else:
-                            logger.error(
-                                "CircuitIR completeness validation failed after %d retries. Missing: %s",
-                                max_completeness_retries + 1,
-                                ", ".join(missing_fields),
-                            )
-                            return None
-                
-                logger.info("CircuitIR generated successfully (attempt %d/%d)", retry_attempt + 1, max_completeness_retries + 1)
+                logger.info(
+                    "CircuitIR generated successfully (attempt %d/%d)",
+                    retry_attempt + 1,
+                    max_completeness_retries + 1,
+                )
                 return ir
-                
+
             except ValidationError as exc:
-                logger.warning("CircuitIR validation failed at retry %d/%d: %s", retry_attempt, max_completeness_retries, exc)
+                last_error_message = str(exc)
+                last_error_fields = self._extract_validation_fields(exc)
+                logger.warning(
+                    "CircuitIR validation failed at retry %d/%d: %s",
+                    retry_attempt,
+                    max_completeness_retries,
+                    last_error_message,
+                )
                 if retry_attempt < max_completeness_retries:
                     continue
-                else:
-                    return None
+                return {
+                    "error": "circuit_ir_validation_failed",
+                    "fields": last_error_fields,
+                    "message": last_error_message,
+                }
 
-        logger.error("Failed to generate valid CircuitIR after %d completeness retries", max_completeness_retries + 1)
+        logger.error(
+            "Failed to generate valid CircuitIR after %d completeness retries",
+            max_completeness_retries + 1,
+        )
+        if last_error_fields:
+            return {
+                "error": "circuit_ir_validation_failed",
+                "fields": last_error_fields,
+                "message": last_error_message,
+            }
         return None
 
     def is_available(self, role: LLMRole, mode: Optional[LLMMode] = None) -> bool:
@@ -477,6 +527,27 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
         return status
 
     @staticmethod
+    def _extract_validation_fields(exc: ValidationError) -> List[str]:
+        fields: List[str] = []
+        for err in exc.errors():
+            loc = err.get("loc", []) or []
+            msg = str(err.get("msg", ""))
+            if msg.startswith("validation_errors:"):
+                suffix = msg.split(":", 1)[1]
+                for item in suffix.split(","):
+                    field = item.strip()
+                    if field:
+                        fields.append(field)
+                continue
+            if loc:
+                if loc[0] in {"__root__", "__base__"}:
+                    continue
+                fields.append(".".join(str(part) for part in loc))
+        if not fields:
+            return []
+        return sorted(set(fields))
+
+    @staticmethod
     def _normalize_user_content(user_content: PromptContent) -> str:
         if isinstance(user_content, str):
             return user_content
@@ -508,8 +579,7 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
             architecture_copy = dict(architecture)
             architecture_copy["stages"] = LLMRouter._normalize_flat_object_list(
                 architecture_copy.get("stages"),
-                starter_key="stage_index",
-                integer_keys={"stage_index"},
+                starter_key="id",
             )
             normalized["architecture"] = architecture_copy
 
@@ -713,7 +783,7 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
         schema_retries: int,
     ) -> Optional[Dict[str, Any]]:
         temp = temperature if temperature is not None else model.temperature
-        tokens = max_tokens if max_tokens is not None else model.max_tokens
+        tokens = _cap_vertex_output_tokens(max_tokens if max_tokens is not None else model.max_tokens)
         response_schema = (
             prepare_vertex_schema(
                 response_model.model_json_schema(),
@@ -787,7 +857,7 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
     def _try_call_text(self, model: ModelConfig, system: str, user_content: str,
                              temperature: Optional[float], max_tokens: Optional[int],) -> Optional[str]:
         temp = temperature if temperature is not None else model.temperature
-        tokens = max_tokens if max_tokens is not None else model.max_tokens
+        tokens = _cap_vertex_output_tokens(max_tokens if max_tokens is not None else model.max_tokens)
         
         try:
             return self._gemini_text(model, system, user_content, temp, tokens)

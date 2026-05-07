@@ -25,6 +25,7 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from app.core.config import settings
+from app.core.logging import setup_logging
 
 # ====== Router imports ======
 from app.interfaces.http.routes.chatbot import router as chatbot_router
@@ -51,6 +52,7 @@ class SafeStaticFiles(StaticFiles):
 
 
 # ====== FastAPI Application ======
+setup_logging()
 app = FastAPI()
 app.include_router(chatbot_router)
 app.include_router(circuits_router)

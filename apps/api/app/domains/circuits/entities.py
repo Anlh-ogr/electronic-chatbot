@@ -94,6 +94,7 @@ class ComponentType(Enum):
         aliases["transformer"] = cls.INDUCTOR
         # common alternate names from legacy templates / LLM outputs
         aliases["power"] = cls.VOLTAGE_SOURCE
+        aliases["power_supply"] = cls.POWER_SYMBOL
         aliases["vcc"] = cls.VOLTAGE_SOURCE
         aliases["vdd"] = cls.VOLTAGE_SOURCE
         aliases["vee"] = cls.VOLTAGE_SOURCE

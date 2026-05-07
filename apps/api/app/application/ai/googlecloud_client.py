@@ -13,16 +13,12 @@ Xác thực sử dụng Application Default Credentials (ADC):
 
 from __future__ import annotations
 
-# ====== Lý do sử dụng thư viện ======
-# json: Parse JSON response text
-# logging: Debug + error tracking
-# os: đọc cấu hình project/location từ environment
-# dataclasses: Data model definitions
-# typing: Type hints cho IDE support
+
 # vertexai: SDK chính để gọi Gemini qua Vertex AI
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Dict, List, Optional
@@ -319,7 +315,11 @@ class GoogleCloudClient:
             else:
                 lines = lines[1:]
             content = "\n".join(lines).strip()
-
+        
+        # clear unicode math characters before json parsing
+        content = content.replace('π', '3.14159').replace('∞', '999999')
+        content = re.sub(r'(?<!["\w])\bmath\.pi\b', '3.14159', content)
+        
         try:
             obj = json.loads(content)
         except json.JSONDecodeError as e:

@@ -6,16 +6,6 @@ Module này cung cấp HTTP endpoints cho circuit operations:
 - Validate circuit theo domain rules
 - Export circuit sang KiCad format (.kicad_sch, .kicad_pcb)
 - Retrieve circuit information + metadata
-
-Vietnamese:
-- Trách nhiệm: Handle HTTP requests cho circuit domain operations
-- Endpoints: /circuits (generate, validate, export)
-- Response: Circuit data, validation results, KiCad files
-
-English:
-- Responsibility: Handle HTTP requests for circuit domain operations
-- Endpoints: /circuits (generate, validate, export)
-- Response: Circuit data, validation results, KiCad files
 """
 
 from __future__ import annotations
@@ -26,12 +16,18 @@ from __future__ import annotations
 # pathlib: File path handling
 import asyncio
 import json
+import math
+import logging
+import re
 from typing import Dict, Any, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pathlib import Path
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+from app.db.database import SessionLocal #sync session
+
 
 # ====== Application layer ======
 from app.application.circuits.dtos import (
@@ -75,13 +71,22 @@ from app.infrastructure.repositories.circuit_artifact_repository import CircuitA
 from app.infrastructure.repositories.circuit_ir_repository import CircuitIRRepository
 from app.infrastructure.repositories.composition_repository import CompositionRepository
 from app.db.session import get_session
+from app.application.ai.circuit_ir_schema import CircuitIR
+from app.infrastructure.simulation.ngspice_exporter import NgspiceExporter
+from app.application.ai.simulation_service import NgSpiceSimulationService, NgspiceCompilerService
+from app.core.structured_logger import log_stage
 
+logger = logging.getLogger(__name__)
 
 # Create router
 router = APIRouter(
     prefix="/api/circuits",
     tags=["circuits"]
 )
+
+# Compiled artifacts directory (shared with chatbot compiled endpoint)
+_API_ROOT = Path(__file__).resolve().parents[4]
+_COMPILED_DIR = _API_ROOT / "artifacts" / "compiled"
 
 
 class KeepIRRequest(BaseModel):
@@ -157,6 +162,81 @@ def _resolve_export_file(base_dir: Path, filename: str) -> Path:
         )
 
     return candidate
+
+
+
+@router.get("/{circuit_id}/exports/sch/{filename}")
+async def get_sch_file(circuit_id: str, filename: str):
+    """Serve .kicad_sch file for KiCanvas or direct download.
+
+    Files are served from the compiled artifacts directory and include CORS
+    headers for KiCanvas to fetch them.
+    """
+    path = _resolve_export_file(_COMPILED_DIR, filename)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+    }
+    return FileResponse(path, media_type="text/plain", headers=headers)
+
+
+@router.get("/{circuit_id}/exports/pcb/{filename}")
+async def get_pcb_file(circuit_id: str, filename: str):
+    """Serve .kicad_pcb file for KiCanvas or direct download."""
+    path = _resolve_export_file(_COMPILED_DIR, filename)
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+    }
+    return FileResponse(path, media_type="text/plain", headers=headers)
+
+
+@router.websocket("/export/pcb/{job_id}/ws")
+async def pcb_export_ws(websocket: WebSocket, job_id: str):
+    """WebSocket to stream PCB export progress and completion.
+
+    This endpoint polls the compiled artifacts directory for a file named
+    `{job_id}.kicad_pcb` and streams progress events until the file appears.
+    Upon completion sends a final JSON message with `download_url`.
+    """
+    await websocket.accept()
+    try:
+        import time
+        import json as _json
+
+        max_wait = 60.0
+        start = time.time()
+        sent_progress = 0
+        while True:
+            elapsed = time.time() - start
+            # send periodic progress heartbeat
+            try:
+                await websocket.send_text(_json.dumps({"event": "progress", "progress": min(95, sent_progress), "elapsed": elapsed}))
+            except Exception:
+                break
+
+            candidate = _COMPILED_DIR / f"{job_id}.kicad_pcb"
+            if candidate.exists():
+                download_url = f"/api/circuits/{job_id}/exports/pcb/{candidate.name}"
+                await websocket.send_text(_json.dumps({"event": "complete", "download_url": download_url}))
+                break
+
+            if elapsed > max_wait:
+                await websocket.send_text(_json.dumps({"event": "error", "message": "timeout waiting for PCB export", "job_id": job_id}))
+                break
+
+            sent_progress = min(95, sent_progress + 10)
+            await asyncio.sleep(1.0)
+
+    except WebSocketDisconnect:
+        return
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.post("/generate", response_model=CircuitResponse, status_code=status.HTTP_201_CREATED)
@@ -1250,6 +1330,158 @@ async def render_circuit(
                 "message": str(e)
             }
         )
+
+
+@router.post("/{circuit_id}/simulate")
+async def simulate_circuit(
+    circuit_id: str,
+    request: Request,
+) -> StreamingResponse:
+    """Run NGSpice simulation for the latest validated IR of `circuit_id`.
+    Streams SSE events enumerating progress/data/completion. The server will
+    fetch the most recent `circuit_ir` row for `circuit_id`, compile a SPICE
+    deck using the Ngspice exporter and then run `ngspice` while streaming
+    produced rows to the client.
+    """
+    # Fetch the latest validated IR for the circuit
+    q = (
+        "SELECT ir_json FROM circuit_irs "
+        "WHERE circuit_id = :circuit_id "
+        "ORDER BY created_at DESC LIMIT 1"
+    )    
+    try:
+        logger.warning("SIM 1: querying latest IR for circuit_id=%s", circuit_id)
+        # use sync for async
+        with SessionLocal() as db:
+            row = db.execute(text(q), {"circuit_id": circuit_id}).first()
+        logger.warning("SIM 2: DB row fetched exists=%s", bool(row))
+    except Exception as exc:
+        logger.exception("SIM DB ERROR for circuit_id=%s", circuit_id)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "db_error", "type": exc.__class__.__name__, "message": repr(exc)},
+        )
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "ir_not_found", "message": f"No IR found for circuit {circuit_id}"})
+
+    try:
+        ir_json = row[0]
+        logger.warning("SIM 3: ir_json type=%s", type(ir_json).__name__)
+        
+        if isinstance(ir_json, str):
+            import json as _json
+            payload = _json.loads(ir_json)
+        else:
+            payload = dict(ir_json)
+
+        # Strip persistence-injected fields not in CircuitIR schema
+        _valid = set(CircuitIR.model_fields.keys())
+        payload = {k: v for k, v in payload.items() if k in _valid}
+
+        ir = CircuitIR.model_validate(payload)
+        logger.warning("SIM 5: CircuitIR validated")
+    except Exception as exc:
+        logger.exception("SIM IR PARSE ERROR for circuit_id=%s", circuit_id)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "ir_parse", "type": exc.__class__.__name__, "message": repr(exc)},
+        )
+
+    exporter = NgspiceExporter()
+    try:
+        spice_deck = exporter.generate_from_ir(ir)
+        logger.warning("SIM 6: spice deck generated len=%s", len(spice_deck or ""))
+    except Exception as exc:
+        logger.exception("SIM EXPORT ERROR for circuit_id=%s", circuit_id)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "spice_export", "type": exc.__class__.__name__, "message": repr(exc)},
+    )
+    
+    spice_deck = re.sub(
+        r'\.control\b.*?\.endc\b', '',
+        spice_deck,
+        flags=re.DOTALL | re.IGNORECASE
+    ).strip()
+
+    simulator = NgSpiceSimulationService()
+
+    async def _event_gen():
+        # Yield a queued event first
+        yield _to_sse_event("status", {"status": "queued"})
+        try:
+            try:
+                log_stage("SIMULATE_INVOCATION", circuit_id=circuit_id)
+            except Exception:
+                logger.debug("SIMULATE_INVOCATION structured log failed", exc_info=True)
+            
+            simulator = NgSpiceSimulationService()
+            _compiler = NgspiceCompilerService()
+            _pin_map = _compiler._build_pin_net_map(ir)
+            _in_net  = _compiler._select_input_node(ir, _pin_map)
+            _out_net = _compiler._select_output_node(ir, _pin_map)
+
+            result = await asyncio.to_thread(
+                simulator.simulate_transient,
+                netlist=spice_deck,
+                probes=[f"v({_in_net})", f"v({_out_net})"],
+                step="10us",
+                stop="15ms",
+                start="0",
+            )
+            waveform_data = {
+                trace.name: {"x": trace.x, "y": trace.y, "unit": trace.unit}
+                for trace in result.traces
+            }
+            gain_metrics = result.analysis.get("gain_metrics", {}) if isinstance(result.analysis, dict) else {}
+            gain_db = None
+            measured_av = gain_metrics.get("measured_av")
+            if isinstance(measured_av, (int, float)) and measured_av not in (0, 0.0):
+                gain_db = round(20.0 * math.log10(abs(float(measured_av))), 3)
+
+            payload = {
+                "status": "completed",
+                "gain_dB": gain_db,
+                "bandwidth_Hz": gain_metrics.get("bandwidth_hz"),
+                "phase_margin_deg": gain_metrics.get("phase_shift_deg"),
+                "dc_bias_v": gain_metrics.get("dc_bias_v"),
+                "waveform_data": waveform_data,
+                "execution_time_ms": result.execution_time_ms,
+                "points": result.points,
+            }
+            log_stage(
+                "NGSPICE",
+                gain_dB=payload.get("gain_dB"),
+                bandwidth_Hz=payload.get("bandwidth_Hz"),
+                phase_margin_deg=payload.get("phase_margin_deg"),
+                dc_bias_v=payload.get("dc_bias_v"),
+                sim_time_s=round((result.execution_time_ms or 0.0) / 1000.0, 3),
+            )
+            yield _to_sse_event("completed", payload)
+            # explicit final SSE termination event
+            yield _to_sse_event("done", {"message": "[DONE]"})
+            try:
+                log_stage("SIMULATE_COMPLETED", circuit_id=circuit_id, points=payload.get("points"))
+            except Exception:
+                logger.debug("SIMULATE_COMPLETED structured log failed", exc_info=True)
+        except Exception as exc:
+            logger.exception("SIM STREAM ERROR for circuit_id=%s", circuit_id)
+            yield _to_sse_event(
+                "error",
+                {
+                    "error": "simulation_failed",
+                    "type": exc.__class__.__name__,
+                    "message": repr(exc),
+                    "circuit_id": circuit_id,
+                },
+            )
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @router.post("/ir/keep")

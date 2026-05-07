@@ -40,6 +40,7 @@ from app.infrastructure.repositories.chat_context_repository import (
     ChatHistoryRepository,
     SummaryMemoryRepository,
 )
+from app.infrastructure.repositories.circuit_artifact_repository import CircuitArtifactRepository
 
 logger = logging.getLogger(__name__)
 
@@ -237,62 +238,59 @@ def _get_simulation_service():
 
 # ── Endpoints ──
 
-@router.post("", response_model=ChatResponseModel)
-async def chat(request: ChatRequest) -> ChatResponseModel:
-    """ Gửi message cho chatbot, nhận response. """
-    try:
-        service = _get_chatbot_service()
-        result = await service.chat(
-            request.message,
-            session_id=request.session_id,
-            user_id=request.user_id,
-            mode=request.mode,
-        )
+@router.post("")
+async def chat(request: ChatRequest) -> StreamingResponse:
+    """Stream chatbot response as SSE.
 
-        # Check for IR validation errors (net conflicts, etc.)
-        if result.validation_error:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": "ir_validation_failed",
-                    "message": result.validation_error,
-                },
-            )
+    Emits events:
+      - `thinking`: during LLM generation
+      - `circuit_ready`: single source of truth for circuit data and artifact URLs
+      - `text`: final textual NLG chunk
+    """
 
-        return ChatResponseModel(
-            message=result.message,
-            success=result.success,
-            processing_time_ms=result.processing_time_ms,
-            mode=result.mode,
-            needs_clarification=result.needs_clarification,
-            template_id=result.template_id or "",
-            intent=result.intent,
-            pipeline=result.pipeline,
-            params=result.params,
-            analysis=result.analysis,
-            circuit_data=result.circuit_data,
-            validation_error=result.validation_error,
-            suggestions=result.suggestions,
-            session_id=result.session_id,
-            user_message_id=result.user_message_id,
-            assistant_message_id=result.assistant_message_id,
-            download_url=result.download_url,
-            spice_deck_ready=result.spice_deck_ready,
-            spice_deck_url=result.spice_deck_url,
-            spice_deck=result.spice_deck,
-            artifact_id=result.artifact_id,
-            self_correction_retries=result.self_correction_retries,
-            ir_id=result.ir_id,
-        )
+    service = _get_chatbot_service()
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Chat endpoint error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={"error": "chat_failed", "message": str(e)},
-        )
+    async def _sse_gen():
+        import json
+
+        # initial thinking event
+        yield f"event: thinking\ndata: {json.dumps({'status': 'processing'})}\n\n"
+
+        try:
+            try:
+                result = await service.chat(
+                    request.message,
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    mode=request.mode,
+                )
+            except Exception as llm_exc:
+                # Emit explicit LLM error early so clients can stop waiting for CIR
+                import json
+
+                logger.exception("LLM generation failed during chat()")
+                yield f"event: error\ndata: {json.dumps({'phase':'llm','error':'llm_generation_failed','message':str(llm_exc)})}\n\n"
+                return
+
+            if result.circuit_data:
+                from app.application.ai.circuit_ir_schema import CircuitIR as _CircuitIR
+                cid = result.circuit_id or result.circuit_data.get("circuit_id")
+                
+                # Strip mọi field không thuộc CircuitIR schema (circuit_id, meta, v.v.)
+                _valid_keys = set(_CircuitIR.model_fields.keys())
+                clean = {k: v for k, v in result.circuit_data.items() if k in _valid_keys}
+                
+                yield f"event: circuit_ready\ndata: {json.dumps({'circuit_id': cid, 'circuit_data': clean, 'sch_url': result.sch_url, 'spice_url': result.spice_url, 'session_id': result.session_id, 'user_message_id': result.user_message_id, 'assistant_message_id': result.assistant_message_id})}\n\n"
+                yield f"event: render_ready\ndata: {json.dumps({'circuit_id': cid, 'sch_url': result.sch_url, 'pcb_url': None, 'ngspice_url': result.spice_url})}\n\n"
+                yield f"event: text\ndata: {json.dumps({'message': result.message})}\n\n"
+
+        except Exception as e:
+            import json
+
+            logger.error("Chat SSE failed", exc_info=True)
+            yield f"event: error\ndata: {json.dumps({'error':'chat_failed','message':str(e)})}\n\n"
+
+    return StreamingResponse(_sse_gen(), media_type="text/event-stream")
 
 
 @router.post("/compile-circuit", response_model=CompileCircuitResponse)
@@ -661,6 +659,7 @@ _kicad_cache: Dict[str, str] = {}
 class ExportKicadRequest(BaseModel):
     """Request body cho KiCad export."""
     circuit_data: Dict[str, Any] = Field(..., description="Circuit data from pipeline")
+    circuit_id: Optional[str] = Field(None, description="Circuit UUID for exporter context")
 
 
 def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bool = False) -> Dict[str, Any]:
@@ -682,17 +681,57 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
     """
     power_rail_ids = set()
 
+    def _normalize_component_id(comp: Dict[str, Any], index: int) -> str:
+        candidates = [
+            comp.get("id"),
+            comp.get("ref"),
+            comp.get("ref_id"),
+            comp.get("component_id"),
+            comp.get("name"),
+        ]
+        comp_type = str(comp.get("type", "component")).strip().lower().replace(" ", "_")
+        prefix_map = {
+            "resistor": "R",
+            "capacitor": "C",
+            "inductor": "L",
+            "power_supply": "V",
+            "voltage_source": "V",
+            "current_source": "I",
+            "ground": "GND",
+            "connector": "X",
+            "bjt_npn": "Q",
+            "bjt_pnp": "Q",
+            "mosfet_n": "M",
+            "mosfet_p": "M",
+            "jfet_n": "J",
+            "jfet_p": "J",
+            "opamp_ic": "U",
+        }
+        fallback = f"{prefix_map.get(comp_type, 'X')}{index + 1}"
+        for candidate in candidates:
+            text = str(candidate or "").strip().upper()
+            if text:
+                return text
+        return fallback
+
     # Components
     ir_components = []
-    for comp in circuit_data.get("components", []):
+    seen_component_ids = set()
+    for idx, comp in enumerate(circuit_data.get("components", [])):
         kicad_info = comp.get("kicad", {})
-        comp_id = comp.get("id", "")
+        comp_id = _normalize_component_id(comp, idx)
+        suffix = 2
+        base_comp_id = comp_id
+        while comp_id in seen_component_ids or not comp_id:
+            comp_id = f"{base_comp_id}_{suffix}"
+            suffix += 1
+        seen_component_ids.add(comp_id)
         comp_type = comp.get("type", "resistor").strip().lower()
         if comp_type in {"powersymbol", "power_symbol", "power symbol"}:
             comp_type = "power_symbol"
         # Normalize common legacy/short aliases to canonical IR types
-        if comp_type in {"power", "pwr", "vcc", "vdd", "vss", "vee", "vccg"}:
-            comp_type = "voltage_source"
+        if comp_type in {"power", "pwr", "vcc", "vdd", "vss", "vee", "vccg", "power_supply"}:
+            comp_type = "power_symbol"
         if comp_type in {"power_port", "pwr_port", "vcc_port", "gnd_port"}:
             comp_type = "port"
         if comp_type in {"gnd", "ground", "0", "vss"}:
@@ -979,7 +1018,9 @@ async def export_kicad(request: ExportKicadRequest):
 
         # 1. Convert template JSON → IR dict
         ir_dict = _template_to_ir_dict(request.circuit_data, normalize_power_rails=True)
-
+        if request.circuit_id:
+            ir_dict.setdefault("meta", {})["circuit_id"] = request.circuit_id
+        
         # 2. Build Circuit entity
         circuit = CircuitIRSerializer.to_circuit(ir_dict)
 
@@ -1017,6 +1058,64 @@ async def export_kicad(request: ExportKicadRequest):
         )
 
 
+class ExportByCircuitIdRequest(BaseModel):
+    circuit_id: str = Field(..., min_length=1)
+
+
+@router.post("/export-kicad")
+async def export_kicad_by_id(request: ExportByCircuitIdRequest):
+    """Export artifacts for a stored circuit identifier.
+
+    This looks up the compiled artifact cache or compiled directory and
+    returns stable URLs for KiCanvas. It also persists a minimal artifact
+    record to the artifacts repository.
+    """
+    cid = request.circuit_id
+    # First check in in-memory cache
+    content = _kicad_cache.get(cid)
+    sch_url = None
+    pcb_url = None
+    ngspice_url = None
+
+    if content:
+        # cached schematic
+        sch_name = f"{cid}.kicad_sch"
+        _COMPILED_DIR.mkdir(parents=True, exist_ok=True)
+        ( _COMPILED_DIR / sch_name ).write_text(content, encoding="utf-8")
+        sch_url = f"/api/chat/kicad-file/{cid}.kicad_sch"
+
+    # check for pcb and spice files in compiled dir
+    candidates = list(_COMPILED_DIR.glob(f"{cid}*")) if _COMPILED_DIR.exists() else []
+    for p in candidates:
+        if p.suffix == ".kicad_pcb":
+            pcb_url = f"/api/chat/pcb-file/{p.stem}.kicad_pcb"
+        if p.suffix == ".cir":
+            ngspice_url = f"/api/chat/compiled/{p.name}"
+
+    # persist artifact metadata
+    try:
+        db = SessionLocal()
+        repo = CircuitArtifactRepository(db)
+        if sch_url:
+            repo.create_artifact(circuit_id=cid, artifact_type="sch", filename=f"{cid}.kicad_sch", url=sch_url)
+        if pcb_url:
+            repo.create_artifact(circuit_id=cid, artifact_type="pcb", filename=p.stem if 'p' in locals() else '', url=pcb_url)
+        if ngspice_url:
+            repo.create_artifact(circuit_id=cid, artifact_type="spice", filename=p.name if 'p' in locals() else '', url=ngspice_url)
+    except Exception:
+        logger.exception("Failed to persist artifact metadata for export-kicad")
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+    if not any([sch_url, pcb_url, ngspice_url]):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "export_not_found", "message": f"No compiled artifacts found for {cid}"})
+
+    return {"sch_url": sch_url, "pcb_url": pcb_url, "ngspice_url": ngspice_url}
+
+
 @router.post("/export-pcb")
 async def export_pcb(request: ExportKicadRequest):
     """
@@ -1031,7 +1130,9 @@ async def export_pcb(request: ExportKicadRequest):
 
         # 1. Convert template JSON → IR dict
         ir_dict = _template_to_ir_dict(request.circuit_data, normalize_power_rails=True)
-
+        if request.circuit_id:
+            ir_dict.setdefault("meta", {})["circuit_id"] = request.circuit_id
+        
         # 2. Build Circuit entity
         circuit = CircuitIRSerializer.to_circuit(ir_dict)
 

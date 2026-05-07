@@ -614,6 +614,42 @@ class CircuitIRSerializer:
                 comp_type = ComponentType.normalize(data.get("type", ""))
             except Exception:
                 comp_type = ComponentType(data.get("type"))
+            
+            # Auto-assign fallback reference if component ID is empty/None
+            comp_id = data.get("id")
+            if not comp_id or str(comp_id).strip() == "":
+                # Generate fallback ID: R_1, C_2, U_3, etc. based on type
+                # Map component type to prefix
+                type_prefix_map = {
+                    ComponentType.RESISTOR: "R",
+                    ComponentType.CAPACITOR: "C",
+                    ComponentType.CAPACITOR_POLARIZED: "C",
+                    ComponentType.INDUCTOR: "L",
+                    ComponentType.DIODE: "D",
+                    ComponentType.LED: "D",
+                    ComponentType.BJT: "Q",
+                    ComponentType.BJT_NPN: "Q",
+                    ComponentType.BJT_PNP: "Q",
+                    ComponentType.MOSFET: "M",
+                    ComponentType.MOSFET_N: "M",
+                    ComponentType.MOSFET_P: "M",
+                    ComponentType.OPAMP: "U",
+                    ComponentType.VOLTAGE_SOURCE: "V",
+                    ComponentType.CURRENT_SOURCE: "I",
+                    ComponentType.CONNECTOR: "J",
+                    ComponentType.PORT: "P",
+                    ComponentType.GROUND: "GND",
+                    ComponentType.POWER_SYMBOL: "PWR",
+                }
+                prefix = type_prefix_map.get(comp_type, "X")
+                # Use the count of existing components with this prefix as the index
+                count = sum(1 for c_id in components.keys() if c_id.startswith(prefix + "_"))
+                comp_id = f"{prefix}_{count + 1}"
+                logger.warning(
+                    "Component has empty ID; auto-assigned fallback: %s (type=%s)",
+                    comp_id, comp_type.name
+                )
+            
             params = {
                 key: ParameterValue(value=val["value"], unit=val.get("unit"))
                 for key, val in data.get("parameters", {}).items()
@@ -646,7 +682,7 @@ class CircuitIRSerializer:
                 params["model"] = ParameterValue(raw_model, None)
             stage_value = data.get("stage") or data.get("component_stage")
             comp = Component(
-                id=data["id"],
+                id=comp_id,
                 type=comp_type,
                 pins=tuple(data["pins"]),
                 parameters={**params},

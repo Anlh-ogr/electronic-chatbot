@@ -42,6 +42,7 @@ from app.application.snapshots.services import SnapshotService
 # ====== Infrastructure - Repositories ======
 from app.infrastructure.persistence.circuits_repo_memory import InMemoryCircuitRepository
 from app.infrastructure.repositories.circuit_repository import PostgresCircuitRepository
+from app.infrastructure.repositories.neon_repositories import ExportRepository
 from app.infrastructure.repositories.snapshot_repository import PostgresSnapshotRepository
 from app.infrastructure.exporters.kicad_sch_exporter import KiCadSchExporter
 from app.infrastructure.exporters.kicad_pcb_exporter import KiCadPCBExporter
@@ -57,6 +58,7 @@ _pcb_exporter_instance = None
 _oracle_validator_instance = None
 _validation_service_instance = None
 _industrial_job_queue_instance = None
+_export_repository_instance = None
 
 
 @lru_cache
@@ -157,6 +159,7 @@ def get_export_kicad_sch_use_case() -> ExportKiCadSchUseCase:
         exporter=get_exporter(),
         storage_path=storage_path,
         oracle_validator=get_kicad_oracle_validator(),
+        export_repository=get_export_repository(),
     )
 
 
@@ -174,7 +177,17 @@ def get_export_kicad_pcb_use_case() -> ExportKiCadPCBUseCase:
         exporter=get_pcb_exporter(),
         storage_path=storage_path,
         oracle_validator=get_kicad_oracle_validator(),
+        export_repository=get_export_repository(),
     )
+
+
+@lru_cache
+def get_export_repository() -> ExportRepository:
+    """Get singleton ExportRepository instance."""
+    global _export_repository_instance
+    if _export_repository_instance is None:
+        _export_repository_instance = ExportRepository()
+    return _export_repository_instance
 
 
 @lru_cache

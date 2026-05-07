@@ -29,7 +29,8 @@ def _normalize_sync_database_url(url: str) -> str:
     return value
 
 if not config.get_main_option("sqlalchemy.url"):
-    db_url = _normalize_sync_database_url(os.getenv("DATABASE_URL", ""))
+    raw_url = os.getenv("NEON_DATABASE_URL") or os.getenv("DATABASE_URL") or ""
+    db_url = _normalize_sync_database_url(raw_url)
     if db_url:
         config.set_main_option("sqlalchemy.url", db_url)
 

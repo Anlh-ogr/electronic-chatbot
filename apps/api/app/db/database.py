@@ -32,9 +32,10 @@ if _ENV_LOCAL_PATH.exists():
 
 # ====== Database Configuration ======
 # Database URL from environment
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/electronic_chatbot"
+DATABASE_URL = (
+    os.getenv("NEON_DATABASE_URL")
+    or os.getenv("DATABASE_URL")
+    or "postgresql://postgres:postgres@localhost:5432/electronic_chatbot"
 )
 
 

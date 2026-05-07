@@ -1,0 +1,242 @@
+database neon service - 05-05-2026
+
+table: alembic_version
+	Columns: version_num VARCHAR(32) PRIMARY KEY
+	Constraints: CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
+	Indexes: UNIQUE INDEX alembic_version_pkc … USING BTREE (version_num)
+
+table: chat_summaries
+	Columns: summary_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+		 chat_id UUID NOT NULL
+		 summary_text TEXT NOT NULL
+		 token_estimate INTEGER NOT NULL DEFAULT 0
+		 source_message_count INTEGER NOT NULL DEFAULT 0
+		 embedding_vector VECTOR(1536)
+		 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+	Constraints: CONSTRAINT chat_summaries_source_message_count_check CHECK ((source_message_count >= 0))
+		     CONSTRAINT chat_summaries_token_estimate_check CHECK ((token_estimate >= 0))
+		     CONSTRAINT chat_summaries_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES public.chats (chat_id) ON DELETE CASCADE
+		     CONSTRAINT chat_summaries_pkey PRIMARY KEY (summary_id) Indexes Add index
+	Indexes: UNIQUE INDEX chat_summaries_pkey … USING BTREE (summary_id)
+		 INDEX idx_chat_summaries_chat_id … USING BTREE (chat_id)
+		 INDEX idx_chat_summaries_created_at … USING BTREE (chat_id, created_at)
+		 INDEX idx_chat_summaries_embedding … USING HNSW (embedding_vector)
+
+table: chats
+	Columns: chat_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+		 session_id UUID NOT NULL
+		 title VARCHAR(255) NOT NULL DEFAULT'New Chat'
+		 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+		 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+	Constraints: CONSTRAINT chats_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions (session_id) ON DELETE CASCADE
+		     CONSTRAINT chats_pkey PRIMARY KEY (chat_id)
+	Indexes: UNIQUE INDEX chats_pkey … USING BTREE (chat_id)
+		 INDEX idx_chats_session_id … USING BTREE (session_id)
+		 INDEX idx_chats_updated_at … USING BTREE (updated_at)
+		 UNIQUE INDEX ix_chats_chat_id … USING BTREE (chat_id)
+
+table: circuit_artifacts
+	Columns: artifact_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+		 ir_id UUID NOT NULL
+		 circuit_id UUID NOT NULL
+		 artifact_type VARCHAR(32) NOT NULL
+		 file_path TEXT NOT NULL
+		 download_url TEXT
+		 file_size_bytes BIGINT
+		 kicad_version VARCHAR(16) NOT NULL DEFAULT '8.0'
+		 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+	Constraints: CONSTRAINT circuit_artifacts_artifact_type_check CHECK (((artifact_type)::text = ANY ((ARRAY['kicad_sch'::character varying, 'kicad_pcb'::character varying, 'netlist'::character varying, 'spice_deck'::character varying, 'simulation_raw'::character varying, 'simulation_png'::character varying])::text[])))
+				 CONSTRAINT circuit_artifacts_circuit_id_fkey FOREIGN KEY (circuit_id) REFERENCES public.circuits (circuit_id) ON DELETE CASCADE
+				 CONSTRAINT circuit_artifacts_ir_id_fkey FOREIGN KEY (ir_id) REFERENCES public.circuit_irs (ir_id) ON DELETE CASCADE
+				 CONSTRAINT circuit_artifacts_pkey PRIMARY KEY (artifact_id)
+	
+	Indexes: UNIQUE INDEX circuit_artifacts_pkey … USING BTREE (artifact_id)
+		 INDEX idx_artifacts_circuit_type … USING BTREE (circuit_id, artifact_type)
+		 INDEX idx_artifacts_ir_id … USING BTREE (ir_id)
+
+table: circuit_compositions
+	Columns: composition_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 session_id UUID
+			 chat_id UUID
+			 merged_ir_json JSONB
+			 merged_ir_id UUID
+			 coupling_method VARCHAR(32) NOT NULL DEFAULT 'RC Coupling'
+			 status VARCHAR(32) NOT NULL DEFAULT 'pending'
+			 merge_notes TEXT
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+	Constraints: CONSTRAINT circuit_compositions_coupling_method_check CHECK (((coupling_method)::text = ANY ((ARRAY['RC Coupling'::character varying, 'Direct Coupling'::character varying, 'Transformer Coupling'::character varying])::text[])))
+		         CONSTRAINT circuit_compositions_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'merging'::character varying, 'compiled'::character varying, 'failed'::character varying])::text[])))
+		         CONSTRAINT circuit_compositions_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES public.chats (chat_id) ON DELETE SET NULL
+		         CONSTRAINT circuit_compositions_merged_ir_id_fkey FOREIGN KEY (merged_ir_id) REFERENCES public.circuit_irs (ir_id) ON DELETE SET NULL
+		         CONSTRAINT circuit_compositions_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions (session_id) ON DELETE SET NULL
+		         CONSTRAINT circuit_compositions_pkey PRIMARY KEY (composition_id)
+	Indexes: UNIQUE INDEX circuit_compositions_pkey … USING BTREE (composition_id)
+
+table: circuit_exports
+	Columns: id VARCHAR(36) PRIMARY KEY
+			 circuit_id UUID NOT NULL
+			 export_type VARCHAR(20) NOT NULL
+			 file_path VARCHAR(500) NOT NULL
+			 file_size INTEGER NOT NULL
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+			 status VARCHAR(20) NOT NULL
+			 error_message TEXT
+	Constraints: CONSTRAINT circuit_exports_circuit_id_fkey FOREIGN KEY (circuit_id) REFERENCES public.circuits (circuit_id) ON DELETE CASCADE
+		     	 CONSTRAINT circuit_exports_pkey PRIMARY KEY (id)
+	Indexes: UNIQUE INDEX circuit_exports_pkey … USING BTREE (id)
+			 INDEX ix_circuit_exports_circuit_id … USING BTREE (circuit_id)
+
+table: circuit_irs
+	Columns: ir_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 circuit_id UUID NOT NULL
+			 session_id UUID
+			 message_id UUID
+			 ir_json JSONB NOT NULL
+			 topology_type VARCHAR(64)
+			 circuit_name VARCHAR(255)
+			 stage_count INTEGER DEFAULT 1
+			 power_rail VARCHAR(64)
+			 probe_nodes TEXT[]
+			 status VARCHAR(32) NOT NULL DEFAULT 'pending'
+			 is_kept BOOLEAN NOT NULL DEFAULT false
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 embedding_vector VECTOR(1536)
+	Constraints: CONSTRAINT circuit_irs_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'validated'::character varying, 'compiled'::character varying, 'failed'::character varying])::text[])))
+			 	 CONSTRAINT circuit_irs_circuit_id_fkey FOREIGN KEY (circuit_id) REFERENCES public.circuits (circuit_id) ON DELETE CASCADE
+			 	 CONSTRAINT circuit_irs_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.messages (message_id) ON DELETE SET NULL
+			 	 CONSTRAINT circuit_irs_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions (session_id) ON DELETE SET NULL
+			 	 CONSTRAINT circuit_irs_pkey PRIMARY KEY (ir_id)
+	Indexes: UNIQUE INDEX circuit_irs_pkey … USING BTREE (ir_id)
+			 INDEX idx_circuit_irs_circuit_id … USING BTREE (circuit_id, created_at)
+			 INDEX idx_circuit_irs_embedding … USING HNSW (embedding_vector)
+			 INDEX idx_circuit_irs_session_kept … USING BTREE (session_id, is_kept)
+			 INDEX idx_circuit_irs_status … USING BTREE (status)
+
+table: circuits
+	Columns: circuit_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 session_id UUID
+			 message_id UUID
+			 name VARCHAR(255) NOT NULL
+			 description TEXT
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 embedding_vector VECTOR(1536)
+			 topology_family VARCHAR(50)
+			 topology_variant VARCHAR(100)
+			 circuit_ir JSONB
+			 user_session VARCHAR(255)
+Constraints: CONSTRAINT circuits_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.messages (message_id) ON DELETE SET NULL
+			 CONSTRAINT circuits_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions (session_id) ON DELETE SET NULL
+			 CONSTRAINT circuits_pkey PRIMARY KEY (circuit_id)
+	Indexes: UNIQUE INDEX circuits_pkey … USING BTREE (circuit_id)
+			 INDEX idx_circuits_embedding … USING HNSW (embedding_vector)
+			 INDEX idx_circuits_session_id … USING BTREE (session_id)
+
+table: composition_members
+	Columns: member_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 composition_id UUID NOT NULL
+			 ir_id UUID NOT NULL
+			 stage_order INTEGER NOT NULL DEFAULT 0
+	Constraints: CONSTRAINT composition_members_composition_id_fkey FOREIGN KEY (composition_id) REFERENCES public.circuit_compositions (composition_id) ON DELETE CASCADE
+			 	 CONSTRAINT composition_members_ir_id_fkey FOREIGN KEY (ir_id) REFERENCES public.circuit_irs (ir_id) ON DELETE CASCADE
+			 	 CONSTRAINT composition_members_composition_id_ir_id_key UNIQUE (composition_id, ir_id)
+			 	 CONSTRAINT composition_members_pkey PRIMARY KEY (member_id)
+	Indexes: UNIQUE INDEX composition_members_composition_id_ir_id_key … USING BTREE (composition_id, ir_id)
+			 UNIQUE INDEX composition_members_pkey … USING BTREE (member_id)
+			 INDEX idx_composition_members_comp … USING BTREE (composition_id, stage_order)
+
+table: industrial_routing_jobs
+	Columns: job_id VARCHAR(36) PRIMARY KEY
+			 circuit_id UUID NOT NULL
+			 request_payload JSONB NOT NULL
+			 status VARCHAR(32) NOT NULL
+			 progress_payload JSONB
+			 result_payload JSONB
+			 error TEXT
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+			 started_at TIMESTAMP WITH TIME ZONE
+			 finished_at TIMESTAMP WITH TIME ZONE
+			 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+	Constraints: CONSTRAINT industrial_routing_jobs_pkey PRIMARY KEY (job_id)
+				 CONSTRAINT industrial_routing_jobs_circuit_id_fkey FOREIGN KEY (circuit_id) REFERENCES public.circuits (circuit_id) ON DELETE CASCADE
+	Indexes: INDEX idx_industrial_routing_jobs_created_at … USING BTREE (created_at)
+		 	 INDEX idx_industrial_routing_jobs_status … USING BTREE (status)
+		 	 UNIQUE INDEX industrial_routing_jobs_pkey … USING BTREE (job_id)
+
+table: memory_facts
+	Columns: memory_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+		 session_id UUID NOT NULL
+		 chat_id UUID
+		 fact_key VARCHAR(255) NOT NULL
+		 fact_value TEXT NOT NULL
+		 confidence REAL NOT NULL DEFAULT 0.5
+		 is_active BOOLEAN NOT NULL DEFAULT true
+	Constraints: CONSTRAINT memory_facts_confidence_check CHECK (((confidence >= (0)::double precision) AND (confidence <= (1)::double precision)))
+			     CONSTRAINT memory_facts_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES public.chats (chat_id) ON DELETE SET NULL
+			     CONSTRAINT memory_facts_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions (session_id) ON DELETE CASCADE
+			     CONSTRAINT memory_facts_pkey PRIMARY KEY (memory_id)
+	Indexes: INDEX idx_memory_facts_chat_active … USING BTREE (chat_id, is_active)
+		 	 INDEX idx_memory_facts_session_active … USING BTREE (session_id, is_active)
+		 	 UNIQUE INDEX memory_facts_pkey … USING BTREE (memory_id)
+		 	 UNIQUE INDEX uq_memory_facts_no_chat … USING BTREE (session_id, fact_key)
+		 	 UNIQUE INDEX uq_memory_facts_with_chat … USING BTREE (session_id, chat_id, fact_key)
+
+table: messages
+	Columns: message_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 chat_id UUID NOT NULL
+			 role VARCHAR(32) NOT NULL
+			 content TEXT NOT NULL
+			 status VARCHAR(32) NOT NULL DEFAULT 'created'
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 prompt_tokens INTEGER NOT NULL DEFAULT 0
+			 completion_tokens INTEGER NOT NULL DEFAULT 0
+			 embedding_vector VECTOR(1536)
+			 total_cost NUMERIC(12, 6) NOT NULL DEFAULT '0'
+			 model_used VARCHAR(100)
+	Constraints: CONSTRAINT messages_completion_tokens_check CHECK ((completion_tokens >= 0))
+				 CONSTRAINT messages_prompt_tokens_check CHECK ((prompt_tokens >= 0))
+				 CONSTRAINT messages_role_check CHECK (((role)::text = ANY ((ARRAY['user'::character varying, 'assistant'::character varying, 'system'::character varying, 'tool'::character varying])::text[])))
+				 CONSTRAINT messages_status_check CHECK (((status)::text = ANY ((ARRAY['created'::character varying, 'streaming'::character varying, 'completed'::character varying, 'failed'::character varying, 'edited'::character varying, 'deleted'::character varying])::text[])))
+				 CONSTRAINT messages_total_cost_check CHECK ((total_cost >= (0)::numeric))
+				 CONSTRAINT messages_chat_id_fkey FOREIGN KEY (chat_id) REFERENCES public.chats (chat_id) ON DELETE CASCADE
+				 CONSTRAINT messages_pkey PRIMARY KEY (message_id)
+	Indexes: INDEX idx_messages_chat_id_created_at … USING BTREE (chat_id, created_at)
+			 INDEX idx_messages_embedding … USING HNSW (embedding_vector)
+			 INDEX idx_messages_status … USING BTREE (status)
+			 UNIQUE INDEX messages_pkey … USING BTREE (message_id)
+
+table: sessions
+	Columns: session_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+		 	 client_ip INET
+		 	 user_agent TEXT
+		 	 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+		 	 last_active TIMESTAMP WITH TIME ZONE NOT NULL DEFAULTnow()
+	Constraints: CONSTRAINT sessions_pkey PRIMARY KEY (session_id)
+	Indexes: INDEX idx_sessions_last_active … USING BTREE (last_active)
+		 	 UNIQUE INDEX sessions_pkey … USING BTREE (session_id)
+
+table: simulation_results
+	Columns: id VARCHAR(36) PRIMARY KEY
+			 circuit_id UUID NOT NULL
+			 sim_type VARCHAR(20) NOT NULL
+			 result_json JSONB NOT NULL
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+	Constraints: CONSTRAINT simulation_results_pkey PRIMARY KEY (id)
+	Indexes: INDEX ix_simulation_results_circuit_id … USING BTREE (circuit_id)
+		 	 UNIQUE INDEX simulation_results_pkey … USING BTREE (id)
+
+table: snapshots
+	Columns: snapshot_id UUID PRIMARY KEY DEFAULTuuid_generate_v4()
+			 circuit_id UUID NOT NULL
+			 message_id UUID
+			 circuit_data JSONB NOT NULL
+			 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+			 ir_id UUID
+	Constraints: CONSTRAINT snapshots_circuit_id_fkey FOREIGN KEY (circuit_id) REFERENCES public.circuits (circuit_id) ON DELETE CASCADE
+				 CONSTRAINT snapshots_ir_id_fkey FOREIGN KEY (ir_id) REFERENCES public.circuit_irs (ir_id) ON DELETE SET NULL
+				 CONSTRAINT snapshots_message_id_fkey FOREIGN KEY (message_id) REFERENCES public.messages (message_id) ON DELETE SET NULL
+				 CONSTRAINT snapshots_pkey PRIMARY KEY (snapshot_id)
+	Indexes: INDEX idx_snapshots_circuit_created … USING BTREE (circuit_id, created_at)
+			 INDEX idx_snapshots_ir_id … USING BTREE (ir_id)
+			 UNIQUE INDEX snapshots_pkey … USING BTREE (snapshot_id)

@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.structured_logger import log_stage
+
 from app.application.ai.circuit_ir_schema import CircuitIR
 
 
@@ -147,6 +149,16 @@ class CircuitIRRepository:
             },
         )
         await self.session.commit()
+        log_stage(
+            "DB",
+            operation="save_ir",
+            persisted=True,
+            ir_id=ir_id,
+            circuit_id=circuit_id,
+            topology_type=topology_type,
+            stage_count=stage_count,
+            probe_count=len(probe_nodes),
+        )
         return ir_id
 
     async def mark_kept(self, ir_id: str, is_kept: bool) -> bool:
@@ -164,6 +176,13 @@ class CircuitIRRepository:
             },
         )
         await self.session.commit()
+        log_stage(
+            "DB",
+            operation="update_status",
+            persisted=True,
+            ir_id=ir_id,
+            status=status,
+        )
         return (result.rowcount or 0) > 0
 
     async def get_kept_irs(self, session_id: str) -> List[Dict[str, Any]]:

@@ -144,9 +144,17 @@ class CircuitIRValidator:
         "resistor": {"1", "2"},
         "capacitor": {"1", "2"},
         "inductor": {"1", "2"},
-        "npn": {"B", "C", "E", "1", "2", "3"},
-        "pnp": {"B", "C", "E", "1", "2", "3"},
-        "opamp": {"1", "2", "3", "4", "5", "6", "7", "8", "IN+", "IN-", "OUT", "V+", "V-"},
+        "transformer": {"1", "2", "3", "4", "P1", "P2", "S1", "S2"},
+        "bjt_npn": {"B", "C", "E"},
+        "bjt_pnp": {"B", "C", "E"},
+        "mosfet_n": {"G", "D", "S"},
+        "mosfet_p": {"G", "D", "S"},
+        "jfet_n": {"G", "D", "S"},
+        "jfet_p": {"G", "D", "S"},
+        "opamp_ic": {"+", "-", "OUT", "VS+", "VS-"},
+        "power_supply": {"1"},
+        "ground": {"1"},
+        "connector": {"1", "2", "3", "4"},
         "voltage_source": {"1", "2", "+", "-"},
         "current_source": {"1", "2", "+", "-"},
         "diode": {"A", "K", "1", "2"},
@@ -161,15 +169,25 @@ class CircuitIRValidator:
         "capacitor": "capacitor",
         "l": "inductor",
         "inductor": "inductor",
-        "q_npn": "npn",
-        "q_pnp": "pnp",
-        "npn": "npn",
-        "pnp": "pnp",
-        "bjt": "npn",
-        "bjt_npn": "npn",
-        "bjt_pnp": "pnp",
-        "opamp": "opamp",
-        "op_amp": "opamp",
+        "transformer": "transformer",
+        "npn": "bjt_npn",
+        "pnp": "bjt_pnp",
+        "bjt": "bjt_npn",
+        "bjt_npn": "bjt_npn",
+        "bjt_pnp": "bjt_pnp",
+        "mosfet": "mosfet_n",
+        "mosfet_n": "mosfet_n",
+        "mosfet_p": "mosfet_p",
+        "jfet_n": "jfet_n",
+        "jfet_p": "jfet_p",
+        "opamp": "opamp_ic",
+        "op_amp": "opamp_ic",
+        "opamp_ic": "opamp_ic",
+        "power": "power_supply",
+        "power_supply": "power_supply",
+        "ground": "ground",
+        "gnd": "ground",
+        "connector": "connector",
         "vsource": "voltage_source",
         "voltage_source": "voltage_source",
         "isource": "current_source",
@@ -279,11 +297,18 @@ class CircuitIRValidator:
                     raise InvalidPinConnectionError(
                         f"Net '{net.net_name}' references missing component '{ref_id}'"
                     )
-                # NOTE: Previously the validator enforced a pin-name policy per component type
-                # (e.g., capacitors must use pins {1,2}). That proved too strict for LLM-generated
-                # IR where pin naming can vary (e.g., KiCad-style names, aliases). Only enforce
-                # existence of the referenced component ID here. Pin-level semantics are best
-                # validated later in exporters or by schema validators.
+
+                type_key = self._TYPE_ALIASES.get(str(component.type).strip().lower(), str(component.type).strip().lower())
+                allowed = self._PIN_POLICY.get(type_key)
+                if allowed is not None and pin_name not in allowed:
+                    raise InvalidPinConnectionError(
+                        f"Net '{net.net_name}' references invalid pin '{pin_name}' for '{ref_id}' ({type_key})."
+                    )
+                if allowed is None:
+                    if not re.fullmatch(r"[A-Z0-9_+\-]+", pin_name):
+                        raise InvalidPinConnectionError(
+                            f"Net '{net.net_name}' references invalid pin '{pin_name}' for '{ref_id}'."
+                        )
 
     def _build_symbol_table(self, ir: CircuitIR) -> Dict[str, float]:
         table: Dict[str, float] = {

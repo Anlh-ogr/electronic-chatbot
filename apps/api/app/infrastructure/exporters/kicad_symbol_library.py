@@ -38,6 +38,7 @@ class KiCadSymbolLibrary:
         "resistor": {
             "lib_id": "Device:R",
             "ref_prefix": "R",
+            "pin_length": 1.27,
             "pins": [
                 (0, 3.81, 270),    # Pin 1: top
                 (0, -3.81, 90),    # Pin 2: bottom
@@ -56,22 +57,23 @@ class KiCadSymbolLibrary:
         "capacitor": {
             "lib_id": "Device:C",
             "ref_prefix": "C",
+            "pin_length": 2.794,
             "pins": [
-                (-2.54, 0, 0),     # Pin 1: left (horizontal orientation)
-                (2.54, 0, 180),    # Pin 2: right (horizontal orientation)
+                (0, 3.81, 270),    # Pin 1: top (vertical orientation)
+                (0, -3.81, 90),    # Pin 2: bottom (vertical orientation)
             ],
             "graphics": [
-                # Two vertical lines for capacitor - HORIZONTAL orientation
+                # Two horizontal lines for capacitor - CORRECT orientation
                 '        (polyline',
                 '          (pts',
-                '            (xy -0.762 -2.032) (xy -0.762 2.032)',
+                '            (xy -2.032 -0.762) (xy 2.032 -0.762)',
                 '          )',
                 '          (stroke (width 0.508) (type default))',
                 '          (fill (type none))',
                 '        )',
                 '        (polyline',
                 '          (pts',
-                '            (xy 0.762 -2.032) (xy 0.762 2.032)',
+                '            (xy -2.032 0.762) (xy 2.032 0.762)',
                 '          )',
                 '          (stroke (width 0.508) (type default))',
                 '          (fill (type none))',
@@ -193,9 +195,9 @@ class KiCadSymbolLibrary:
             "ref_prefix": "#PWR",
             "is_power": True,
             "pin_type": "power_in",
-            "pin_length": 0,
+            "pin_length": 2.54,
             "pins": [
-                (0, 0, 90),
+                (0, 0, 270),
             ],
             "graphics": [
                 '        (polyline',
@@ -227,9 +229,9 @@ class KiCadSymbolLibrary:
             "ref_prefix": "#PWR",
             "is_power": True,
             "pin_type": "power_in",
-            "pin_length": 0,
+            "pin_length": 2.54,
             "pins": [
-                (0, 0, 270),
+                (0, 0, 90),
             ],
             "graphics": [
                 # Ground symbol - triangle shape (REAL KiCad style)
@@ -241,6 +243,26 @@ class KiCadSymbolLibrary:
                 '          (fill (type none))',
                 '        )',
             ]
+        },
+
+        "pwr_flag": {
+            "lib_id": "power:PWR_FLAG",
+            "ref_prefix": "#FLG",
+            "is_power": True,
+            "pin_type": "power_in",
+            "pin_length": 2.54,
+            "pins": [
+                (0, 0, 90),
+            ],
+            "graphics": [
+                '        (polyline',
+                '          (pts',
+                '            (xy 0 0) (xy 0 2.54) (xy 2.54 1.27) (xy 0 0)',
+                '          )',
+                '          (stroke (width 0) (type default))',
+                '          (fill (type background))',
+                '        )',
+            ],
         },
 
         "power_symbol": {
@@ -350,7 +372,7 @@ class KiCadSymbolLibrary:
         
         # ── MOSFET N-channel (3-pin: D, G, S) ──────────────────────────
         "mosfet": {
-            "lib_id": "Transistor_FET:Q_NMOS_DGS",
+            "lib_id": "Transistor_FET:IRF540",
             "ref_prefix": "M",
             "pin_length": 2.54,
             "pins": [
@@ -441,7 +463,7 @@ class KiCadSymbolLibrary:
         
         # ── MOSFET N-channel alias ──────────────────────────────────────
         "mosfet_n": {
-            "lib_id": "Transistor_FET:Q_NMOS_DGS",
+            "lib_id": "Transistor_FET:IRF540",
             "ref_prefix": "M",
             "pin_length": 2.54,
             "pins": [
@@ -525,7 +547,7 @@ class KiCadSymbolLibrary:
         
         # ── MOSFET P-channel ────────────────────────────────────────────
         "mosfet_p": {
-            "lib_id": "Transistor_FET:Q_PMOS_DGS",
+            "lib_id": "Transistor_FET:IRF9540",
             "ref_prefix": "M",
             "pin_length": 2.54,
             "pins": [
@@ -612,10 +634,104 @@ class KiCadSymbolLibrary:
                 '        )',
             ]
         },
+
+        "jfet_n": {
+            "lib_id": "Transistor_FET:2N5457",
+            "ref_prefix": "J",
+            "pin_length": 2.54,
+            "pins": [
+                (2.54, 2.54, 90),    # Pin D (drain)
+                (-2.54, 0, 0),       # Pin G (gate)
+                (2.54, -2.54, 270),  # Pin S (source)
+            ],
+            "graphics": [
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.254 1.905) (xy 0.254 -1.905)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.254 0) (xy -0.508 0)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.762 1.397) (xy 2.54 1.397) (xy 2.54 2.54)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.762 -1.397) (xy 2.54 -1.397) (xy 2.54 -2.54)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (circle',
+                '          (center 1.651 0)',
+                '          (radius 2.8194)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+            ],
+        },
+
+        "jfet_p": {
+            "lib_id": "Transistor_FET:J175",
+            "ref_prefix": "J",
+            "pin_length": 2.54,
+            "pins": [
+                (2.54, 2.54, 90),
+                (-2.54, 0, 0),
+                (2.54, -2.54, 270),
+            ],
+            "graphics": [
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.254 1.905) (xy 0.254 -1.905)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.254 0) (xy -0.508 0)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.762 1.397) (xy 2.54 1.397) (xy 2.54 2.54)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0.762 -1.397) (xy 2.54 -1.397) (xy 2.54 -2.54)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (circle',
+                '          (center 1.651 0)',
+                '          (radius 2.8194)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+            ],
+        },
         
         # ── BJT NPN (same as generic bjt) ───────────────────────────────
         "bjt_npn": {
-            "lib_id": "Transistor_BJT:Q_NPN_BCE",
+            "lib_id": "Transistor_BJT:BC547",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
@@ -663,7 +779,7 @@ class KiCadSymbolLibrary:
         
         # ── BJT PNP ─────────────────────────────────────────────────────
         "bjt_pnp": {
-            "lib_id": "Transistor_BJT:Q_PNP_BCE",
+            "lib_id": "Transistor_BJT:BC557",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
@@ -755,6 +871,67 @@ class KiCadSymbolLibrary:
                 '          (fill (type none))',
                 '        )',
             ]
+        },
+
+        "transformer": {
+            "lib_id": "Device:T",
+            "ref_prefix": "T",
+            "pin_length": 2.54,
+            "pins": [
+                (0, 3.81, 270),
+                (0, -3.81, 90),
+            ],
+            "graphics": [
+                '        (arc',
+                '          (start -1.27 -1.905)',
+                '          (mid -0.635 -1.27)',
+                '          (end -1.27 -0.635)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (arc',
+                '          (start -1.27 -0.635)',
+                '          (mid -0.635 0)',
+                '          (end -1.27 0.635)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (arc',
+                '          (start -1.27 0.635)',
+                '          (mid -0.635 1.27)',
+                '          (end -1.27 1.905)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (arc',
+                '          (start 1.27 -1.905)',
+                '          (mid 0.635 -1.27)',
+                '          (end 1.27 -0.635)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (arc',
+                '          (start 1.27 -0.635)',
+                '          (mid 0.635 0)',
+                '          (end 1.27 0.635)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (arc',
+                '          (start 1.27 0.635)',
+                '          (mid 0.635 1.27)',
+                '          (end 1.27 1.905)',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                '        (polyline',
+                '          (pts',
+                '            (xy 0 -2.032) (xy 0 2.032)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+            ],
         },
         
         # ── Inductor ────────────────────────────────────────────────────
@@ -872,6 +1049,8 @@ class KiCadSymbolLibrary:
         comp_id_norm = (component_id or "").strip().lower()
 
         if comp_type == "power_symbol":
+            if "pwr_flag" in comp_id_norm or "pwrflag" in comp_id_norm:
+                return "pwr_flag"
             if comp_id_norm in ("gnd", "ground", "vss", "vee", "0"):
                 return "ground"
             return "power_symbol"

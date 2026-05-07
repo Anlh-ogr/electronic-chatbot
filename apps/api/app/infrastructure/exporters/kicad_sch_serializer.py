@@ -41,11 +41,13 @@ class KiCadSchSerializer:
     
     # ====== KiCad Format Configuration ======
     KICAD_VERSION = "20231120"
-    GENERATOR_VERSION = "8.0"
+    GENERATOR_VERSION = "2.0"
     
     def __init__(self):
         """Initialize serializer."""
         self._root_uuid: str = ""
+        self._issued_uuids: set[str] = set()
+        self._power_ref_counters: Dict[str, int] = {}
     
     def serialize(
         self,
@@ -68,10 +70,13 @@ class KiCadSchSerializer:
         """
         circuit = ir.circuit
         
+        # Reset UUID registry before issuing new identifiers.
+        self._issued_uuids = set()
         # Generate root UUID
         self._root_uuid = self._generate_uuid()
         # Power symbol reference counter (used to generate #PWR01, #PWR02, ...)
         self._power_ref_counter = 0
+        self._power_ref_counters = {}
         
         lines = []
         
@@ -109,6 +114,24 @@ class KiCadSchSerializer:
             )
             lines.extend(label_lines)
             lines.append("")
+
+        # Net labels for named nets (input/output/vin/vout)
+        for net in circuit.nets.values():
+            if not getattr(net, 'name', None):
+                continue
+            name_lower = (net.name or "").lower()
+            if any(tok in name_lower for tok in ("in", "input", "vin", "vout", "out", "output")):
+                # Find a position for the label from connected components placements if possible
+                pos = None
+                for ref in net.connected_pins:
+                    comp_pos = placements.get(ref.component_id)
+                    if comp_pos is not None:
+                        pos = comp_pos
+                        break
+                if pos is None:
+                    pos = (20, 50)
+                lines.extend(self._build_net_label(net.name, pos[0], pos[1]))
+                lines.append("")
         
         # Footer
         lines.extend(self._build_footer())
@@ -130,7 +153,7 @@ class KiCadSchSerializer:
         lines = [
             '(kicad_sch',
             f'  (version {self.KICAD_VERSION})',
-            f'  (generator "electronic-chatbot")',
+            '  (generator "elpis")',
             f'  (generator_version "{self.GENERATOR_VERSION}")',
             f'  (uuid "{self._root_uuid}")',
             '  (paper "A4")',
@@ -174,7 +197,8 @@ class KiCadSchSerializer:
             symbol_name = lib_id.split(':')[-1]
             
             if symbol_def.get('is_power'):
-                lines.append(f'    (symbol "{lib_id}" (power)')
+                lines.append(f'    (symbol "{lib_id}"')
+                lines.append('      (power)')
             else:
                 lines.append(f'    (symbol "{lib_id}"')
             lines.append('      (pin_numbers hide)')
@@ -238,10 +262,15 @@ class KiCadSchSerializer:
         # a Value property is present (e.g., VCC/GND). For non-power components use
         # their normal reference ID (e.g., R1, Q2).
         if is_power:
-            self._power_ref_counter = getattr(self, '_power_ref_counter', 0) + 1
-            ref_property_value = f"#PWR{self._power_ref_counter:02d}"
-            value = str(component.id).strip().upper() or 'PWR'
-            ref = ref_property_value
+            ref_prefix = symbol_def.get('ref_prefix', '#PWR')
+            counter = self._power_ref_counters.get(ref_prefix, 0) + 1
+            self._power_ref_counters[ref_prefix] = counter
+            ref = f"{ref_prefix}{counter:02d}"
+            value_param = component.parameters.get("value") if hasattr(component, "parameters") else None
+            if value_param is not None:
+                value = str(getattr(value_param, "value", value_param))
+            else:
+                value = str(component.id).strip().upper() or 'PWR'
         else:
             ref = component.id
             value = self._get_component_value(component)
@@ -286,12 +315,11 @@ class KiCadSchSerializer:
         if is_power:
             lines.append(f'    (pin "1" (uuid "{self._generate_uuid()}"))')
         else:
-            for pin_idx in range(len(component.pins)):
+            pin_count = len(symbol_def.get("pins", [])) or len(component.pins)
+            for pin_idx in range(pin_count):
                 lines.append(f'    (pin "{pin_idx + 1}" (uuid "{self._generate_uuid()}"))')
         
-        # Instances block (no project-level instance data required here)
-        lines.append('    (instances)')
-        # Close symbol block
+        # Close symbol block (no empty instances block in KiCad 8)
         lines.append('  )')
         
         return lines
@@ -367,6 +395,17 @@ class KiCadSchSerializer:
         ]
         
         return lines
+
+    def _build_net_label(self, name: str, x: float, y: float) -> list[str]:
+        """Build a net_label s-expression for a named net."""
+        lines = [
+            f'  (net_label "{name}" (at {x} {y} 0)',
+            '    (fields_autoplaced yes)',
+            '    (effects (font (size 1.27 1.27)))',
+            f'    (uuid "{self._generate_uuid()}")',
+            '  )',
+        ]
+        return lines
     
     def _build_footer(self) -> list[str]:
         """Build KiCad schematic footer.
@@ -427,4 +466,8 @@ class KiCadSchSerializer:
             UUID string
         """
         import uuid
-        return str(uuid.uuid4())
+        value = str(uuid.uuid4())
+        while value in self._issued_uuids:
+            value = str(uuid.uuid4())
+        self._issued_uuids.add(value)
+        return value

@@ -54,6 +54,7 @@ class ExportKiCadSchUseCase:
         exporter: ExporterPort,
         storage_path: Path,
         oracle_validator: Optional[Any] = None,
+        export_repository: Optional[Any] = None,
     ):
         """Initialize use case with dependencies.
         
@@ -66,6 +67,7 @@ class ExportKiCadSchUseCase:
         self.exporter = exporter
         self.storage_path = storage_path
         self.oracle_validator = oracle_validator
+        self.export_repository = export_repository
         
         # Ensure storage path exists
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -87,6 +89,7 @@ class ExportKiCadSchUseCase:
             ExportError: If export fails
             StorageError: If file save fails
         """
+        file_path: Optional[Path] = None
         try:
             # Get circuit
             circuit = await self._get_circuit(request.circuit_id)
@@ -171,7 +174,7 @@ class ExportKiCadSchUseCase:
             if layout_quality is not None:
                 metadata["layout_quality"] = layout_quality
             
-            return ExportCircuitResponse(
+            response = ExportCircuitResponse(
                 circuit_id=request.circuit_id,
                 format=request.format,
                 file_path=str(file_path),
@@ -179,12 +182,33 @@ class ExportKiCadSchUseCase:
                 download_url=f"/api/circuits/{request.circuit_id}/exports/{filename}",
                 metadata=metadata,
             )
+
+            if self.export_repository is not None:
+                await self.export_repository.save_export(
+                    circuit_id=request.circuit_id,
+                    export_type="kicad_sch",
+                    file_path=str(file_path),
+                    file_size=file_size,
+                    status="success",
+                    error_message=None,
+                )
+
+            return response
             
         except CircuitNotFoundError:
             raise
         except ExportError:
             raise
         except Exception as e:
+            if self.export_repository is not None:
+                await self.export_repository.save_export(
+                    circuit_id=request.circuit_id,
+                    export_type="kicad_sch",
+                    file_path=str(file_path or ""),
+                    file_size=None,
+                    status="failed",
+                    error_message=str(e),
+                )
             raise ExportError(
                 format_type=request.format.value,
                 reason=str(e)

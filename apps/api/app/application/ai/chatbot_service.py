@@ -23,6 +23,8 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import asyncio
+import functools
 import os
 import re
 import time
@@ -61,6 +63,7 @@ from app.infrastructure.repositories.chat_context_repository import (
 )
 
 logger = logging.getLogger(__name__)
+from app.core.structured_logger import log_stage
 
 if TYPE_CHECKING:
     from app.application.ai.circuit_ir_schema import CircuitIR
@@ -81,6 +84,7 @@ class ChatResponse:
     intent: Optional[Dict] = None  # parsed intent
     pipeline: Optional[Dict] = None  # pipeline result
     circuit_data: Optional[Dict] = None  # circuit IR nếu thành công
+    circuit_id: Optional[str] = None
     params: Optional[Dict] = None  # solved parameters
     analysis: Optional[Dict] = None  # structured engineering analysis for API
     template_id: str = ""
@@ -97,8 +101,10 @@ class ChatResponse:
     user_message_id: Optional[str] = None
     assistant_message_id: Optional[str] = None
     download_url: Optional[str] = None
+    sch_url: Optional[str] = None
     spice_deck_ready: Optional[bool] = None
     spice_deck_url: Optional[str] = None
+    spice_url: Optional[str] = None
     spice_deck: Optional[str] = None
     artifact_id: Optional[str] = None
     self_correction_retries: Optional[int] = None
@@ -124,6 +130,15 @@ class ChatResponse:
             d["analysis"] = self.analysis
         if self.circuit_data:
             d["circuit_data"] = self.circuit_data
+        circuit_id = self.circuit_id
+        if not circuit_id and isinstance(self.circuit_data, dict):
+            circuit_id = self.circuit_data.get("circuit_id")
+            if not circuit_id:
+                meta = self.circuit_data.get("meta")
+                if isinstance(meta, dict):
+                    circuit_id = meta.get("circuit_id")
+        if circuit_id:
+            d["circuit_id"] = circuit_id
         if self.suggestions:
             d["suggestions"] = self.suggestions
         if self.validation:
@@ -142,10 +157,14 @@ class ChatResponse:
             d["assistant_message_id"] = self.assistant_message_id
         if self.download_url:
             d["download_url"] = self.download_url
+        if self.sch_url:
+            d["sch_url"] = self.sch_url
         if self.spice_deck_ready is not None:
             d["spice_deck_ready"] = self.spice_deck_ready
         if self.spice_deck_url:
             d["spice_deck_url"] = self.spice_deck_url
+        if self.spice_url:
+            d["spice_url"] = self.spice_url
         if self.spice_deck:
             d["spice_deck"] = self.spice_deck
         if self.artifact_id:
@@ -230,6 +249,11 @@ class ChatbotService:
 
         try:
             effective_text = user_text
+            # Structured log: chat entry
+            try:
+                log_stage("CHAT_START", session_id=chat_id or "", user_id=resolved_user_id, mode=selected_mode.value)
+            except Exception:
+                logger.debug("CHAT_START structured log failed", exc_info=True)
             user_message_id: Optional[str] = None
             if self._context_db_enabled:
                 try:
@@ -262,12 +286,16 @@ class ChatbotService:
             # ── GĐ 1: NLU (Regex + LLM) ──
             intent = self._nlu.understand(effective_text, mode=selected_mode)
             response.intent = intent.to_dict()
-
-            logger.info(
-                f"NLU: intent_type={intent.intent_type}, type={intent.circuit_type}, "
-                f"gain={intent.gain_target}, vcc={intent.vcc}, "
-                f"confidence={intent.confidence:.2f}, source={intent.source}, "
-                f"edit_ops={len(intent.edit_operations)}"
+            # Structured log for NLU stage
+            log_stage(
+                "NLU",
+                topology=intent.intent_type,
+                family=intent.circuit_type,
+                gain_target=intent.gain_target,
+                vcc=intent.vcc,
+                confidence=round(float(intent.confidence or 0.0), 2),
+                source=intent.source,
+                edit_ops=len(getattr(intent, "edit_operations", [])),
             )
 
             normalized_intent_type, used_fallback = self._normalize_intent_type(intent.intent_type)
@@ -286,7 +314,13 @@ class ChatbotService:
             elif normalized_intent_type == "explain":
                 response = self._handle_explain(intent, response, start, mode=selected_mode)
             else:
-                response = self._handle_create(intent, response, start, mode=selected_mode)
+                response = await asyncio.to_thread(
+                    functools.partial(
+                        self._handle_create,
+                        intent, response, start,
+                        mode=selected_mode,
+                    )
+                )
 
             response.mode = selected_mode.value
 
@@ -316,6 +350,12 @@ class ChatbotService:
             if context_available_for_request and chat_id:
                 self._persist_summary_and_memory_facts(chat_id=chat_id, response=response)
 
+            # Structured log: chat exit
+            try:
+                log_stage("CHAT_END", session_id=chat_id or "", success=response.success, processing_time_ms=round((time.time() - start) * 1000.0, 2))
+            except Exception:
+                logger.debug("CHAT_END structured log failed", exc_info=True)
+
             return response
 
         except Exception as e:
@@ -324,6 +364,10 @@ class ChatbotService:
             response.message = f"❌ Lỗi hệ thống: {str(e)}"
 
         response.processing_time_ms = (time.time() - start) * 1000
+        try:
+            log_stage("CHAT_END", session_id=chat_id or "", success=response.success, processing_time_ms=round(response.processing_time_ms, 2))
+        except Exception:
+            logger.debug("CHAT_END structured log failed (exception path)", exc_info=True)
         return response
 
     def generate_circuit_ir(
@@ -347,6 +391,12 @@ class ChatbotService:
                 mode=selected_mode,
                 max_schema_retries=2,
             )
+            if isinstance(result, dict) and result.get("error"):
+                logger.warning(
+                    "CircuitIR validation failed: %s",
+                    ", ".join(result.get("fields", []) or []),
+                )
+                return None
             if result is None:
                 logger.warning("LLM did not return a valid CircuitIR object")
                 return None
@@ -366,6 +416,7 @@ class ChatbotService:
         user_text: str,
         mode: Optional[str] = None,
         max_self_corrections: int = 2,
+        prebuilt_ir=None,
     ) -> Dict[str, Any]:
         """End-to-end circuit compile flow: LLM IR -> validate -> KiCad SCH -> SPICE deck."""
         from app.application.ai.circuit_ir_schema import CircuitIR
@@ -390,11 +441,25 @@ class ChatbotService:
 
         for attempt in range(max_self_corrections + 1):
             try:
-                ir_result = self._router.generate_circuit_ir(
-                    attempt_prompt,
-                    mode=selected_mode,
-                    max_schema_retries=2,
-                )
+                # tai su dung IR da generate (neu co) - tranh goi llm lan 2
+                if attempt == 0 and prebuilt_ir is not None:
+                    from app.application.ai.circuit_ir_schema import CircuitIR as _CircuitIR
+                    if isinstance(prebuilt_ir, _CircuitIR):
+                        validated_ir = prebuilt_ir
+                        retries_used = 0
+                        break
+                    ir_result = prebuilt_ir
+                else:
+                    ir_result = self._router.generate_circuit_ir(
+                        attempt_prompt,
+                        mode=selected_mode,
+                        max_schema_retries=2,
+                    )
+                
+                if isinstance(ir_result, dict) and ir_result.get("error"):
+                    raise ValueError(
+                        f"LLM CircuitIR validation failed: {ir_result.get('fields', [])}"
+                    )
                 if ir_result is None:
                     raise ValueError("LLM khong tra ve CircuitIR hop le")
 
@@ -430,10 +495,12 @@ class ChatbotService:
         if validated_ir is None:
             raise RuntimeError(f"Khong the tao CircuitIR hop le sau {max_self_corrections + 1} lan: {last_error}")
 
+        artifact_id = uuid.uuid4().hex  # keep hex for filename
+        circuit_id = str(uuid.uuid4())  # uuid format for DB lookup
+
         sch_content = sch_compiler.compile_to_sch(validated_ir)
         spice_deck = spice_compiler.generate_spice_deck(validated_ir)
 
-        artifact_id = uuid.uuid4().hex
         sch_file_name = f"{artifact_id}.kicad_sch"
         sch_file_path = output_dir / sch_file_name
         sch_file_path.write_text(sch_content, encoding="utf-8")
@@ -445,7 +512,8 @@ class ChatbotService:
         return {
             "message": "Circuit compiled successfully",
             "mode": selected_mode.value,
-            "circuit_data": validated_ir.model_dump(mode="json"),
+            "circuit_data": validated_ir.model_dump(mode="json"),          # ← dùng dict đã inject, không gọi lại model_dump
+            "circuit_id": circuit_id,
             "download_url": f"/api/chat/compiled/{sch_file_name}",
             "spice_deck_ready": True,
             "spice_deck": spice_deck,
@@ -500,14 +568,13 @@ class ChatbotService:
             MessageModel,
             SessionModel,
         )
-
         Base.metadata.create_all(
             bind=engine,
             tables=[
                 ChatModel.__table__,
-                MessageModel.__table__,
                 ChatSummaryModel.__table__,
                 MemoryFactModel.__table__,
+                MessageModel.__table__,
                 SessionModel.__table__,
             ],
         )
@@ -656,7 +723,7 @@ class ChatbotService:
                 logger.error("Invalid or empty circuit_data provided for DB save; aborting. chat_id=%s message_id=%s", chat_id, message_id)
                 return
 
-            circuit_data = normalized
+            circuit_data = copy.deepcopy(normalized)
 
             meta = circuit_data.get("meta") if isinstance(circuit_data.get("meta"), dict) else {}
             circuit_name = (
@@ -833,6 +900,15 @@ class ChatbotService:
         # ─── Step 3: Set circuit_data from LLM IR and proceed to compilation ───
         response.success = True
         response.circuit_data = ir_result.model_dump(mode="json")
+        response.circuit_id = self._extract_circuit_id(response.circuit_data)
+        # Structured log for IR generation
+        try:
+            comp_count = len(response.circuit_data.get("components", []) or [])
+            nets_count = len(response.circuit_data.get("nets", []) or [])
+        except Exception:
+            comp_count = None
+            nets_count = None
+        log_stage("IR_GEN", attempt=1, components=comp_count, nets=nets_count)
         
         # Build a simple success message from IR analysis
         analysis = ir_result.analysis
@@ -853,7 +929,18 @@ class ChatbotService:
             response=response,
             user_text=intent.raw_text,
             mode=mode,
-        )
+            prebuilt_ir=ir_result,
+        )   
+        
+        # After compilation results, emit export/placement logs if available
+        try:
+            if response.compiled_ir_payload:
+                placed_master = response.compiled_ir_payload.get("placement", {}).get("master_component")
+                placed_count = len(response.compiled_ir_payload.get("placement", {}).get("placed_components", []) or [])
+                zones = response.compiled_ir_payload.get("placement", {}).get("zones", [])
+                log_stage("PLACEMENT", master=placed_master, components_placed=placed_count, zones=len(zones) if zones is not None else None)
+        except Exception:
+            pass
 
         response.processing_time_ms = (time.time() - start) * 1000
         return response
@@ -863,6 +950,7 @@ class ChatbotService:
         response: ChatResponse,
         user_text: str,
         mode: LLMMode,
+        prebuilt_ir=None,
     ) -> None:
         """Best-effort attachment of KiCad/SPICE artifacts for frontend download/preview."""
         try:
@@ -870,22 +958,41 @@ class ChatbotService:
                 user_text=user_text,
                 mode=mode.value,
                 max_self_corrections=2,
+                prebuilt_ir=prebuilt_ir,
             )
+            
+            # Structured log for SCH export result summary if present
+            try:
+                sch_meta = compiled.get("metadata") or {}
+                wires = sch_meta.get("wires")
+                junctions = sch_meta.get("junctions")
+                file_size = compiled.get("file_size") or compiled.get("file_size_bytes")
+                log_stage("SCH_EXPORT", wires=wires, junctions=junctions, file_size=file_size)
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("Attach compile artifacts failed (soft): %s", exc)
             return
 
         response.download_url = compiled.get("download_url")
+        response.sch_url = response.download_url
         response.spice_deck_ready = bool(compiled.get("spice_deck_ready", False))
         response.spice_deck_url = compiled.get("spice_deck_url")
+        response.spice_url = response.spice_deck_url
         response.spice_deck = compiled.get("spice_deck")
+        
         response.artifact_id = compiled.get("artifact_id")
         payload = compiled.get("circuit_data")
         if isinstance(payload, dict):
             response.compiled_ir_payload = payload
+        
+        # circuit_id từ compiled dict — đã được set bởi compile_circuit_artifacts
+        response.circuit_id = compiled.get("circuit_id") or \
+            self._extract_circuit_id(response.circuit_data if isinstance(response.circuit_data, dict) else {})
         retries = compiled.get("self_correction_retries")
         if isinstance(retries, int):
             response.self_correction_retries = retries
+
 
     async def _persist_compiled_ir_and_artifacts(
         self,
@@ -905,23 +1012,14 @@ class ChatbotService:
             return
 
         circuit_payload = response.circuit_data if isinstance(response.circuit_data, dict) else {}
-        circuit_id = self._extract_circuit_id(circuit_payload)
-        
-        # Auto-generate circuit_id if not present in LLM payload
+        circuit_id = response.circuit_id  # ← dùng trực tiếp từ response
         if not circuit_id:
             circuit_id = str(uuid.uuid4())
             logger.debug("Auto-generated circuit_id for persistence: %s", circuit_id)
-            # Inject circuit_id into payload so it's available for artifact references
-            if not isinstance(circuit_payload.get("meta"), dict):
-                circuit_payload["meta"] = {}
-            circuit_payload["meta"]["circuit_id"] = circuit_id
-            circuit_payload["circuit_id"] = circuit_id
-
         try:
             ir = CircuitIR.model_validate(ir_payload)
         except Exception as exc:
             logger.warning("Skip IR persistence: compiled payload is not valid CircuitIR (%s)", exc)
-            # Store validation error in response for HTTP 400 return
             response.validation_error = f"CircuitIR validation failed: {str(exc)}"
             return
 
@@ -969,6 +1067,15 @@ class ChatbotService:
 
                 await ir_repo.update_status(ir_id, "compiled")
                 response.ir_id = ir_id
+                log_stage(
+                    "DB",
+                    circuit_id=circuit_id,
+                    persisted=True,
+                    ir_id=ir_id,
+                    artifact_count=2,
+                    session_id=chat_id,
+                    message_id=message_id,
+                )
         except ValueError as ve:
             # Net normalization or validation error
             logger.warning("IR validation error: %s", ve)

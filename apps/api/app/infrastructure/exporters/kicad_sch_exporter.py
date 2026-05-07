@@ -19,11 +19,13 @@ from __future__ import annotations
 # ====== Lý do sử dụng thư viện ======
 # typing: Type hints cho IDE support
 # datetime: Timestamp metadata cho schematic files
+from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
 
 # ====== Domain & Application layers ======
-from app.domains.circuits.entities import Circuit
+from app.domains.circuits.entities import Circuit, Component, ComponentType, ParameterValue
 from app.domains.circuits.ir import CircuitIR, CircuitIRSerializer
 from app.domains.circuits.placement import LayoutQualityEvaluator, LayoutQualityReport
 from app.application.circuits.ports import ExporterPort
@@ -33,6 +35,10 @@ from app.application.circuits.errors import ExportError
 # ====== Infrastructure - Layout & Serialization ======
 from app.infrastructure.exporters.layout_planner import LayoutPlanner
 from app.infrastructure.exporters.kicad_sch_serializer import KiCadSchSerializer
+from app.infrastructure.exporters.placement import GRID_MM, classify, compose, solve_stage
+from app.infrastructure.exporters.placement.orthogonal_router import route_net, route_pair
+from app.infrastructure.exporters.placement.pin_resolver import resolve_pins
+from app.infrastructure.exporters.placement.role_inferrer import infer_roles
 import logging
 
 logger = logging.getLogger(__name__)
@@ -77,9 +83,16 @@ class KiCadSchExporter(ExporterPort):
                 reason=f"This exporter only supports {ExportFormat.KICAD.value}"
             )
         
+        # HARD GUARD: Reject export if circuit.id is None (prevents stray post-response invocations)
+        cid = getattr(circuit, "id", None)
+        if not cid or str(cid).strip() == "None":
+            raise ExportError(
+                format_type=format_type.value,
+                reason="Exporter requires valid circuit.id (got None or empty). This is likely a stray background invocation without proper context."
+            )
+        
         try:
             # Debug: surface circuit shape early to detect upstream empty payloads
-            cid = getattr(circuit, "id", None)
             comp_count = len(getattr(circuit, "components", {}))
             net_count = len(getattr(circuit, "nets", {}))
             logger.info(f"[SCH DEBUG] Generating SCH for circuit_id={cid}, components={comp_count}, nets={net_count}")
@@ -89,33 +102,45 @@ class KiCadSchExporter(ExporterPort):
             if not getattr(circuit, 'components', None) or not getattr(circuit, 'nets', None):
                 raise ExportError(format_type=format_type.value, reason=f"Empty circuit: components={len(getattr(circuit,'components',{}))}, nets={len(getattr(circuit,'nets',{}))}")
 
-            # Convert to IR first
-            ir = self._create_ir(circuit)
+            placements, rotations, pin_positions = self._agr_place_components(circuit)
+            placements = self._snap_placements(placements, GRID_MM)
+            placements = self._normalize_origin(placements, GRID_MM * 4.0)
+            pin_positions = self._rebuild_pin_positions(circuit, placements, rotations, pin_positions)
+            wires = self._route_wires(circuit, pin_positions)
+            wires = self._snap_wires(wires, GRID_MM)
+            wires = self._filter_short_wires(wires, GRID_MM)
 
-            # Get pin offset definitions for routing
-            pin_offsets = self._get_pin_offsets()
-
-            # Plan layout with relaxation loop (expand spacing if too dense).
-            placements, wires, rotations = self._auto_relax_layout(circuit, pin_offsets)
-            placements, wires, rotations = self._finalize_layout_and_validate(
+            circuit, placements, rotations, pin_positions, wires = self._ensure_power_flags(
                 circuit,
-                pin_offsets,
                 placements,
                 rotations,
+                pin_positions,
+                wires,
             )
+            wires = self._snap_wires(wires, GRID_MM)
+            wires = self._filter_short_wires(wires, GRID_MM)
 
-            self._last_layout_quality_report = self._evaluate_layout_quality(
+            self._last_layout_quality_report = self._evaluate_layout_quality_agr(
                 circuit,
                 placements,
                 wires,
-                pin_offsets,
-                rotations,
             )
 
             # Find junctions
             junctions = self._find_junctions(wires)
-            
+
             # Serialize to KiCad format
+            ir = CircuitIR(
+                circuit=circuit,
+                _meta={
+                    "version": "1.0",
+                    "schema_version": "1.0",
+                    "circuit_name": circuit.name or "unnamed",
+                    "timestamp": datetime.now().isoformat(),
+                    "generator": "elpis",
+                },
+                _intent_snapshot={},
+            )
             kicad_content = self.serializer.serialize(
                 ir, placements, wires, junctions, rotations
             )
@@ -128,10 +153,346 @@ class KiCadSchExporter(ExporterPort):
                 reason=f"KiCad export failed: {str(e)}"
             ) from e
 
+    def _agr_place_components(
+        self,
+        circuit: Circuit,
+    ) -> Tuple[Dict[str, tuple], Dict[str, int], Dict[Tuple[str, str], Tuple[float, float]]]:
+        components = list(circuit.components.values())
+        placement_components = self._build_agr_components(components)
+        stage_count = self._infer_stage_count(placement_components)
+        topology_label = self._infer_topology_label(circuit)
+
+        if stage_count > 1:
+            stages = [
+                SimpleNamespace(id=f"S{idx + 1}", topology=topology_label)
+                for idx in range(stage_count)
+            ]
+            ir_stub = SimpleNamespace(
+                components=placement_components,
+                architecture=SimpleNamespace(stage_count=stage_count, stages=stages),
+            )
+            result = compose(ir_stub)
+        else:
+            ir_stub = SimpleNamespace(
+                components=placement_components,
+                architecture=SimpleNamespace(stage_count=stage_count, stages=[]),
+                analysis=SimpleNamespace(topology_classification=topology_label),
+            )
+            family = classify(ir_stub)
+            result = solve_stage(placement_components, family, topology=topology_label)
+
+        placements = {ref: (comp.x_mm, comp.y_mm) for ref, comp in result.components.items()}
+        rotations = {ref: int(comp.rotation) for ref, comp in result.components.items()}
+        pin_positions = {
+            (ref, pin_name): pos
+            for ref, comp in result.components.items()
+            for pin_name, pos in comp.pins.items()
+        }
+        return placements, rotations, pin_positions
+
+    def _build_agr_components(self, components: List[Component]) -> List[_AGRComponent]:
+        role_hints = []
+        for comp in components:
+            role_hints.append(
+                SimpleNamespace(
+                    ref=comp.id,
+                    type=comp.type.value,
+                    role=self._render_style_role(comp),
+                )
+            )
+        inferred = infer_roles(role_hints)
+
+        specs: List[_AGRComponent] = []
+        for comp in components:
+            stage = self._render_style_stage(comp)
+            role = self._render_style_role(comp) or inferred.get(comp.id, "auxiliary")
+            specs.append(
+                _AGRComponent(
+                    ref=comp.id,
+                    type=comp.type.value,
+                    role=str(role).strip().lower(),
+                    topology_stage=stage,
+                )
+            )
+        return specs
+
+    def _infer_stage_count(self, components: List[_AGRComponent]) -> int:
+        stages = [comp.topology_stage for comp in components if comp.topology_stage is not None]
+        if not stages:
+            return 1
+        return max(stages) + 1
+
+    def _infer_topology_label(self, circuit: Circuit) -> str:
+        label = str(circuit.topology_type or circuit.category or "").strip().lower()
+        if label:
+            return label
+        if circuit.signal_flow is not None:
+            return "multi_stage"
+        return ""
+
+    def _render_style_role(self, component: Component) -> str | None:
+        render_style = getattr(component, "render_style", None) or {}
+        role = render_style.get("role") or render_style.get("component_role")
+        if role is None:
+            return None
+        return str(role).strip()
+
+    def _render_style_stage(self, component: Component) -> int | None:
+        stage_raw = component.stage
+        render_style = getattr(component, "render_style", None) or {}
+        if stage_raw is None:
+            stage_raw = render_style.get("stage") or render_style.get("component_stage")
+        if stage_raw is None:
+            return None
+        try:
+            return int(stage_raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _rebuild_pin_positions(
+        self,
+        circuit: Circuit,
+        placements: Dict[str, tuple],
+        rotations: Dict[str, int],
+        existing: Dict[Tuple[str, str], Tuple[float, float]],
+    ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        pin_positions: Dict[Tuple[str, str], Tuple[float, float]] = dict(existing)
+        for comp_id, component in circuit.components.items():
+            x, y = placements.get(comp_id, (0.0, 0.0))
+            rotation = int(rotations.get(comp_id, 0))
+            offsets = resolve_pins(component.type.value, rotation)
+            for pin_name in component.pins:
+                if (comp_id, pin_name) in pin_positions:
+                    continue
+                offset = offsets.get(str(pin_name), (0.0, 0.0))
+                pin_positions[(comp_id, pin_name)] = (x + offset[0], y + offset[1])
+        return pin_positions
+
+    def _route_wires(
+        self,
+        circuit: Circuit,
+        pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+    ) -> list:
+        wires: list = []
+        for net in circuit.nets.values():
+            points: List[Tuple[float, float]] = []
+            for pin in net.connected_pins:
+                pos = pin_positions.get((pin.component_id, pin.pin_name))
+                if pos is not None:
+                    points.append(pos)
+
+            points = self._unique_points(points)
+            if len(points) < 2:
+                continue
+            points = sorted(points, key=lambda p: (p[0], p[1]))
+            for wire in route_net(points, grid_mm=GRID_MM):
+                wires.append({"points": wire.points})
+        return wires
+
+    def _unique_points(self, points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        unique: List[Tuple[float, float]] = []
+        seen: set[Tuple[float, float]] = set()
+        for point in points:
+            key = (round(point[0], 6), round(point[1], 6))
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(point)
+        return unique
+
+    def _snap_placements(self, placements: Dict[str, tuple], grid: float) -> Dict[str, tuple]:
+        return {cid: self._snap_point(pos, grid) for cid, pos in placements.items()}
+
+    def _normalize_origin(self, placements: Dict[str, tuple], margin: float) -> Dict[str, tuple]:
+        if not placements:
+            return placements
+        xs = [pos[0] for pos in placements.values()]
+        ys = [pos[1] for pos in placements.values()]
+        min_x = min(xs)
+        min_y = min(ys)
+        dx = margin - min_x if min_x < margin else 0.0
+        dy = margin - min_y if min_y < margin else 0.0
+        if dx == 0.0 and dy == 0.0:
+            return placements
+        return {cid: (pos[0] + dx, pos[1] + dy) for cid, pos in placements.items()}
+
+    def _snap_wires(self, wires: list, grid: float) -> list:
+        snapped = []
+        for wire in wires:
+            points = [self._snap_point(p, grid) for p in wire.get("points", [])]
+            if len(points) >= 2:
+                snapped.append({"points": points})
+        return snapped
+
+    def _filter_short_wires(self, wires: list, min_len: float) -> list:
+        filtered: list = []
+        for wire in wires:
+            points = wire.get("points", [])
+            if len(points) < 2:
+                continue
+            compact: List[Tuple[float, float]] = [points[0]]
+            for point in points[1:]:
+                if self._segment_length(compact[-1], point) + 1e-6 >= min_len:
+                    compact.append(point)
+            if len(compact) >= 2:
+                filtered.append({"points": compact})
+        return filtered
+
+    def _find_junctions(self, wires: list) -> set:
+        counts: Dict[Tuple[float, float], int] = {}
+        for wire in wires:
+            points = wire.get("points", [])
+            for point in points:
+                key = (round(point[0], 6), round(point[1], 6))
+                counts[key] = counts.get(key, 0) + 1
+        return {point for point, count in counts.items() if count >= 3}
+
+    def _ensure_power_flags(
+        self,
+        circuit: Circuit,
+        placements: Dict[str, tuple],
+        rotations: Dict[str, int],
+        pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+        wires: list,
+    ) -> Tuple[Circuit, Dict[str, tuple], Dict[str, int], Dict[Tuple[str, str], Tuple[float, float]], list]:
+        power_nets = self._collect_power_nets(circuit, pin_positions)
+        if not power_nets:
+            return circuit, placements, rotations, pin_positions, wires
+
+        extra_components: Dict[str, Component] = {}
+        for net_name, anchor in power_nets.items():
+            comp_id = f"PWR_FLAG_{net_name}"
+            if comp_id in circuit.components:
+                continue
+            component = Component(
+                id=comp_id,
+                type=ComponentType.POWER_SYMBOL,
+                pins=("1",),
+                parameters={"value": ParameterValue("PWR_FLAG", None)},
+                library_id="power",
+                symbol_name="PWR_FLAG",
+            )
+            extra_components[comp_id] = component
+
+            flag_pos = (anchor[0] + (GRID_MM * 4.0), anchor[1])
+            placements[comp_id] = self._snap_point(flag_pos, GRID_MM)
+            rotations[comp_id] = 0
+            pin_positions[(comp_id, "1")] = placements[comp_id]
+            wire = route_pair(anchor, placements[comp_id], grid_mm=GRID_MM)
+            wires.append({"points": wire.points})
+
+        if not extra_components:
+            return circuit, placements, rotations, pin_positions, wires
+
+        new_components = dict(circuit.components)
+        new_components.update(extra_components)
+        new_circuit = Circuit(
+            name=circuit.name,
+            id=circuit.id,
+            _components=new_components,
+            _nets=dict(circuit.nets),
+            _ports=dict(circuit.ports),
+            _constraints=dict(circuit.constraints),
+            topology_type=circuit.topology_type,
+            category=circuit.category,
+            template_id=circuit.template_id,
+            tags=circuit.tags,
+            description=circuit.description,
+            parametric=dict(circuit.parametric) if circuit.parametric else None,
+            pcb_hints=dict(circuit.pcb_hints) if circuit.pcb_hints else None,
+            signal_flow=circuit.signal_flow,
+        )
+        return new_circuit, placements, rotations, pin_positions, wires
+
+    def _collect_power_nets(
+        self,
+        circuit: Circuit,
+        pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
+    ) -> Dict[str, Tuple[float, float]]:
+        power_nets: Dict[str, Tuple[float, float]] = {}
+        for net in circuit.nets.values():
+            name = str(net.name or "").strip()
+            if not name:
+                continue
+            lower = name.lower()
+            if lower in {"0", "gnd", "ground", "vss"}:
+                key = "GND"
+            elif any(tok in lower for tok in ("vcc", "vdd", "v+", "power")):
+                key = "VCC"
+            else:
+                continue
+
+            anchor = None
+            for pin in net.connected_pins:
+                anchor = pin_positions.get((pin.component_id, pin.pin_name))
+                if anchor is not None:
+                    break
+            if anchor is None:
+                continue
+            power_nets[key] = power_nets.get(key) or anchor
+        return power_nets
+
+    def _evaluate_layout_quality_agr(
+        self,
+        circuit: Circuit,
+        placements: Dict[str, tuple],
+        wires: list,
+    ) -> LayoutQualityReport | None:
+        try:
+            report = self.quality_evaluator.evaluate(
+                {
+                    "circuit": circuit,
+                    "placements": placements,
+                    "wires": wires,
+                }
+            )
+        except Exception:
+            return None
+        if isinstance(report, LayoutQualityReport):
+            return report
+        if hasattr(report, "to_dict"):
+            return LayoutQualityReport(**report.to_dict())
+        return None
+
+    def _snap_point(self, point: Tuple[float, float], grid: float) -> Tuple[float, float]:
+        x, y = point
+        return (
+            round(x / grid) * grid,
+            round(y / grid) * grid,
+        )
+
+    def _segment_length(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+        dx = abs(p2[0] - p1[0])
+        dy = abs(p2[1] - p1[1])
+        return max(dx, dy)
+
+
+@dataclass(frozen=True)
+class _AGRComponent:
+    ref: str
+    type: str
+    role: str
+    topology_stage: int | None
+
     def get_last_layout_quality_report(self) -> Dict[str, Any] | None:
         if self._last_layout_quality_report is None:
             return None
         return self._last_layout_quality_report.to_dict()
+
+    def _create_ir(self, circuit: Circuit) -> CircuitIR:
+        meta = {
+            "version": "1.0",
+            "schema_version": "1.0",
+            "circuit_name": circuit.name or "unnamed",
+            "timestamp": datetime.now().isoformat(),
+            "generator": "elpis",
+        }
+
+        return CircuitIR(
+            circuit=circuit,
+            _meta=meta,
+            _intent_snapshot={},
+        )
 
     def _finalize_layout_and_validate(
         self,
@@ -216,12 +577,123 @@ class KiCadSchExporter(ExporterPort):
                     return False
         return True
 
+        """
+        Returns a dict mapping component_id -> (x_mm, y_mm, rotation_degrees)
+        based on the standard Common Emitter amplifier topology.
+        rotation: 0 = horizontal, 90 = vertical
+        """
+        # Normalize component IDs to uppercase for matching
+        comp_ids = {getattr(c, 'id', str(k)).upper(): (k, c) for k, c in getattr(circuit, 'components', {}).items()}
+
+        PLACEMENT_MAP = {
+            "VCC":  (150,  40,  0),
+            "RC":   (150,  65, 90),
+            "Q1":   (150, 100,  0),
+            "R1":   (110,  75, 90),
+            "R2":   (110, 125, 90),
+            "CIN":  ( 80, 100,  0),
+            "C1":   ( 80, 100,  0),
+            "RE":   (150, 145, 90),
+            "RE1":  (150, 140, 90),
+            "RE2":  (150, 158, 90),
+            "CE":   (175, 155,  0),
+            "COUT": (200, 100,  0),
+            "C2":   (200, 100,  0),
+            "GND":  (150, 175,  0),
+        }
+
+        result: dict = {}
+        grid_x, grid_y = 250, 50
+        col = 0
+
+        # Iterate over component objects to preserve original IDs
+        for comp_id, comp in getattr(circuit, 'components', {}).items():
+            key = comp_id.upper()
+            if key in PLACEMENT_MAP:
+                x, y, rot = PLACEMENT_MAP[key]
+                result[comp_id] = (float(x), float(y), int(rot))
+            else:
+                # Unknown component — place in fallback grid (right side)
+                result[comp_id] = (float(grid_x + col * 40), float(grid_y), 90)
+                col += 1
+                if col > 3:
+                    col = 0
+                    grid_y += 50
+
+        return result
+
+
+    def _topology_aware_placement(self, circuit) -> dict:
+        PLACEMENT_MAP = {
+            # Cột giữa (X=50): VCC → RC → Q1(BJT) → RE1 → RE2 → GND
+            "VCC":  (50,10,0),   # nguồn trên cùng
+            "RC":   (50,20,0),   # song song R1, ngay dưới VCC
+            "Q1":   (50,50,0),   # BJT, RC nối vào C
+            "RE1":  (50,68,0),   # thẳng dưới Q1(E)
+            "RE2":  (50,82,0),   # nối tiếp RE1
+            "GND":  (50,97,0),   # dưới cùng
+
+            # Cột trái (X=25): R1 → R2 song song với RE1/RE2/CE
+            "R1":   (25,20,0),   # cùng Y với RC (song song VCC)
+            "R2":   (25,74,0),   # cùng Y với RE1 (nối điểm B của Q1 → GND)
+
+            # Tụ bypass emitter (X=75): song song RE1+RE2
+            "CE":   (75,74,0),   # song song RE2, nối GND
+
+            # Ngõ vào (X=5): CIN nối ngang vào B của Q1, qua điểm giữa R1-R2
+            "CIN":  (5,50,0),
+            "C1":   (5,50,0),
+
+            # Ngõ ra (X=95): COUT nối ngang từ C của Q1
+            "COUT": (95,50,0),
+            "C2":   (95,50,0),
+        }
+        result = {}
+        grid_x, grid_y, col = 250, 50, 0
+        # circuit.components is usually a dict: {comp_id: comp_object}
+        components = circuit.components
+        items = components.items() if isinstance(components, dict) else [
+            (c.id if hasattr(c, 'id') else c, c)
+            for c in components
+        ]
+
+        for comp_id, comp in items:
+            key = comp_id.upper()
+            if key in PLACEMENT_MAP:
+                result[comp_id] = PLACEMENT_MAP[key]
+            else:
+                result[comp_id] = (grid_x + col * 40, grid_y, 90)
+                col += 1
+                if col > 3:
+                    col = 0
+                    grid_y += 50
+        return result
+
     def _auto_relax_layout(
         self,
         circuit: Circuit,
         pin_offsets: Dict[str, list],
     ) -> Tuple[Dict[str, tuple], list, Dict[str, int]]:
-        """Iteratively expand spacing and reroute to reduce crossings and improve readability."""
+        """Iteratively expand spacing and reroute to reduce crossings and improve readability.
+        
+        First attempts topology-aware placement for Common Emitter-like circuits;
+        falls back to grid-based layout planner if needed.
+        """
+        # Try topology-aware placement first (for CE amplifier and similar circuits)
+        topology_placements = self._topology_aware_placement(circuit)
+        if topology_placements:
+            logger.info("[SCH DEBUG] Using topology-aware placement")
+            # topology_placements: dict[comp_id] -> (x, y, rot)
+            placements = {cid: (float(x), float(y)) for cid, (x, y, rot) in topology_placements.items()}
+            rotations = {cid: int(rot) for cid, (x, y, rot) in topology_placements.items()}
+            wires = self._plan_wires(circuit, placements, pin_offsets, rotations)
+            quality = self._evaluate_layout_quality(circuit, placements, wires, pin_offsets, rotations)
+
+            if quality.is_hard_valid:
+                return placements, wires, rotations
+            # If topology placement has issues, continue to relaxation loop fallback
+        
+        # Fallback: iteratively expand spacing and reroute
         scales = [1.0, 1.15, 1.3, 1.45, 1.6]
 
         best_placements: Dict[str, tuple] = {}
@@ -422,11 +894,21 @@ class KiCadSchExporter(ExporterPort):
         return pin_positions
 
     def _build_default_label_positions(self, circuit: Circuit) -> List[Tuple[float, float]]:
+        positions: List[Tuple[float, float]] = []
         x_label, y_label = 20.0, 50.0
-        return [
-            (x_label, y_label + idx * 10.0)
-            for idx, _ in enumerate(circuit.ports.values())
-        ]
+            # Ports
+        for idx, _ in enumerate(circuit.ports.values()):
+            positions.append((x_label, y_label + idx * 10.0))
+
+        # Also add positions for input/output coupling caps so labels are emitted
+        for comp_id, comp in circuit.components.items():
+            key = comp_id.upper()
+            if key in ("C1", "CIN"):
+                positions.append((5.0, 50.0))
+            elif key in ("C2", "COUT"):
+                positions.append((95.0, 50.0))
+
+        return positions
 
     def _count_wire_bends(self, wires: list) -> int:
         """Count bend points across all routed wires."""
@@ -886,6 +1368,10 @@ class KiCadSchExporter(ExporterPort):
         Returns:
             Set of junction coordinates
         """
-        # Convert wire data to format expected by layout_planner
-        wire_segments = [wire["points"] for wire in wires]
-        return self.layout_planner.find_junctions(wire_segments)
+        counts: Dict[Tuple[float, float], int] = {}
+        for wire in wires:
+            points = wire.get("points", [])
+            for point in points:
+                key = (round(point[0], 6), round(point[1], 6))
+                counts[key] = counts.get(key, 0) + 1
+        return {point for point, count in counts.items() if count >= 3}

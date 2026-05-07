@@ -22,7 +22,7 @@ from __future__ import annotations
 # typing: Type hints cho PCB s-expression generation
 # datetime: Timestamps cho PCB metadata
 # uuid: Unique IDs cho nets/segments
-from typing import Dict, Tuple, List, Set
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime
 import uuid
 
@@ -61,7 +61,9 @@ class KiCadPCBSerializer:
         ir: CircuitIR,
         placements: Dict[str, Tuple[float, float]],
         nets: Dict[str, List[str]],
-        tracks: List[Dict]
+        tracks: List[Dict],
+        board_size: Optional[Tuple[float, float]] = None,
+        zones: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         """Serialize Circuit with PCB layout to KiCad PCB format.
         
@@ -97,6 +99,10 @@ class KiCadPCBSerializer:
                     comp_id, component, x, y, nets
                 ))
                 lines.append("")
+
+        if board_size is not None:
+            lines.extend(self._build_board_outline(board_size))
+            lines.append("")
         
         # Tracks (PCB traces)
         if tracks:
@@ -104,7 +110,7 @@ class KiCadPCBSerializer:
             lines.append("")
         
         # Zones (copper pours) - optional, can add GND plane
-        lines.extend(self._build_zones())
+        lines.extend(self._build_zones(zones or [], board_size))
         lines.append("")
         
         # Footer
@@ -415,7 +421,7 @@ class KiCadPCBSerializer:
             net_name = track.get("net", "")
             net_idx = self._net_map.get(net_name, 0)
             layer = track.get("layer", "F.Cu")
-            width = track.get("width", 0.25)
+            width = track.get("width", 0.5 if self._is_power_net(net_name) else 0.25)
             
             track_uuid = self._get_uuid(f"track_{start_x}_{start_y}_{end_x}_{end_y}")
             
@@ -429,18 +435,124 @@ class KiCadPCBSerializer:
                 f'    (uuid "{track_uuid}")',
                 "  )",
             ])
+
+            for via_index, (vx, vy) in enumerate(self._extract_vias(track)):
+                via_uuid = self._get_uuid(f"via_{start_x}_{start_y}_{end_x}_{end_y}_{via_index}")
+                lines.extend([
+                    "  (via",
+                    f'    (at {vx} {vy})',
+                    '    (size 0.8)',
+                    '    (drill 0.4)',
+                    '    (layers "F.Cu" "B.Cu")',
+                    f'    (net {net_idx})',
+                    f'    (uuid "{via_uuid}")',
+                    "  )",
+                ])
         
         return lines
     
-    def _build_zones(self) -> List[str]:
+    def _build_zones(
+        self,
+        zones: List[Dict[str, Any]],
+        board_size: Optional[Tuple[float, float]],
+    ) -> List[str]:
         """Build zone definitions (e.g., ground plane).
         
         Returns:
-            Lines of zone definitions (empty for now)
+            Lines of zone definitions.
         """
-        # For basic implementation, we skip zones
-        # Can be added later for ground/power planes
+        outline = self._zone_outline(board_size)
+        lines: List[str] = []
+        zone_specs = list(zones) if zones else self._default_ground_zones(outline)
+
+        for zone in zone_specs:
+            net_name = str(zone.get("net", "")).strip()
+            if not net_name or not self._is_ground_net(net_name):
+                continue
+
+            polygon = zone.get("polygon") or outline
+            if not polygon:
+                continue
+
+            net_idx = self._net_map.get(net_name, 0)
+            layer = str(zone.get("layer", "B.Cu"))
+            clearance = float(zone.get("clearance", 0.3))
+            zone_uuid = self._get_uuid(f"zone_{net_name}_{layer}")
+
+            lines.extend([
+                "  (zone",
+                f'    (net {net_idx})',
+                f'    (net_name "{net_name}")',
+                f'    (layer "{layer}")',
+                '    (hatch edge 0.508)',
+                '    (priority 1)',
+                f'    (connect_pads (clearance {clearance}))',
+                '    (min_thickness 0.25)',
+                '    (filled_areas_thickness no)',
+                '    (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))',
+                f'    (uuid "{zone_uuid}")',
+                '    (polygon',
+                '      (pts',
+            ])
+            for x, y in polygon:
+                lines.append(f'        (xy {x} {y})')
+            lines.extend([
+                '      )',
+                '    )',
+                '  )',
+            ])
+
+        return lines
+
+    def _default_ground_zones(self, outline: List[Tuple[float, float]]) -> List[Dict[str, Any]]:
+        if not outline:
+            return []
+        for net_name in self._net_map:
+            if self._is_ground_net(net_name):
+                return [{
+                    "net": net_name,
+                    "layer": "B.Cu",
+                    "clearance": 0.3,
+                    "polygon": outline,
+                }]
+        if "0" in self._net_map:
+            return [{
+                "net": "0",
+                "layer": "B.Cu",
+                "clearance": 0.3,
+                "polygon": outline,
+            }]
         return []
+
+    def _build_board_outline(self, board_size: Tuple[float, float]) -> List[str]:
+        width, height = board_size
+        return [
+            f'  (gr_rect (start 0 0) (end {width} {height}) (layer "Edge.Cuts") (stroke (width 0.1) (type solid)) (fill none))'
+        ]
+
+    def _zone_outline(self, board_size: Optional[Tuple[float, float]]) -> List[Tuple[float, float]]:
+        if not board_size:
+            return []
+        width, height = board_size
+        return [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+
+    def _extract_vias(self, track: Dict[str, Any]) -> List[Tuple[float, float]]:
+        vias: List[Tuple[float, float]] = []
+        raw_vias = track.get("vias") or track.get("via_positions") or []
+        for entry in raw_vias:
+            if isinstance(entry, dict) and "x" in entry and "y" in entry:
+                vias.append((float(entry["x"]), float(entry["y"])))
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                vias.append((float(entry[0]), float(entry[1])))
+        return vias
+
+    def _is_power_net(self, net_name: str) -> bool:
+        name = net_name.strip().lower()
+        return any(token in name for token in ("vcc", "vdd", "v+", "vbat", "power", "vin", "vout"))
+
+    def _is_ground_net(self, net_name: str) -> bool:
+        name = net_name.strip().lower()
+        return name in {"gnd", "ground", "0", "0v", "vss"} or "gnd" in name or "ground" in name
     
     def _get_uuid(self, key: str) -> str:
         """Get or generate UUID for a component.

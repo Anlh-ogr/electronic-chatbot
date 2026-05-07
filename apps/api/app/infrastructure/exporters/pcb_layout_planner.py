@@ -37,7 +37,17 @@ class PCBLayoutPlanner:
     RELATED_MIN_SPACING = 3.0
     RELATED_MAX_SPACING = 5.0
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        board_width: float = BOARD_WIDTH,
+        board_height: float = BOARD_HEIGHT,
+        margin: float = MARGIN,
+        component_spacing: float = COMP_SPACING,
+    ) -> None:
+        self.BOARD_WIDTH = float(board_width)
+        self.BOARD_HEIGHT = float(board_height)
+        self.MARGIN = float(margin)
+        self.COMP_SPACING = float(component_spacing)
         self._industrial_router = IndustrialPCBRouter(
             board_width=self.BOARD_WIDTH,
             board_height=self.BOARD_HEIGHT,

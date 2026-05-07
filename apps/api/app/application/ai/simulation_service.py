@@ -15,16 +15,6 @@ Nguyên tắc:
 
 from __future__ import annotations
 
-# ====== Lý do sử dụng thư viện ======
-# json: parse .control block output, serialize waveform result
-# os + subprocess: gọi ngspice binary, chn environment
-# re: parse ngspice tplot output, extract number từ text
-# tempfile: tạo temp file cho netlist, lưu safe
-# time + math: timing, conversion giữa units
-# dataclass: định nghĩa WaveformTrace, SimulationResult value objects
-# pathlib: xử lý file paths cross-platform
-# typing: type safe simulation service API
-
 import asyncio
 import json
 import os
@@ -34,12 +24,16 @@ import subprocess
 import tempfile
 import time
 import math
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from app.application.ai.circuit_ir_schema import CircuitIR
 
+logger = logging.getLogger(__name__)
+def log_stage(stage_name: str, **kwargs):
+    logger.info(f"[Stage {stage_name} | {kwargs}]")
 
 class SimulationError(RuntimeError):
     """Raised when a simulation run cannot be completed."""
@@ -210,6 +204,32 @@ class NgSpiceSimulationService:
         points = len(traces[0].x) if traces else 0
         x_unit = self._choose_time_unit(traces[0].x[-1] if traces and traces[0].x else 0.0)
         metrics = self._estimate_gain_metrics(traces=traces, probes=selected_probes, expected_gain=expected_gain)
+
+        # Structured NGSPICE log for CI / runtime observability
+        try:
+            from app.core.structured_logger import log_stage
+
+            measured_av = metrics.get("measured_av") if isinstance(metrics, dict) else None
+            gain_db = None
+            if isinstance(measured_av, (int, float)) and measured_av not in (0, 0.0):
+                gain_db = 20.0 * math.log10(abs(float(measured_av)))
+
+            dc_bias_v = None
+            if traces:
+                output_trace = self._pick_output_trace({t.name.lower(): t for t in traces}, selected_probes)
+                if output_trace and output_trace.y:
+                    dc_bias_v = sum(output_trace.y) / max(len(output_trace.y), 1)
+
+            log_stage(
+                "NGSPICE",
+                gain_dB=round(gain_db, 3) if isinstance(gain_db, float) and math.isfinite(gain_db) else None,
+                bandwidth_Hz=metrics.get("bandwidth_hz") if isinstance(metrics, dict) else None,
+                phase_margin_deg=metrics.get("phase_shift_deg") if isinstance(metrics, dict) else None,
+                dc_bias_v=round(dc_bias_v, 6) if isinstance(dc_bias_v, (int, float)) else None,
+                sim_time_s=round(elapsed / 1000.0, 3),
+            )
+        except Exception:
+            logger.debug("Structured NGSPICE logging skipped", exc_info=True)
 
         return SimulationResult(
             success=True,
@@ -694,18 +714,32 @@ class NgSpiceSimulationService:
     @staticmethod
     def _normalize_netlist(netlist: str) -> str:
         text = netlist.strip()
+        
+        # Strip .control/.endc
         if ".control" in text.lower():
-            raise SimulationError("Please provide a netlist without .control/.endc block")
+            text = re.sub(
+                r'\.control\b.*?\.endc\b',
+                '',
+                text,
+                flags=re.DOTALL | re.IGNORECASE
+            ).strip()
+        
+        # Strip standalone .tran
+        text = re.sub(r'(?im)^\.tran\b.*$', '', text)
 
+        # Strip RGND (short circuit 0-0, vô nghĩa)
+        text = re.sub(r'(?im)^RGND\s+0\s+0\s+\S.*$', '', text)
+        
+        # Strip RVCC (sẽ được inject lại bằng VVCC ở testbench)
+        text = re.sub(r'(?im)^RVCC\s+\S+\s+\S+\s+\S.*$', '', text)
+        
         lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
         if not lines:
             raise SimulationError("Netlist is empty")
 
-        # SPICE treats the first line as the title. If users paste a netlist
-        # that starts with an element (e.g. V1 ...), that element is ignored.
-        # Add a synthetic title in that case.
         first = lines[0].strip()
         first_token = first.split()[0] if first.split() else ""
+        
         starts_like_element = bool(re.match(r"^[A-Za-z]\w*$", first_token)) and len(first.split()) >= 3
         starts_with_directive = first.startswith(".")
 
@@ -975,6 +1009,10 @@ class NgspiceCompilerService:
 
         try:
             cir_path.write_text(spice_deck, encoding="utf-8")
+            try:
+                log_stage("NGSPICE_RUN_START", timeout_seconds=self._timeout_seconds)
+            except Exception:
+                logger.debug("NGSPICE_RUN_START structured log failed", exc_info=True)
             yield json.dumps({"status": "queued"}, ensure_ascii=False)
 
             process = await asyncio.create_subprocess_exec(
@@ -1012,6 +1050,10 @@ class NgspiceCompilerService:
                     },
                     ensure_ascii=False,
                 )
+                try:
+                    log_stage("NGSPICE_RUN_END", status="error", returncode=process.returncode)
+                except Exception:
+                    logger.debug("NGSPICE_RUN_END structured log failed (error)", exc_info=True)
                 return
 
             if not tsv_path.exists():
@@ -1022,6 +1064,12 @@ class NgspiceCompilerService:
                     },
                     ensure_ascii=False,
                 )
+                # explicit termination marker
+                yield json.dumps({"status": "done", "message": "[DONE]"}, ensure_ascii=False)
+                try:
+                    log_stage("NGSPICE_RUN_END", status="no_output")
+                except Exception:
+                    logger.debug("NGSPICE_RUN_END structured log failed (no_output)", exc_info=True)
                 return
 
             yielded = 0
@@ -1063,6 +1111,12 @@ class NgspiceCompilerService:
                     )
 
             yield json.dumps({"status": "completed", "points": yielded}, ensure_ascii=False)
+            # explicit done marker to help SSE clients detect end
+            yield json.dumps({"status": "done", "message": "[DONE]"}, ensure_ascii=False)
+            try:
+                log_stage("NGSPICE_RUN_END", status="completed", points=yielded)
+            except Exception:
+                logger.debug("NGSPICE_RUN_END structured log failed (completed)", exc_info=True)
         except FileNotFoundError:
             yield json.dumps(
                 {
@@ -1159,7 +1213,26 @@ class NgspiceCompilerService:
         tran_stop = str(meta.get("tran_stop") or "5m")
 
         lines: List[str] = []
-        if analog_mode:
+        # Extract voltage từ power_rail string
+        power_rail_raw = str(meta.get("power_rail") or "VCC").strip()
+        voltage_match = re.search(r'([+-]?\d+(?:\.\d+)?)\s*[Vv]\b', power_rail_raw)
+        power_voltage = voltage_match.group(1) if voltage_match else "12"
+        
+        # find net VCC real in IR
+        vcc_net = None
+        for net in ir.nets:
+            name_low = str(net.net_name).strip().lower()
+            if name_low in {"vcc", "vdd", "v+", "vbat", "vsupply", "vpower"}:
+                vcc_net = self._normalize_net_name(net.net_name)
+                break
+        
+        # Inject nguồn đúng node thực
+        if vcc_net and vcc_net not in {"0", "gnd"}:
+            lines.append(f"VVCC {vcc_net} 0 DC {power_voltage}")
+            
+        # Signal input
+        _supply_nets = {"VCC","VDD","VBB","VBAT","VSUPPLY","V+","VCC1","VCC2","VPOWER"}
+        if analog_mode and input_node.upper() not in _supply_nets:
             lines.append(f"VTB {input_node} 0 SINE(0 1 1k)")
 
         lines.append(f".tran {tran_step} {tran_stop}")
@@ -1174,15 +1247,30 @@ class NgspiceCompilerService:
     def _select_input_node(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> str:
         meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         explicit = str(meta.get("input_node") or meta.get("input_net") or "").strip()
+        net_names = {self._normalize_net_name(n.net_name) for n in ir.nets}
+        
+        # use explicit if it really a net in IR
         if explicit:
-            return self._normalize_net_name(explicit)
+            normalized_explicit = self._normalize_net_name(explicit)
+            if normalized_explicit in net_names and normalized_explicit not in {"0", "gnd"}:
+                return normalized_explicit
 
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
             low = str(net.net_name).strip().lower()
-            if any(tag in low for tag in ("in", "vin", "input")) and name not in {"0", "gnd"}:
+            if any(tag in low for tag in ("net_in", "vin", "input", "in")) and name not in {"0", "gnd"}:
                 return name
 
+        for comp in ir.components:
+            ctype = str(comp.type or "").strip().lower()
+            ref = comp.ref_id.strip().upper()
+            if ctype in {"capacitor", "cap", "c"} and any(ref.startswith(p) for p in ("C1", "CIN", "C_IN", "CINPUT")):
+                nets = pin_net_map.get(ref, {})
+                for pin_key in ("1", "A", "P", "+"):
+                    candidate = self._normalize_net_name(nets.get(pin_key, ""))
+                    if candidate and candidate not in {"0", "gnd", "VCC", "VDD", "VBAT"}:
+                        return candidate
+        
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
             if name not in {"0", "gnd"}:
@@ -1193,20 +1281,76 @@ class NgspiceCompilerService:
     def _select_output_node(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> str:
         meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         explicit = str(meta.get("output_node") or meta.get("output_net") or "").strip()
-        if explicit:
-            return self._normalize_net_name(explicit)
+        net_names = {self._normalize_net_name(n.net_name) for n in ir.nets}
+        _supply = {"0", "gnd", "VCC", "VDD", "VBB", "VBAT", "VSUPPLY"}
 
+        if explicit:
+            normalized_explicit = self._normalize_net_name(explicit)
+            if normalized_explicit in net_names and normalized_explicit not in _supply:
+                return normalized_explicit
+
+        # tag matching
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
             low = str(net.net_name).strip().lower()
-            if any(tag in low for tag in ("out", "vout", "output")) and name not in {"0", "gnd"}:
+            if any(tag in low for tag in ("out", "vout", "output")) and name not in _supply:
                 return name
+        
+        # Net output load resistor (ROUT) pin 1
+        for ref in ("ROUT", "RL", "RLOAD", "ROUTPUT"):
+            nets = pin_net_map.get(ref, {})
+            for pin_key in ("1", "A", "P", "+"):
+                candidate = self._normalize_net_name(nets.get(pin_key, ""))
+                if candidate and candidate not in _supply:
+                    return candidate
+        
+        # Net output coupling cap (C2, COUT) pin 2
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            ctype = str(comp.type or "").strip().lower()
+            if ctype in {"capacitor", "cap", "c"} and any (ref.startswith(p) for p in ("C2", "COUT", "C_OUT", "COUTPUT")):
+                nets = pin_net_map.get(ref, {})
+                for pin_key in ("2", "B", "N", "-"):
+                    candidate = self._normalize_net_name(nets.get(pin_key, ""))
+                    if candidate and candidate not in _supply:
+                        return candidate
 
+        # Fallback: net của collector resistor (RC, RD) pin 2
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            if ref in ("RC", "RD", "RC1"):
+                nets = pin_net_map.get(ref, {})
+                for pk in ("2", "B", "N", "-"):
+                    c = self._normalize_net_name(nets.get(pk, ""))
+                    if c and c not in _supply:
+                        return c
+        
+        # Generic fallback
         input_node = self._select_input_node(ir, pin_net_map)
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
-            if name not in {"0", "gnd", input_node}:
+            if name not in _supply | {input_node}:
                 return name
+        
+        # Find net connect pin "2"/"B"/"N" of output coupling cap (C2, COUT...)
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            if ref in {"capacitor","cap","c"} and any(ref.startswith(p) for p in ("C2","COUT","C_OUT","COUTPUT")):
+                nets = pin_net_map.get(ref, {})
+                for pk in ("2","B","N","-"):
+                    candidate = self._normalize_net_name(nets.get(pk,""))
+                    if candidate and candidate not in _supply:
+                        return candidate
+        
+        # Find net collector (connect to Rc)
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            if ref.startswith("RC") or ref == "RD":
+                nets = pin_net_map.get(ref, {})
+                for pk in ("2","B","N","-"):
+                    candidate = self._normalize_net_name(nets.get(pk,""))
+                    if candidate and candidate not in {"0","VCC","VDD"}:
+                        return candidate      
 
         return "out"
 
@@ -1259,8 +1403,17 @@ class NgspiceCompilerService:
 
     @staticmethod
     def _normalize_value(value: Any) -> str:
+        import re as _re
         text = str(value).strip()
         if not text:
+            return "1k"
+        # Reject pure-text values like "Signal In", "Input", "Output"
+        if _re.match(r'^[A-Za-z][A-Za-z\s]+$', text) and not _re.search(r'\d', text):
+            return "1k"
+        # Strip trailing unit qualifiers that ngspice doesn't accept (Ohm, ohm)
+        text = _re.sub(r'(?i)ohm$', '', text).strip()
+        # Strip trailing 'V' from voltage-style values used on resistors (e.g. "12V" → skip)
+        if _re.match(r'^\d+(\.\d+)?[Vv]$', text):
             return "1k"
         return text
 

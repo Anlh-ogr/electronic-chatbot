@@ -46,6 +46,7 @@ class ExportKiCadPCBUseCase:
         exporter: ExporterPort,
         storage_path: Path,
         oracle_validator: Optional[Any] = None,
+        export_repository: Optional[Any] = None,
     ):
         """Initialize use case with dependencies.
         
@@ -58,6 +59,7 @@ class ExportKiCadPCBUseCase:
         self.exporter = exporter
         self.storage_path = storage_path
         self.oracle_validator = oracle_validator
+        self.export_repository = export_repository
         
         # Ensure storage path exists
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -79,6 +81,7 @@ class ExportKiCadPCBUseCase:
             ExportError: If export fails
             StorageError: If file save fails
         """
+        file_path: Optional[Path] = None
         try:
             # Get circuit
             circuit = await self._get_circuit(request.circuit_id)
@@ -149,7 +152,7 @@ class ExportKiCadPCBUseCase:
             if routing_report is not None:
                 metadata["routing"] = routing_report
             
-            return ExportCircuitResponse(
+            response = ExportCircuitResponse(
                 circuit_id=request.circuit_id,
                 format=request.format,
                 file_path=str(file_path),
@@ -157,12 +160,44 @@ class ExportKiCadPCBUseCase:
                 download_url=f"/api/circuits/{request.circuit_id}/exports/pcb/{filename}",
                 metadata=metadata,
             )
+
+            # Structured PCB export log
+            try:
+                board_w = metadata.get("board_width_mm")
+                board_h = metadata.get("board_height_mm")
+                comp_count = metadata.get("component_count")
+                traces = metadata.get("trace_count")
+                from app.core.structured_logger import log_stage as _log_stage
+                _log_stage("PCB_EXPORT", board=f"{board_w}x{board_h}mm", components=comp_count, traces=traces)
+            except Exception:
+                pass
+
+            if self.export_repository is not None:
+                await self.export_repository.save_export(
+                    circuit_id=request.circuit_id,
+                    export_type="kicad_pcb",
+                    file_path=str(file_path),
+                    file_size=file_size,
+                    status="success",
+                    error_message=None,
+                )
+
+            return response
             
         except CircuitNotFoundError:
             raise
         except ExportError:
             raise
         except Exception as e:
+            if self.export_repository is not None:
+                await self.export_repository.save_export(
+                    circuit_id=request.circuit_id,
+                    export_type="kicad_pcb",
+                    file_path=str(file_path or ""),
+                    file_size=None,
+                    status="failed",
+                    error_message=str(e),
+                )
             raise ExportError(
                 format_type=request.format.value,
                 reason=str(e)

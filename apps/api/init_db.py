@@ -45,7 +45,11 @@ def _normalize_async_database_url(url: str) -> str:
 async def check_neon_schema() -> None:
     load_dotenv(Path(__file__).resolve().parent / ".env.local")
 
-    database_url = os.getenv("DATABASE_URL", "").strip()
+    database_url = (
+        os.getenv("NEON_DATABASE_URL")
+        or os.getenv("DATABASE_URL")
+        or ""
+    ).strip()
     if not database_url:
         raise RuntimeError("DATABASE_URL is missing in .env.local")
 

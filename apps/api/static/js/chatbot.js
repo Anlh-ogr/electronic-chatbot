@@ -7,6 +7,7 @@ const API_BASE = '';  // Same origin
 // ── State ──
 let isProcessing = false;
 let lastCircuitData = null;
+let currentCircuitId = null;
 let currentTab = 'schematic';
 let waveformChart = null;
 let lastWaveformPayload = null;
@@ -17,8 +18,10 @@ let activePcbProgressCloser = null;
 function clearCircuitArtifacts() {
     closeActivePcbProgressStream();
     lastCircuitData = null;
+    currentCircuitId = null;
     window._lastCircuitData = null;
     window._lastKicadSch = null;
+    window._lastKicadSchUrl = null;
     window._lastPcbContent = null;
     window._pcbReady = false;
     window._pcbRendered = false;
@@ -34,6 +37,11 @@ function clearCircuitArtifacts() {
         pcbPlaceholder.style.display = 'block';
         pcbPlaceholder.innerHTML = '<i class="fas fa-drafting-compass fa-4x"></i><p>PCB layout sẽ hiển thị ở đây</p>';
     }
+}
+
+function setDownloadUrl(downloadUrl) {
+    const value = String(downloadUrl || '').trim();
+    window._lastKicadSchUrl = value || null;
 }
 
 // ── DOM Elements ──
@@ -82,13 +90,25 @@ function setupEventListeners() {
     // Schematic toolbar buttons
     const btnDownload = document.getElementById('btnDownloadSch');
     if (btnDownload) {
-        btnDownload.addEventListener('click', () => {
-            if (window._lastKicadSch) {
-                const blob = new Blob([window._lastKicadSch], { type: 'text/plain' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = (window._lastTemplateId || 'circuit') + '.kicad_sch';
-                a.click();
+        btnDownload.addEventListener('click', async () => {
+            try {
+                if (window._lastKicadSchUrl) {
+                    const resp = await fetch(window._lastKicadSchUrl, { cache: 'no-store' });
+                    if (resp.ok) {
+                        const text = await resp.text();
+                        window._lastKicadSch = text;
+                    }
+                }
+
+                if (window._lastKicadSch) {
+                    const blob = new Blob([window._lastKicadSch], { type: 'text/plain' });
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = (window._lastTemplateId || 'circuit') + '.kicad_sch';
+                    a.click();
+                }
+            } catch (err) {
+                console.error('Schematic download failed:', err);
             }
         });
     }
@@ -217,30 +237,146 @@ async function requestChatReply(text, options = {}) {
             }),
         });
 
-        const data = await resp.json().catch(() => ({}));
-        removeTyping(typingId);
-
-        if (resp.ok) {
-            if (data && typeof data.session_id === 'string' && data.session_id.trim()) {
-                currentSessionId = data.session_id.trim();
-            }
-            if (userMessageEl) {
-                bindUserMessageMetadata(userMessageEl, {
-                    messageId: data.user_message_id,
-                    sessionId: data.session_id || currentSessionId,
-                    chatId: data.chat_id || data.session_id || currentSessionId,
-                });
-            }
-            handleBotResponse(data);
-            return data;
+        if (!resp.ok || !resp.body) {
+            const data = await resp.json().catch(() => ({}));
+            removeTyping(typingId);
+            const errMsg = data.detail?.message || data.detail || 'Lỗi server';
+            addMessage(`Lỗi: ${errMsg}`, 'bot');
+            return null;
         }
 
-        const errMsg = data.detail?.message || data.detail || 'Lỗi server';
-        addMessage(`❌ Lỗi: ${errMsg}`, 'bot');
-        return null;
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let currentEvent = 'message';
+        let currentData = [];
+        const finalData = {};
+
+        const dispatchBlock = (block) => {
+            let eventName = currentEvent;
+            const dataLines = [];
+
+            for (const rawLine of block.split(/\r?\n/)) {
+                const line = rawLine.trim();
+                if (!line) continue;
+                if (line.startsWith('event:')) {
+                    eventName = line.slice(6).trim() || eventName;
+                } else if (line.startsWith('data:')) {
+                    dataLines.push(line.slice(5).trim());
+                }
+            }
+
+            if (!dataLines.length) {
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            let payload;
+            try {
+                payload = JSON.parse(dataLines.join('\n'));
+            } catch {
+                payload = { raw: dataLines.join('\n') };
+            }
+
+            if (eventName === 'thinking') {
+                statusText.textContent = 'Processing';
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            if (eventName === 'circuit_ready') {
+                if (payload && typeof payload === 'object') {
+                    if (payload.circuit_id) finalData.circuit_id = payload.circuit_id;
+                    if (payload.circuit_data) finalData.circuit_data = payload.circuit_data;
+                    if (payload.sch_url) finalData.sch_url = payload.sch_url;
+                    if (payload.spice_url) finalData.spice_url = payload.spice_url;
+                    if (payload.ngspice_url) finalData.ngspice_url = payload.ngspice_url;
+                    if (payload.session_id) finalData.session_id = payload.session_id;
+                    if (payload.user_message_id) finalData.user_message_id = payload.user_message_id;
+                    if (payload.assistant_message_id) finalData.assistant_message_id = payload.assistant_message_id;
+                    if (payload.sch_url) setDownloadUrl(payload.sch_url);
+                }
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            if (eventName === 'render_ready') {
+                if (payload && typeof payload === 'object') {
+                    if (payload.circuit_id) finalData.circuit_id = payload.circuit_id;
+                    if (payload.sch_url) finalData.sch_url = payload.sch_url;
+                    if (payload.pcb_url) finalData.pcb_url = payload.pcb_url;
+                    if (payload.ngspice_url) finalData.ngspice_url = payload.ngspice_url;
+                    if (payload.spice_url) finalData.spice_url = payload.spice_url;
+                    if (payload.sch_url) setDownloadUrl(payload.sch_url);
+                }
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            if (eventName === 'text') {
+                if (payload && typeof payload === 'object') {
+                    Object.assign(finalData, payload);
+                    handleBotResponse(payload);
+                }
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            if (eventName === 'error') {
+                const message = payload?.message || payload?.error || 'Lỗi xử lý chat';
+                addMessage(`Lỗi: ${message}`, 'bot');
+                currentEvent = 'message';
+                currentData = [];
+                return;
+            }
+
+            currentEvent = 'message';
+            currentData = [];
+        };
+
+        while (true) {
+            const { value, done } = await reader.read();
+            if (!done) {
+                buffer += decoder.decode(value, { stream: true });
+            } else {
+                buffer += decoder.decode();
+            }
+
+            const parts = buffer.split(/\r?\n\r?\n/);
+            buffer = parts.pop() || '';
+
+            for (const part of parts) {
+                dispatchBlock(part);
+            }
+
+            if (done) {
+                if (buffer.trim()) {
+                    dispatchBlock(buffer);
+                }
+                break;
+            }
+        }
+
+        removeTyping(typingId);
+        if (finalData.session_id && typeof finalData.session_id === 'string' && finalData.session_id.trim()) {
+            currentSessionId = finalData.session_id.trim();
+        }
+        if (userMessageEl) {
+            bindUserMessageMetadata(userMessageEl, {
+                messageId: finalData.user_message_id,
+                sessionId: finalData.session_id || currentSessionId,
+                chatId: finalData.chat_id || finalData.session_id || currentSessionId,
+            });
+        }
+        return finalData;
     } catch (e) {
         removeTyping(typingId);
-        addMessage(`❌ Không thể kết nối đến server: ${e.message}`, 'bot');
+        addMessage(`Không thể kết nối đến server: ${e.message}`, 'bot');
         return null;
     } finally {
         isProcessing = false;
@@ -255,13 +391,24 @@ async function sendMessage() {
 
     chatInput.value = '';
     autoResize(chatInput);
-    await requestChatReply(text, { includeUserMessage: true });
+
+    const result = await requestChatReply(text, { includeUserMessage: true });
+    if (!result) return;
+
+    if (result.circuit_id) {
+        currentCircuitId = result.circuit_id;
+    }
+
+    if (result.circuit_data && typeof result.circuit_data === 'object') {
+        lastCircuitData = result;   // updateSchematicPanel dùng .circuit_data bên trong
+        updateSchematicPanel(result);
+    }
 }
 
 async function sendSimulation(rawText) {
     const payload = buildSimulationPayload(rawText);
     if (!payload.netlist) {
-        addMessage('❌ Không tạo được netlist mô phỏng.', 'bot');
+        addMessage('Không tạo được netlist mô phỏng.', 'bot');
         return;
     }
 
@@ -850,7 +997,7 @@ function handleBotResponse(data) {
 
     // Update processing time
     if (data.processing_time_ms) {
-        processingTime.textContent = `⏱ ${data.processing_time_ms.toFixed(0)}ms`;
+        processingTime.textContent = `${data.processing_time_ms.toFixed(0)}ms`;
     }
 
     // Update right panel if we have data
@@ -862,14 +1009,15 @@ function handleBotResponse(data) {
         updateAnalysisPanel(data.intent || {}, data.pipeline, data.analysis || null);
     }
 
-    if (data.circuit_data) {
-        lastCircuitData = data.circuit_data;
-        updateSchematicPanel(data.circuit_data);
-    } else if (data.success === false || data.intent?.intent_type === 'create' || data.intent?.intent_type === 'modify') {
-        // Avoid exporting/simulating stale artifacts from a previous successful circuit.
-        clearCircuitArtifacts();
+    if (data.circuit_data && data.circuit_id) {
+        if (data.circuit_id === currentCircuitId) {
+            lastCircuitData = data.circuit_data;
+        }
     }
 
+    if (data.success === false) {
+        clearCircuitArtifacts();
+    }
 }
 
 // ── Message Rendering ──
@@ -1299,11 +1447,15 @@ function updateSchematicPanel(circuitData) {
  * Call /api/chat/export-kicad → get .kicad_sch → render with KiCanvas
  */
 async function exportAndRenderKiCanvas(templateData, container, placeholder, circuitData) {
+    console.log('[export] circuitData.circuit_id:', circuitData?.circuit_id);
     try {
         const resp = await fetch('/api/chat/export-kicad', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ circuit_data: templateData }),
+            body: JSON.stringify({
+                circuit_data: templateData,
+                circuit_id: circuitData?.circuit_id || null
+            }),
         });
 
         if (!resp.ok) {
@@ -1906,7 +2058,10 @@ async function exportAndRenderPCB(templateData, circuitData) {
         const resp = await fetch('/api/chat/export-pcb', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ circuit_data: templateData }),
+            body: JSON.stringify({
+                circuit_data: templateData,
+                circuit_id: circuitData?.circuit_id || null
+            }),
         });
 
         if (!resp.ok) {

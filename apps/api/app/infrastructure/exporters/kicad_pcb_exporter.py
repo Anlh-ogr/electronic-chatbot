@@ -18,7 +18,7 @@ from __future__ import annotations
 
 # ====== Lý do sử dụng thư viện ======
 # typing: Type hints cho IDE support
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 # ====== Domain & Application layers ======
 from app.domains.circuits.entities import Circuit
@@ -47,6 +47,28 @@ class KiCadPCBExporter(ExporterPort):
         self.layout_planner = PCBLayoutPlanner()
         self.serializer = KiCadPCBSerializer()
         self._last_routing_report: Dict[str, Any] = {}
+
+    @staticmethod
+    def _resolve_board_size(circuit: Circuit) -> Tuple[float, float]:
+        stage_labels = {
+            str(component.stage).strip()
+            for component in circuit.components.values()
+            if getattr(component, "stage", None)
+        }
+
+        if stage_labels:
+            stage_count = min(3, max(1, len(stage_labels)))
+        else:
+            component_count = len(circuit.components)
+            if component_count <= 8:
+                stage_count = 1
+            elif component_count <= 16:
+                stage_count = 2
+            else:
+                stage_count = 3
+
+        board_width_map = {1: 50.0, 2: 90.0, 3: 130.0}
+        return board_width_map[stage_count], 40.0
     
     async def export(
         self,
@@ -72,11 +94,28 @@ class KiCadPCBExporter(ExporterPort):
                 reason=f"This exporter only supports KiCad PCB formats"
             )
         
+        # HARD GUARD: Reject export if circuit.id is None (prevents stray post-response invocations)
+        cid = getattr(circuit, "id", None)
+        if not cid or str(cid).strip() == "None":
+            raise ExportError(
+                format_type=format_type.value,
+                reason="Exporter requires valid circuit.id (got None or empty). This is likely a stray background invocation without proper context."
+            )
+        
         try:
+            board_width, board_height = self._resolve_board_size(circuit)
+            self.layout_planner = PCBLayoutPlanner(
+                board_width=board_width,
+                board_height=board_height,
+            )
+
             # Convert to IR first
             ir = self._create_ir(circuit)
             
             export_options = dict(options or {})
+            export_options.setdefault("board_width", board_width)
+            export_options.setdefault("board_height", board_height)
+            export_options.setdefault("enable_power_zones", True)
 
             # Plan PCB layout
             placements = self.layout_planner.place_components(circuit, options=export_options)
@@ -86,12 +125,18 @@ class KiCadPCBExporter(ExporterPort):
             
             # Plan track routing
             tracks = self.layout_planner.plan_tracks(circuit, placements, nets, options=export_options)
+            zones = self.layout_planner.get_last_zones()
 
             self._last_routing_report = self.layout_planner.get_last_routing_report()
             
             # Serialize to KiCad PCB format
             pcb_content = self.serializer.serialize(
-                ir, placements, nets, tracks
+                ir,
+                placements,
+                nets,
+                tracks,
+                board_size=(board_width, board_height),
+                zones=zones,
             )
             
             return pcb_content
