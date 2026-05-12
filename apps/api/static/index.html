@@ -4,13 +4,77 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Electronic Circuit Chatbot</title>
-    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260429a">
+    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260512gsap">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Montserrat:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script>
+        // Apply persisted theme BEFORE any paint to avoid a flash.
+        (function () {
+            try {
+                var saved = localStorage.getItem('elpis-theme');
+                var theme = (saved === 'light' || saved === 'dark') ? saved : 'dark';
+                document.documentElement.setAttribute('data-theme', theme);
+            } catch (_) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
 </head>
 <body>
+    <!-- Welcome Overlay (full-screen empty state, hiển thị trên tất cả khi mới truy cập) -->
+    <div id="welcomeOverlay" class="welcome-overlay" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle">
+        <svg id="circuitBgSvg" class="welcome-bg-svg" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="welcome-bg-grid" aria-hidden="true"></div>
+        <div class="welcome-bg-glow welcome-bg-glow--a" aria-hidden="true"></div>
+        <div class="welcome-bg-glow welcome-bg-glow--b" aria-hidden="true"></div>
+
+        <button
+            type="button"
+            class="theme-toggle theme-toggle--overlay"
+            id="welcomeThemeToggle"
+            title="Chuyển sáng/tối"
+            aria-label="Chuyển chế độ sáng/tối"
+        >
+            <i class="fas fa-moon theme-toggle-icon-dark" aria-hidden="true"></i>
+            <i class="fas fa-sun theme-toggle-icon-light" aria-hidden="true"></i>
+        </button>
+
+        <div class="welcome-inner">
+            <header class="welcome-header">
+                <p class="welcome-school">TRƯỜNG ĐẠI HỌC CÔNG NGHIỆP TP.HCMHCM</p>
+                <p class="welcome-faculty">KHOA CÔNG NGHỆ ĐIỆN TỬ</p>
+            </header>
+
+            <div class="welcome-hero">
+                <h1 id="welcomeTitle" class="welcome-title">Elpis&nbsp;AI</h1>
+                <p class="welcome-subtitle">
+                    An AI-powered intelligent electronic circuit design support system
+                </p>
+            </div>
+
+            <div class="welcome-info-card" role="group" aria-label="Thông tin bảo vệ đồ án">
+                <div class="welcome-info-row">
+                    <span class="welcome-info-label">Sinh viên thực hiện</span>
+                    <span class="welcome-info-value">Nguyễn Long Hoàng An</span>
+                </div>
+                <div class="welcome-info-divider" aria-hidden="true"></div>
+                <div class="welcome-info-row">
+                    <span class="welcome-info-label">GVHD</span>
+                    <span class="welcome-info-value">TS.Bùi Thư Cao</span>
+                </div>
+            </div>
+
+            <button type="button" class="welcome-cta" id="welcomeStartBtn" aria-label="Bắt đầu sử dụng Elpis AI">
+                <span class="welcome-cta-label">Get Started</span>
+                <i class="fas fa-arrow-right welcome-cta-icon" aria-hidden="true"></i>
+            </button>
+
+            <p class="welcome-foot">a Anlh production · © 2026</p>
+        </div>
+    </div>
+
     <div id="app">
         <!-- Header -->
         <header class="app-header">
@@ -25,6 +89,16 @@
             <div class="header-right">
                 <span class="status-dot" id="statusDot"></span>
                 <span class="status-text" id="statusText">Connecting...</span>
+                <button
+                    type="button"
+                    class="theme-toggle theme-toggle--header"
+                    id="appThemeToggle"
+                    title="Chuyển sáng/tối"
+                    aria-label="Chuyển chế độ sáng/tối"
+                >
+                    <i class="fas fa-moon theme-toggle-icon-dark" aria-hidden="true"></i>
+                    <i class="fas fa-sun theme-toggle-icon-light" aria-hidden="true"></i>
+                </button>
                 <button class="btn-icon" id="btnInfo" title="System Info">
                     <i class="fas fa-info-circle"></i>
                 </button>
@@ -46,7 +120,7 @@
                                 <p>Xin chào! Tôi là AI thiết kế mạch.</p>
                                 <p>Tôi có thể:</p>
                                 <ul>
-                                    <li>Thiết kế mạch khuếch đại (BJT, OpAmp, Mosfet ...)</li>
+                                    <li>Thiết kế mạch khuếch đại (BJT, OpAmp...)</li>
                                     <li>Tính toán giá trị linh kiện</li>
                                     <li>Hiển thị schematic/PCB</li>
                                 </ul>
@@ -221,7 +295,9 @@
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
     <script src="/static/js/markdown.js?v=20260318"></script>
-    <script src="/static/js/chatbot.js?v=20260413a"></script>
+    <script src="/static/js/circuit_animation.js?v=20260512gsap"></script>
+    <script src="/static/js/chatbot.js?v=20260512typeloop"></script>
 </body>
 </html>

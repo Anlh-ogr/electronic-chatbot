@@ -6,12 +6,14 @@ const API_BASE = '';  // Same origin
 
 // ── State ──
 let isProcessing = false;
+/** True while POST /api/chat/simulate/stream is in flight (separate from chat SSE). */
+let simulateRequestInFlight = false;
 let lastCircuitData = null;
 let currentCircuitId = null;
 let currentTab = 'schematic';
 let waveformChart = null;
 let lastWaveformPayload = null;
-const FRONTEND_BUILD = '20260320a';
+const FRONTEND_BUILD = '20260509sim';
 let currentSessionId = null;
 let activePcbProgressCloser = null;
 
@@ -25,6 +27,7 @@ function clearCircuitArtifacts() {
     window._lastPcbContent = null;
     window._pcbReady = false;
     window._pcbRendered = false;
+    window.__schematicUpToDateCircuitId = null;
 
     const schematicPlaceholder = document.getElementById('schematicPlaceholder');
     if (schematicPlaceholder) {
@@ -65,7 +68,371 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     autoResize(chatInput);
     initPanelResizer();
+    initWelcomeOverlay();
+    initThemeToggle();
 });
+
+// ── Theme toggle (light/dark) ──
+const THEME_STORAGE_KEY = 'elpis-theme';
+
+function getActiveTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function applyTheme(theme) {
+    const next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (_) { /* noop */ }
+
+    document.querySelectorAll('.theme-toggle').forEach((btn) => {
+        const label = next === 'dark' ? 'Chuyển sang chế độ sáng' : 'Chuyển sang chế độ tối';
+        btn.setAttribute('aria-label', label);
+        btn.setAttribute('title', label);
+    });
+
+    if (window.ElpisCircuitAnimation && typeof window.ElpisCircuitAnimation.setTheme === 'function') {
+        try { window.ElpisCircuitAnimation.setTheme(next); } catch (_) { /* noop */ }
+    }
+}
+
+function initThemeToggle() {
+    applyTheme(getActiveTheme());
+
+    const buttons = document.querySelectorAll('.theme-toggle');
+    buttons.forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const next = getActiveTheme() === 'dark' ? 'light' : 'dark';
+            applyTheme(next);
+        });
+    });
+}
+
+// ── Typewriter effect ──
+// Append `text` into `element` one character at a time. A blinking caret
+// (rendered via .typewriter-cursor) sits at the tail of the typed text and
+// disappears once typing completes. Resolves with the final element.
+//
+//   text     — string to type out (plain text only, never HTML)
+//   element  — target DOM node (its innerHTML is overwritten)
+//   speed    — milliseconds per character (default 28)
+//   opts.cursor   — set to false to suppress the blinking caret
+//   opts.onDone   — callback fired once typing completes
+//   opts.signal   — optional AbortSignal to cancel mid-type
+function typewriter(text, element, speed = 28, opts = {}) {
+    if (!element) return Promise.resolve(null);
+    const str = String(text == null ? '' : text);
+    const wantCursor = opts.cursor !== false;
+    const onDone = typeof opts.onDone === 'function' ? opts.onDone : null;
+    const signal = opts.signal || null;
+
+    return new Promise((resolve) => {
+        element.classList.add('is-typing');
+        element.classList.remove('typewriter-done');
+        element.innerHTML = '';
+
+        const textNode = document.createTextNode('');
+        element.appendChild(textNode);
+
+        let cursorEl = null;
+        if (wantCursor) {
+            cursorEl = document.createElement('span');
+            cursorEl.className = 'typewriter-cursor';
+            element.appendChild(cursorEl);
+        }
+
+        let i = 0;
+        let cancelled = false;
+        const finish = () => {
+            element.classList.remove('is-typing');
+            element.classList.add('typewriter-done');
+            if (cursorEl && cursorEl.parentNode) {
+                cursorEl.parentNode.removeChild(cursorEl);
+            }
+            if (onDone) {
+                try { onDone(element); } catch (_) { /* noop */ }
+            }
+            resolve(element);
+        };
+
+        if (signal) {
+            signal.addEventListener('abort', () => {
+                if (cancelled) return;
+                cancelled = true;
+                textNode.data = str;
+                finish();
+            }, { once: true });
+        }
+
+        const tick = () => {
+            if (cancelled) return;
+            if (i >= str.length) {
+                finish();
+                return;
+            }
+            textNode.data += str.charAt(i);
+            i += 1;
+            setTimeout(tick, Math.max(4, speed));
+        };
+        setTimeout(tick, Math.max(4, speed));
+    });
+}
+
+// Expose globally so other modules (or future console tooling) can call it.
+window.typewriter = typewriter;
+
+// ── Circuit Animation Lifecycle ──
+let _circuitAnimationActive = false;
+let _heroIntroTimeline = null;
+let _ctaPulseTween = null;
+let _titleTypewriterTimer = null;
+let _titleTypewriterController = null;
+
+function _hasGsap() {
+    return typeof window.gsap !== 'undefined';
+}
+
+// Loop the welcome title typewriter forever: type "Elpis AI" → wait
+// `idleMs` (3–4s feels natural) → clear + retype. Each pass uses the same
+// blinking caret. Aborted via stopTitleTypewriterLoop().
+function startTitleTypewriterLoop(titleEl, text, speed, idleMs) {
+    if (!titleEl || typeof typewriter !== 'function') return;
+    stopTitleTypewriterLoop();
+
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    _titleTypewriterController = controller;
+    const signal = controller ? controller.signal : null;
+
+    const tick = () => {
+        if (signal && signal.aborted) return;
+        typewriter(text, titleEl, speed, {
+            cursor: true,
+            signal: signal,
+            onDone: () => {
+                if (signal && signal.aborted) return;
+                _titleTypewriterTimer = setTimeout(tick, idleMs);
+            },
+        });
+    };
+    tick();
+}
+
+function stopTitleTypewriterLoop() {
+    if (_titleTypewriterTimer != null) {
+        clearTimeout(_titleTypewriterTimer);
+        _titleTypewriterTimer = null;
+    }
+    if (_titleTypewriterController) {
+        try { _titleTypewriterController.abort(); } catch (_) { /* noop */ }
+        _titleTypewriterController = null;
+    }
+}
+
+function startCircuitAnimation() {
+    if (_circuitAnimationActive) return;
+    if (!window.ElpisCircuitAnimation || typeof window.ElpisCircuitAnimation.start !== 'function') return;
+    const overlay = document.getElementById('welcomeOverlay');
+    const svgEl = document.getElementById('circuitBgSvg');
+    if (!overlay || !svgEl) return;
+    if (overlay.classList.contains('is-hidden')) return;
+
+    try {
+        window.ElpisCircuitAnimation.setTheme(getActiveTheme());
+        window.ElpisCircuitAnimation.start(svgEl);
+        _circuitAnimationActive = true;
+    } catch (err) {
+        console.warn('Circuit animation failed to start:', err);
+    }
+}
+
+function stopCircuitAnimation() {
+    if (!_circuitAnimationActive) return;
+    if (!window.ElpisCircuitAnimation || typeof window.ElpisCircuitAnimation.stop !== 'function') return;
+    try { window.ElpisCircuitAnimation.stop(); } catch (_) { /* noop */ }
+    _circuitAnimationActive = false;
+}
+
+// Run the welcome-hero intro:
+//   school header → "Elpis AI" typewriter (blinking caret) → subtitle →
+//   circuit traces begin → info card → CTA appears + pulses gently.
+// Falls back to a no-op + plain typewriter on title if GSAP isn't loaded.
+function runHeroIntroTimeline() {
+    const overlay = document.getElementById('welcomeOverlay');
+    if (!overlay || overlay.classList.contains('is-hidden')) return;
+
+    const header   = overlay.querySelector('.welcome-header');
+    const title    = overlay.querySelector('#welcomeTitle');
+    const subtitle = overlay.querySelector('.welcome-subtitle');
+    const info     = overlay.querySelector('.welcome-info-card');
+    const cta      = overlay.querySelector('#welcomeStartBtn');
+    const foot     = overlay.querySelector('.welcome-foot');
+
+    // Snapshot the original title string before we clear it for the
+    // typewriter pass. Use a non-breaking space so "Elpis" and "AI" stay on
+    // the same baseline regardless of viewport width.
+    const titleText = (title?.textContent || 'Elpis AI').trim().replace(/\s+/g, '\u00A0');
+    const charSpeed = 110;             // ms per character while typing
+    const titleIdleMs = 3500;          // pause between consecutive typewriter passes
+    const titleTypeDurSec = (titleText.length * charSpeed) / 1000;
+
+    // Prepare title for the typewriter: clear content but keep the element
+    // visible so the caret has somewhere to anchor.
+    if (title) {
+        title.textContent = '';
+        title.style.opacity = '1';
+    }
+
+    if (!_hasGsap()) {
+        // No GSAP: run the looping typewriter inline + spawn circuits now.
+        if (title) {
+            startTitleTypewriterLoop(title, titleText, charSpeed, titleIdleMs);
+        }
+        startCircuitAnimation();
+        return;
+    }
+
+    // Kill any previous run (e.g. user navigates back to the overlay).
+    if (_heroIntroTimeline) {
+        try { _heroIntroTimeline.kill(); } catch (_) { /* noop */ }
+        _heroIntroTimeline = null;
+    }
+    if (_ctaPulseTween) {
+        try { _ctaPulseTween.kill(); } catch (_) { /* noop */ }
+        _ctaPulseTween = null;
+    }
+
+    // Stage every animated element at 0 opacity (title stays opaque — its
+    // characters appear progressively via typewriter, not a fade).
+    const stage = [header, subtitle, info, cta, foot].filter(Boolean);
+    window.gsap.set(stage, { opacity: 0 });
+    if (cta)  window.gsap.set(cta,  { y: 14 });
+    if (info) window.gsap.set(info, { y: 10 });
+
+    const tl = window.gsap.timeline({
+        defaults: { ease: 'power2.out' },
+        onComplete: () => {
+            // After the intro finishes, gently pulse the CTA forever so the
+            // user has a constant visual hint to click. Stored separately so
+            // dismiss() can kill it.
+            if (cta) {
+                _ctaPulseTween = window.gsap.to(cta, {
+                    boxShadow: '0 20px 48px rgba(78,168,255,0.45), 0 0 0 10px rgba(78,168,255,0.08)',
+                    scale: 1.025,
+                    duration: 1.1,
+                    ease: 'sine.inOut',
+                    yoyo: true,
+                    repeat: -1,
+                });
+            }
+        },
+    });
+
+    tl.to(header, { opacity: 1, duration: 0.55 }, 0.05)
+      // Kick off the typewriter loop as a side-effect, then absorb the first
+      // pass's duration with an empty tween so subsequent timeline items
+      // wait until the title is fully typed once before they animate in.
+      .add(() => {
+          if (title) {
+              startTitleTypewriterLoop(title, titleText, charSpeed, titleIdleMs);
+          }
+      }, '+=0.15')
+      .to({}, { duration: titleTypeDurSec + 0.15 })
+      .to(subtitle, { opacity: 1, duration: 0.55 }, '-=0.1')
+      // Kick off circuit traces just before the info card animates in so the
+      // background visibly comes alive while the foreground is still settling.
+      .add(() => startCircuitAnimation(), '-=0.25')
+      .to(info, { opacity: 1, y: 0, duration: 0.5 }, '-=0.15')
+      .to(cta,  { opacity: 1, y: 0, duration: 0.5 }, '-=0.1')
+      .to(foot, { opacity: 1, duration: 0.4 }, '-=0.25');
+
+    _heroIntroTimeline = tl;
+}
+
+// ── Welcome Overlay ──
+// Dismiss the full-screen empty-state hero with a smooth GSAP fade-out, kill
+// every running animation, and free up GPU for KiCanvas behind the overlay.
+function initWelcomeOverlay() {
+    const overlay = document.getElementById('welcomeOverlay');
+    const startBtn = document.getElementById('welcomeStartBtn');
+    if (!overlay || !startBtn) return;
+
+    runHeroIntroTimeline();
+
+    const dismiss = () => {
+        if (overlay.classList.contains('is-leaving')) return;
+        overlay.classList.add('is-leaving');
+
+        // Stop the title typewriter loop right away so it doesn't keep
+        // mutating the (about to be hidden) title element.
+        stopTitleTypewriterLoop();
+
+        // Always stop the spawn loop immediately so no new traces appear
+        // during the fade-out (existing ones keep fading via GSAP/CSS).
+        const finalize = () => {
+            overlay.classList.add('is-hidden');
+            stopCircuitAnimation();
+            stopTitleTypewriterLoop();
+            if (_heroIntroTimeline) {
+                try { _heroIntroTimeline.kill(); } catch (_) { /* noop */ }
+                _heroIntroTimeline = null;
+            }
+            if (_ctaPulseTween) {
+                try { _ctaPulseTween.kill(); } catch (_) { /* noop */ }
+                _ctaPulseTween = null;
+            }
+        };
+
+        if (_hasGsap()) {
+            // Kill the CTA pulse first so the fade-out tween doesn't fight
+            // a yoyo'd scale/box-shadow change still in flight.
+            if (_ctaPulseTween) {
+                try { _ctaPulseTween.kill(); } catch (_) { /* noop */ }
+                _ctaPulseTween = null;
+            }
+            if (_heroIntroTimeline) {
+                try { _heroIntroTimeline.kill(); } catch (_) { /* noop */ }
+                _heroIntroTimeline = null;
+            }
+            window.gsap.to(overlay, {
+                opacity: 0,
+                scale: 1.04,
+                duration: 0.55,
+                ease: 'power2.inOut',
+                onComplete: finalize,
+            });
+        } else {
+            // CSS fallback (existing transition rules).
+            const fallback = setTimeout(finalize, 700);
+            overlay.addEventListener(
+                'transitionend',
+                (e) => {
+                    if (e.target !== overlay || e.propertyName !== 'opacity') return;
+                    clearTimeout(fallback);
+                    finalize();
+                },
+                { once: true }
+            );
+        }
+
+        if (typeof chatInput !== 'undefined' && chatInput) {
+            try { chatInput.focus(); } catch (_) { /* noop */ }
+        }
+    };
+
+    startBtn.addEventListener('click', dismiss);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !overlay.classList.contains('is-hidden')) {
+            dismiss();
+        }
+    });
+
+    // Safety net: stop the spawn loop if the tab goes hidden while the
+    // overlay is already dismissed.
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden && overlay.classList.contains('is-hidden')) {
+            stopCircuitAnimation();
+        }
+    });
+}
 
 function setupEventListeners() {
     // Send on Enter (Shift+Enter for newline)
@@ -297,6 +664,26 @@ async function requestChatReply(text, options = {}) {
                     if (payload.user_message_id) finalData.user_message_id = payload.user_message_id;
                     if (payload.assistant_message_id) finalData.assistant_message_id = payload.assistant_message_id;
                     if (payload.sch_url) setDownloadUrl(payload.sch_url);
+                    // Run Simulation reads lastCircuitData — set as soon as IR arrives (do not wait for `text` / stream end).
+                    if (payload.circuit_data && typeof payload.circuit_data === 'object') {
+                        if (payload.circuit_id) currentCircuitId = payload.circuit_id;
+                        lastCircuitData = {
+                            circuit_id: payload.circuit_id,
+                            circuit_data: payload.circuit_data,
+                            sch_url: payload.sch_url,
+                            spice_url: payload.spice_url,
+                            ngspice_url: payload.ngspice_url,
+                            session_id: payload.session_id,
+                            user_message_id: payload.user_message_id,
+                            assistant_message_id: payload.assistant_message_id,
+                        };
+                        try {
+                            window.__schematicUpToDateCircuitId = payload.circuit_id || null;
+                            updateSchematicPanel(lastCircuitData);
+                        } catch (err) {
+                            console.error('[circuit_ready] updateSchematicPanel failed:', err);
+                        }
+                    }
                 }
                 currentEvent = 'message';
                 currentData = [];
@@ -400,8 +787,12 @@ async function sendMessage() {
     }
 
     if (result.circuit_data && typeof result.circuit_data === 'object') {
-        lastCircuitData = result;   // updateSchematicPanel dùng .circuit_data bên trong
-        updateSchematicPanel(result);
+        lastCircuitData = result;
+        const rid = result.circuit_id || '';
+        if (!window.__schematicUpToDateCircuitId || window.__schematicUpToDateCircuitId !== rid) {
+            window.__schematicUpToDateCircuitId = rid || null;
+            updateSchematicPanel(result);
+        }
     }
 }
 
@@ -415,9 +806,38 @@ async function sendSimulation(rawText) {
     await sendSimulationPayload(payload, rawText);
 }
 
+function formatApiErrorDetail(detail) {
+    if (detail == null) return '';
+    if (typeof detail === 'string') return detail;
+    if (typeof detail === 'object') {
+        if (detail.message) return String(detail.message);
+        try {
+            return JSON.stringify(detail);
+        } catch {
+            return String(detail);
+        }
+    }
+    return String(detail);
+}
+
 async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
-    if (!payload || !payload.netlist) {
-        addMessage('❌ Không có dữ liệu netlist để mô phỏng.', 'bot');
+    if (!payload) {
+        addMessage('❌ Không có payload mô phỏng.', 'bot');
+        return;
+    }
+    const hasNetlist = String(payload.netlist || '').trim().length > 0;
+    const cd = payload.circuit_data;
+    const hasCircuitData = cd && typeof cd === 'object' && !Array.isArray(cd);
+    if (!hasNetlist && !hasCircuitData) {
+        addMessage(
+            '❌ Thiếu netlist và circuit_data — backend không thể tổng hợp deck (cần components + nets).',
+            'bot',
+        );
+        return;
+    }
+
+    if (simulateRequestInFlight) {
+        addMessage('⏳ Đang chạy mô phỏng khác — chờ hoàn tất.', 'bot');
         return;
     }
 
@@ -426,8 +846,9 @@ async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
     autoResize(chatInput);
 
     const typingId = showTyping();
-    isProcessing = true;
-    btnSend.disabled = true;
+    simulateRequestInFlight = true;
+    const btnRunSimEl = document.getElementById('btnRunSim');
+    if (btnRunSimEl) btnRunSimEl.disabled = true;
 
     try {
         const resp = await fetch(`${API_BASE}/api/chat/simulate/stream`, {
@@ -439,7 +860,7 @@ async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
         removeTyping(typingId);
         if (!resp.ok || !resp.body) {
             const err = await resp.json().catch(() => ({}));
-            throw new Error(err.detail?.message || `HTTP ${resp.status}`);
+            throw new Error(formatApiErrorDetail(err.detail) || `HTTP ${resp.status}`);
         }
 
         const reader = resp.body.getReader();
@@ -469,27 +890,97 @@ async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
         }
     } catch (e) {
         removeTyping(typingId);
+        console.error('[simulate]', e);
         addMessage(`❌ Mô phỏng thất bại: ${e.message}`, 'bot');
     }
 
-    isProcessing = false;
-    btnSend.disabled = false;
+    simulateRequestInFlight = false;
+    if (btnRunSimEl) btnRunSimEl.disabled = false;
     chatInput.focus();
 }
 
 async function runSimulationFromCurrentCircuit() {
-    if (isProcessing) return;
-
     const base = lastCircuitData?.circuit_data || lastCircuitData;
     if (!base) {
         addMessage('❌ Chưa có mạch để mô phỏng. Hãy generate mạch trước.', 'bot');
         return;
     }
 
+    const core = base.circuit_data || base;
     const payload = buildSimulationPayloadFromCircuit(base);
-    if (!payload.netlist) {
-        addMessage('❌ Không thể dựng netlist từ mạch hiện tại.', 'bot');
+
+    // Always pass circuit_id so backend can fall back to spice_deck artifact
+    const resolvedCircuitId = lastCircuitData?.circuit_id || currentCircuitId || base?.circuit_id || '';
+    if (resolvedCircuitId) {
+        payload.circuit_id = resolvedCircuitId;
+        if (payload.circuit_data && typeof payload.circuit_data === 'object') {
+            payload.circuit_data.circuit_id = resolvedCircuitId;
+        }
+    }
+
+    // ── Robust netlist resolution ───────────────────────────────────────
+    // If the chat response exposed a `spice_url`, fetch its content and ship
+    // it directly to /simulate. This bypasses both the DB artifact lookup and
+    // the server-side synthesis fallback, avoiding the
+    // "circuit_data does not contain spice_netlist" failure for circuits
+    // that the backend already compiled (e.g. op-amp + LM358).
+    const cachedSpiceUrl = lastCircuitData?.spice_url || lastCircuitData?.ngspice_url || '';
+    if (!String(payload.netlist || '').trim() && cachedSpiceUrl) {
+        try {
+            const deckResp = await fetch(`${API_BASE}${cachedSpiceUrl}`, { cache: 'no-store' });
+            if (deckResp.ok) {
+                const deck = (await deckResp.text() || '').trim();
+                if (deck) {
+                    payload.netlist = deck;
+                    if (payload.circuit_data && typeof payload.circuit_data === 'object') {
+                        payload.circuit_data.spice_netlist = deck;
+                    }
+                }
+            } else {
+                console.warn('[simulate] spice_url fetch returned', deckResp.status);
+            }
+        } catch (err) {
+            console.warn('[simulate] could not fetch cached spice_url:', err);
+        }
+    }
+
+    const hasIrShape =
+        Array.isArray(core?.components) &&
+        core.components.length > 0 &&
+        Array.isArray(core?.nets) &&
+        core.nets.length > 0;
+
+    const hasNetlist = String(payload.netlist || '').trim().length > 0;
+
+    // Client-side SPICE string may be empty (unknown component types / IR-only schema).
+    // Backend still compiles from circuit_data via NgspiceCompilerService when components+nets exist.
+    if (!hasNetlist && !hasIrShape) {
+        addMessage(
+            '❌ Không thể dựng netlist từ mạch hiện tại (thiếu components/nets trong circuit_data).',
+            'bot',
+        );
         return;
+    }
+
+    if (!hasNetlist && hasIrShape) {
+        payload.circuit_data = core;
+        payload.analysis_type = payload.analysis_type || String(core.analysis_type || 'transient');
+        payload.tran_step = payload.tran_step || core.tran_step || '10us';
+        payload.tran_stop = payload.tran_stop || core.tran_stop || '15ms';
+        payload.tran_start = payload.tran_start ?? core.tran_start ?? '0';
+        if (Array.isArray(core.nodes_to_monitor) && core.nodes_to_monitor.length) {
+            payload.nodes_to_monitor = core.nodes_to_monitor;
+        } else if (Array.isArray(core.probe_nodes) && core.probe_nodes.length) {
+            payload.nodes_to_monitor = core.probe_nodes.map((n) => {
+                const s = String(n || '').trim();
+                const low = s.toLowerCase();
+                if (low.startsWith('v(') || low.startsWith('i(')) return s;
+                return `v(${s})`;
+            });
+        }
+        if (core.source_params && typeof core.source_params === 'object') {
+            payload.source_params = core.source_params;
+        }
     }
 
     await sendSimulationPayload(payload, '▶ Run Simulation');
@@ -523,7 +1014,10 @@ function handleSimulationSseBlock(block) {
         return;
     }
     if (eventName === 'error') {
-        addMessage(`❌ Mô phỏng thất bại: ${payload.message || 'unknown error'}`, 'bot');
+        const bits = [payload.message || payload.detail || 'unknown error'];
+        if (payload.diagnostic_note) bits.push(payload.diagnostic_note);
+        if (payload.failure_phase) bits.push(`(${payload.failure_phase})`);
+        addMessage(`❌ Mô phỏng thất bại: ${bits.filter(Boolean).join(' — ')}`, 'bot');
         return;
     }
     if (eventName === 'result') {
@@ -992,17 +1486,32 @@ function sendSuggestion(text) {
 
 // ── Handle Bot Response ──
 function handleBotResponse(data) {
-    // Add bot message (markdown rendered) + mode badge for easier tracking
-    addMessage(data.message, 'bot', { mode: data.mode });
+    // Add bot message with a typewriter effect — adaptive speed so long
+    // replies still finish quickly (cap total typing budget ~2.4s).
+    const msgText = String(data && data.message || '');
+    const adaptiveSpeed = Math.max(4, Math.floor(2400 / Math.max(60, msgText.length)));
+    addMessage(msgText, 'bot', {
+        mode: data.mode,
+        typewriter: true,
+        typewriterSpeed: adaptiveSpeed,
+    });
 
     // Update processing time
     if (data.processing_time_ms) {
         processingTime.textContent = `${data.processing_time_ms.toFixed(0)}ms`;
     }
 
-    // Update right panel if we have data
-    if (data.params) {
-        updateParamsPanel(data.params, data.pipeline);
+    // Update right panel — always render the BOM (from circuit_data.components
+    // or parsed from the AI text), even when `data.params` is empty.
+    const bomComponents =
+        (data.circuit_data && Array.isArray(data.circuit_data.components) && data.circuit_data.components) ||
+        (Array.isArray(data.components) ? data.components : []);
+    const hasBomData = bomComponents.length > 0 || /(?:Danh\s*s[áa]ch\s*linh\s*ki[ệe]n|BOM|Components?|Linh\s*ki[ệe]n)\s*\**\s*[:：]/i.test(String(data.message || ''));
+    if (data.params || hasBomData) {
+        updateParamsPanel(data.params || {}, data.pipeline, {
+            components: bomComponents,
+            message: data.message || '',
+        });
     }
 
     if (data.intent || data.analysis || data.pipeline) {
@@ -1050,9 +1559,28 @@ function addMessage(text, type, options = {}) {
     let actions = null;
 
     if (type === 'bot') {
-        msgText.innerHTML = renderMarkdown(text);
-        if (typeof renderLatexInElement === 'function') {
-            renderLatexInElement(msgText);
+        // Optional typewriter: types plain text character-by-character, then
+        // swaps in the fully-rendered markdown (with code blocks, tables,
+        // LaTeX) once typing completes. Caller opts in via `options.typewriter`
+        // — defaulting to false keeps the existing streaming flow unchanged.
+        if (options.typewriter && typeof typewriter === 'function') {
+            const plain = String(text || '').replace(/\s+/g, ' ').trim();
+            const speed = Number.isFinite(options.typewriterSpeed) ? options.typewriterSpeed : 14;
+            typewriter(plain, msgText, speed, {
+                cursor: true,
+                onDone: () => {
+                    msgText.innerHTML = renderMarkdown(text);
+                    if (typeof renderLatexInElement === 'function') {
+                        renderLatexInElement(msgText);
+                    }
+                    scrollToBottom();
+                },
+            });
+        } else {
+            msgText.innerHTML = renderMarkdown(text);
+            if (typeof renderLatexInElement === 'function') {
+                renderLatexInElement(msgText);
+            }
         }
 
         modeMeta = document.createElement('div');
@@ -1238,44 +1766,384 @@ function scrollToBottom() {
 
 // ── Right Panel Updates ──
 
-function updateParamsPanel(params, pipeline) {
+// Escape user-supplied strings before injecting them into innerHTML.
+function escapeHtml(value) {
+    if (value === null || value === undefined) return '';
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+/**
+ * Classify a parameter by its name prefix to pick an icon, unit family, and
+ * human-readable tag. Used by the Params CARDS template.
+ */
+function classifyParam(name) {
+    const n = String(name || '').trim();
+    const head = n.charAt(0).toUpperCase();
+    const lower = n.toLowerCase();
+
+    if (head === 'R') return { icon: 'fa-bolt',          tag: 'Resistor',  unitKind: 'ohm' };
+    if (head === 'C') return { icon: 'fa-database',      tag: 'Capacitor', unitKind: 'farad' };
+    if (head === 'L') return { icon: 'fa-wave-square',   tag: 'Inductor',  unitKind: 'henry' };
+    if (head === 'V' || lower.includes('vcc') || lower.includes('vee') || lower.includes('vdd'))
+        return { icon: 'fa-plug',            tag: 'Voltage',   unitKind: 'volt' };
+    if (head === 'I' || lower.includes('current'))
+        return { icon: 'fa-arrow-right-arrow-left', tag: 'Current', unitKind: 'amp' };
+    if (head === 'Q') return { icon: 'fa-microchip',     tag: 'BJT',       unitKind: 'raw' };
+    if (head === 'M') return { icon: 'fa-microchip',     tag: 'MOSFET',    unitKind: 'raw' };
+    if (head === 'D') return { icon: 'fa-bolt',          tag: 'Diode',     unitKind: 'raw' };
+    if (head === 'U') return { icon: 'fa-microchip',     tag: 'IC',        unitKind: 'raw' };
+    if (lower.includes('gain'))     return { icon: 'fa-chart-line', tag: 'Gain',      unitKind: 'ratio' };
+    if (lower.includes('freq') || lower.includes('hz'))
+        return { icon: 'fa-wave-square',     tag: 'Frequency', unitKind: 'hertz' };
+    if (lower.includes('bw') || lower.includes('bandwidth'))
+        return { icon: 'fa-wave-square',     tag: 'Bandwidth', unitKind: 'hertz' };
+    if (lower.includes('temp'))     return { icon: 'fa-temperature-half', tag: 'Temp', unitKind: 'celsius' };
+    return { icon: 'fa-microchip',           tag: 'Param',     unitKind: 'auto' };
+}
+
+const SI_PREFIXES = [
+    { f: 1e9,  p: 'G' },
+    { f: 1e6,  p: 'M' },
+    { f: 1e3,  p: 'k' },
+    { f: 1,    p: ''  },
+    { f: 1e-3, p: 'm' },
+    { f: 1e-6, p: 'μ' },
+    { f: 1e-9, p: 'n' },
+    { f: 1e-12, p: 'p' },
+];
+
+function formatValueRich(rawValue, unitKind) {
+    if (rawValue === null || rawValue === undefined) return { value: '—', unit: '' };
+    if (typeof rawValue === 'string' && Number.isNaN(Number(rawValue))) {
+        return { value: rawValue, unit: '' };
+    }
+    const n = Number(rawValue);
+    if (Number.isNaN(n)) return { value: String(rawValue), unit: '' };
+
+    const baseUnitMap = {
+        ohm:    'Ω',
+        farad:  'F',
+        henry:  'H',
+        volt:   'V',
+        amp:    'A',
+        hertz:  'Hz',
+        celsius: '°C',
+        ratio:  '',
+        raw:    '',
+        auto:   '',
+    };
+    const baseUnit = baseUnitMap[unitKind] ?? '';
+    if (unitKind === 'raw' || unitKind === 'ratio') {
+        const formatted = Math.abs(n) >= 100 ? n.toFixed(0)
+                        : Math.abs(n) >= 10  ? n.toFixed(1)
+                        : n.toFixed(2);
+        return { value: formatted, unit: baseUnit };
+    }
+    if (n === 0) return { value: '0', unit: baseUnit };
+
+    const abs = Math.abs(n);
+    const match = SI_PREFIXES.find(({ f }) => abs >= f);
+    const scale = match ?? SI_PREFIXES[SI_PREFIXES.length - 1];
+    const scaled = n / scale.f;
+    const valueStr = Math.abs(scaled) >= 100 ? scaled.toFixed(0)
+                   : Math.abs(scaled) >= 10  ? scaled.toFixed(1)
+                   : scaled.toFixed(2);
+    return { value: valueStr, unit: `${scale.p}${baseUnit}` };
+}
+
+// Parse the "Danh sách linh kiện: ..." line out of an AI message body and
+// return a list of { kind, value, note } records. Robust to comma-separated
+// items, parenthesised notes, and Vietnamese kind keywords. Returns [] if no
+// such line is found.
+function parseComponentListFromText(text) {
+    if (!text) return [];
+    // Allow optional markdown emphasis (`**...**`) between the label and the
+    // colon, e.g. "**Danh sách linh kiện**: R1, R2".
+    const re = /(?:Danh\s*s[áa]ch\s*linh\s*ki[ệe]n|BOM|Components?|Linh\s*ki[ệe]n)\s*\**\s*[:：]\s*([^\n]+)/i;
+    const m = re.exec(String(text));
+    if (!m) return [];
+
+    // Split by top-level commas (don't break inside parentheses).
+    // Trim any trailing markdown emphasis from the captured tail.
+    const raw = m[1].replace(/\*+$/, '').trim();
+    const items = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of raw) {
+        if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+        else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+        if (ch === ',' && depth === 0) {
+            if (cur.trim()) items.push(cur.trim());
+            cur = '';
+            continue;
+        }
+        cur += ch;
+    }
+    if (cur.trim()) items.push(cur.trim());
+
+    return items.map(parseComponentDescriptor).filter(Boolean);
+}
+
+function parseComponentDescriptor(s) {
+    const noteMatch = /\(([^)]+)\)/.exec(s);
+    const note = noteMatch ? noteMatch[1].trim() : '';
+    const head = s.replace(/\([^)]*\)/, '').trim();
+    if (!head) return null;
+
+    // Try multi-word kind prefix first (Vietnamese keywords come in 2 words).
+    const kindKeywords = [
+        'Điện trở', 'Tụ điện', 'Cuộn cảm', 'Nguồn DC', 'Nguồn AC',
+        'Op-Amp', 'OpAmp', 'BJT NPN', 'BJT PNP', 'MOSFET N', 'MOSFET P',
+        'Transistor', 'Diode', 'LED', 'Nguồn', 'IC',
+    ];
+    const lower = head.toLowerCase();
+    let kind = '';
+    let value = '';
+    for (const kw of kindKeywords) {
+        if (lower.startsWith(kw.toLowerCase())) {
+            kind = head.slice(0, kw.length);
+            value = head.slice(kw.length).trim();
+            break;
+        }
+    }
+    if (!kind) {
+        const tokens = head.split(/\s+/);
+        kind = tokens[0] || '';
+        value = tokens.slice(1).join(' ').trim();
+    }
+    return { kind: kind.trim(), value: value.trim(), note };
+}
+
+// Convert a structured Component (from circuit_data.components) into a BOM
+// row using the same SI-prefix formatting we use elsewhere.
+const _COMPONENT_TYPE_VI = {
+    resistor: 'Điện trở',
+    capacitor: 'Tụ điện',
+    inductor: 'Cuộn cảm',
+    opamp: 'Op-Amp',
+    bjt_npn: 'BJT NPN',
+    bjt_pnp: 'BJT PNP',
+    mosfet_n: 'MOSFET N',
+    mosfet_p: 'MOSFET P',
+    diode: 'Diode',
+    led: 'LED',
+    ic: 'IC',
+    connector: 'Connector',
+    ground: 'GND',
+    power_symbol: 'Nguồn',
+    voltage_source: 'Nguồn DC',
+    current_source: 'Nguồn dòng',
+    port: 'Port',
+};
+
+function _componentToRow(comp) {
+    if (!comp || typeof comp !== 'object') return null;
+    const id = comp.id || comp.ref || '';
+    const typeKey = String(comp.type || '').toLowerCase();
+    const kind = _COMPONENT_TYPE_VI[typeKey] || typeKey || '?';
+    const params = comp.parameters || {};
+
+    let valueText = '—';
+    if (params.resistance !== undefined && params.resistance !== null) {
+        const f = formatValueRich(params.resistance, 'ohm');
+        valueText = `${f.value} ${f.unit}`.trim();
+    } else if (params.capacitance !== undefined && params.capacitance !== null) {
+        const f = formatValueRich(params.capacitance, 'farad');
+        valueText = `${f.value} ${f.unit}`.trim();
+    } else if (params.inductance !== undefined && params.inductance !== null) {
+        const f = formatValueRich(params.inductance, 'henry');
+        valueText = `${f.value} ${f.unit}`.trim();
+    } else if (params.voltage !== undefined && params.voltage !== null) {
+        const f = formatValueRich(params.voltage, 'volt');
+        valueText = `${f.value} ${f.unit}`.trim();
+    } else if (params.model) {
+        valueText = String(params.model);
+    }
+
+    return { ref: id, kind, value: valueText };
+}
+
+function _kindsRoughlyEqual(structuredKind, parsedKind) {
+    const a = String(structuredKind || '').toLowerCase();
+    const b = String(parsedKind || '').toLowerCase();
+    if (!a || !b) return false;
+    const pairs = [
+        ['điện trở', 'điện trở'],
+        ['tụ', 'tụ'],
+        ['cuộn', 'cuộn'],
+        ['op-amp', 'op-amp'], ['op-amp', 'opamp'], ['opamp', 'op-amp'],
+        ['bjt', 'bjt'], ['bjt', 'transistor'],
+        ['mosfet', 'mosfet'],
+        ['diode', 'diode'],
+        ['ic', 'ic'],
+    ];
+    for (const [pa, pb] of pairs) {
+        if (a.includes(pa) && b.includes(pb)) return true;
+    }
+    return a === b;
+}
+
+function _valuesRoughlyEqual(structuredVal, parsedVal) {
+    const norm = (s) => String(s || '')
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/μ/g, 'u')
+        .replace(/ω/g, 'ohm')
+        .replace(/Ω/g, 'ohm');
+    const a = norm(structuredVal);
+    const b = norm(parsedVal);
+    return a.length > 0 && b.length > 0 && (a === b || a.startsWith(b) || b.startsWith(a));
+}
+
+// Build the BOM section HTML. Prefers structured components for the canonical
+// rows; enriches each row with a "note" parsed from the AI message body when
+// the kind/value loosely matches.
+function renderBomTableHtml(components, parsedFromText) {
+    const rows = [];
+    const queue = Array.isArray(parsedFromText) ? parsedFromText.slice() : [];
+
+    if (Array.isArray(components) && components.length > 0) {
+        for (const comp of components) {
+            const row = _componentToRow(comp);
+            if (!row) continue;
+            let note = '';
+            for (let i = 0; i < queue.length; i++) {
+                const p = queue[i];
+                if (!p || !p.note) continue;
+                if (_kindsRoughlyEqual(row.kind, p.kind) && _valuesRoughlyEqual(row.value, p.value)) {
+                    note = p.note;
+                    queue.splice(i, 1);
+                    break;
+                }
+            }
+            // Second pass: kind-only match (in case AI value formatting differs).
+            if (!note) {
+                for (let i = 0; i < queue.length; i++) {
+                    const p = queue[i];
+                    if (!p || !p.note) continue;
+                    if (_kindsRoughlyEqual(row.kind, p.kind)) {
+                        note = p.note;
+                        queue.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+            rows.push({ ...row, note });
+        }
+    } else if (queue.length > 0) {
+        for (const p of queue) {
+            rows.push({ ref: '', kind: p.kind, value: p.value, note: p.note });
+        }
+    }
+
+    if (rows.length === 0) return '';
+
+    let html = '<section class="md-section bom-section">';
+    html += `<h2 class="md-h2"><i class="fas fa-list-check"></i> Danh sách linh kiện <span class="bom-count">${rows.length}</span></h2>`;
+    html += '<div class="bom-table-wrap"><table class="bom-table">';
+    html += '<thead><tr><th class="bom-idx">#</th><th class="bom-ref">Ref</th><th>Loại</th><th>Giá trị</th><th>Ghi chú</th></tr></thead><tbody>';
+    rows.forEach((r, i) => {
+        html += `<tr>
+            <td class="bom-idx">${i + 1}</td>
+            <td class="bom-ref">${escapeHtml(r.ref || '—')}</td>
+            <td>${escapeHtml(r.kind || '—')}</td>
+            <td class="bom-value">${escapeHtml(r.value || '—')}</td>
+            <td class="bom-note">${escapeHtml(r.note || '—')}</td>
+        </tr>`;
+    });
+    html += '</tbody></table></div></section>';
+    return html;
+}
+
+function updateParamsPanel(params, pipeline, extras = {}) {
     const el = document.getElementById('paramsContent');
-    if (!params || Object.keys(params).length === 0) {
-        el.innerHTML = '<div class="placeholder-content"><i class="fas fa-table fa-3x"></i><p>Không có thông số</p></div>';
+    if (!el) return;
+
+    const hasParams = params && typeof params === 'object' && Object.keys(params).length > 0;
+    const solved = pipeline && pipeline.solved ? pipeline.solved : null;
+
+    const components = Array.isArray(extras.components) ? extras.components : [];
+    const parsedFromText = parseComponentListFromText(extras.message || '');
+    const hasBom = components.length > 0 || parsedFromText.length > 0;
+
+    if (!hasParams && !solved && !hasBom) {
+        el.innerHTML = `
+            <div class="placeholder-content">
+                <i class="fas fa-table fa-3x"></i>
+                <p>Chưa có thông số</p>
+                <p class="sub-text">Gửi yêu cầu thiết kế để hệ thống tính toán giá trị linh kiện.</p>
+            </div>`;
         return;
     }
 
-    let html = '<table class="params-table">';
-    html += '<tr><th>Linh kiện</th><th>Giá trị</th><th>Đơn vị</th></tr>';
+    const entries = hasParams ? Object.entries(params) : [];
+    const counter = entries.length;
 
-    for (const [name, value] of Object.entries(params)) {
-        const formatted = formatValue(value);
-        html += `<tr>
-            <td><strong>${name}</strong></td>
-            <td class="param-value">${formatted.value}</td>
-            <td>${formatted.unit}</td>
-        </tr>`;
+    let html = '';
+
+    // BOM table from AI components — rendered first so users see the line-up.
+    if (hasBom) {
+        html += renderBomTableHtml(components, parsedFromText);
     }
 
-    html += '</table>';
+    if (!hasParams && !solved) {
+        el.innerHTML = html;
+        return;
+    }
 
-    // Add gain info if available
-    if (pipeline && pipeline.solved) {
-        const solved = pipeline.solved;
-        html += '<div class="analysis-section" style="margin-top:12px">';
-        html += '<h3><i class="fas fa-calculator"></i> Kết quả tính toán</h3>';
+    html += `
+        <div class="params-header">
+            <h2><i class="fas fa-cube"></i> Thông số chi tiết</h2>
+            <span class="params-meta">${counter} item${counter !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="params-card-grid">`;
+
+    for (const [name, value] of entries) {
+        const meta = classifyParam(name);
+        const formatted = formatValueRich(value, meta.unitKind);
+        html += `
+            <div class="params-card" role="group" aria-label="${escapeHtml(name)}">
+                <div class="params-card-head">
+                    <span class="params-card-icon"><i class="fas ${meta.icon}"></i></span>
+                    <span class="params-card-name">${escapeHtml(name)}</span>
+                    <span class="params-card-tag">${escapeHtml(meta.tag)}</span>
+                </div>
+                <div class="params-card-value">${escapeHtml(formatted.value)}<span class="params-card-unit">${escapeHtml(formatted.unit)}</span></div>
+            </div>`;
+    }
+    html += '</div>';
+
+    // Solved/calculation summary block (markdown-style)
+    if (solved) {
+        html += '<div class="md-section" style="margin-top:14px">';
+        html += '<h2 class="md-h2"><i class="fas fa-calculator"></i> Kết quả tính toán</h2>';
+        html += '<div class="md-kv-grid">';
         if (solved.gain_formula) {
-            html += `<div class="analysis-item"><span class="label">Công thức:</span><span class="value">${solved.gain_formula}</span></div>`;
+            html += `<div class="md-kv"><span class="md-kv-key">Công thức</span><span class="md-kv-val is-mono">${escapeHtml(solved.gain_formula)}</span></div>`;
         }
         if (solved.actual_gain !== null && solved.actual_gain !== undefined) {
-            html += `<div class="analysis-item"><span class="label">Gain thực tế:</span><span class="value">${solved.actual_gain.toFixed(2)}</span></div>`;
+            const gainNum = Number(solved.actual_gain);
+            const sign = Number.isFinite(gainNum) ? (gainNum >= 0 ? 'is-pos' : 'is-neg') : '';
+            const gainTxt = Number.isFinite(gainNum) ? gainNum.toFixed(2) : escapeHtml(solved.actual_gain);
+            html += `<div class="md-kv"><span class="md-kv-key">Gain thực tế</span><span class="md-kv-val is-mono ${sign}">${gainTxt}</span></div>`;
         }
-        if (solved.notes && solved.notes.length > 0) {
-            html += '<div style="margin-top:8px;font-size:12px;color:#64748b">';
+        if (solved.gain_target !== null && solved.gain_target !== undefined) {
+            html += `<div class="md-kv"><span class="md-kv-key">Gain mục tiêu</span><span class="md-kv-val is-mono">${escapeHtml(solved.gain_target)}</span></div>`;
+        }
+        html += '</div>';
+        if (Array.isArray(solved.notes) && solved.notes.length > 0) {
             for (const note of solved.notes) {
-                html += `<div>📝 ${note}</div>`;
+                html += `
+                    <div class="md-alert md-alert--note" style="margin-top:10px">
+                        <i class="fas fa-sticky-note"></i>
+                        <div>${escapeHtml(note)}</div>
+                    </div>`;
             }
-            html += '</div>';
         }
         html += '</div>';
     }
@@ -1285,15 +2153,30 @@ function updateParamsPanel(params, pipeline) {
 
 function updateAnalysisPanel(intent, pipeline, analysis) {
     const el = document.getElementById('analysisContent');
+    if (!el) return;
 
-    let html = '';
+    intent = intent || {};
+
+    const hasIntent = Object.keys(intent).length > 0;
+    const hasPipeline = pipeline && Object.keys(pipeline).length > 0;
+    const hasAnalysis = analysis && Object.keys(analysis).length > 0;
+
+    if (!hasIntent && !hasPipeline && !hasAnalysis) {
+        el.innerHTML = `
+            <div class="placeholder-content">
+                <i class="fas fa-search-plus fa-3x"></i>
+                <p>Chưa có phân tích</p>
+                <p class="sub-text">Khi AI xử lý yêu cầu, kết quả phân tích NLU, pipeline và topology sẽ hiển thị ở đây.</p>
+            </div>`;
+        return;
+    }
 
     const formatOhm = (value) => {
         if (value === null || value === undefined || Number.isNaN(Number(value))) return 'N/A';
         const n = Number(value);
-        if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)} MOhm`;
-        if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(2)} kOhm`;
-        return `${n.toFixed(2)} Ohm`;
+        if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)} MΩ`;
+        if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(2)} kΩ`;
+        return `${n.toFixed(2)} Ω`;
     };
 
     const formatHz = (value) => {
@@ -1304,100 +2187,146 @@ function updateAnalysisPanel(intent, pipeline, analysis) {
         return `${n.toFixed(2)} Hz`;
     };
 
-    // Intent section
-    html += '<div class="analysis-section">';
-    html += '<h3><i class="fas fa-brain"></i> NLU Analysis</h3>';
+    let html = '<div class="analysis-md">';
+
+    // ── Section 1: NLU Analysis ──
+    html += '<section class="md-section">';
+    html += '<h2 class="md-h2"><i class="fas fa-brain"></i> NLU Analysis</h2>';
 
     const intentFields = [
-        { label: 'Circuit Type', value: intent.circuit_type || 'N/A' },
-        { label: 'Gain Target', value: intent.gain_target !== null ? intent.gain_target : 'N/A' },
-        { label: 'VCC', value: intent.vcc !== null ? `${intent.vcc}V` : 'N/A' },
-        { label: 'Source', value: intent.source || 'rule_based' },
+        { label: 'Circuit Type',  value: intent.circuit_type || 'N/A' },
+        { label: 'Gain Target',   value: (intent.gain_target !== null && intent.gain_target !== undefined) ? intent.gain_target : 'N/A' },
+        { label: 'VCC',           value: (intent.vcc !== null && intent.vcc !== undefined) ? `${intent.vcc} V` : 'N/A' },
+        { label: 'Source',        value: intent.source || 'rule_based' },
     ];
 
+    html += '<div class="md-kv-grid">';
     for (const f of intentFields) {
-        html += `<div class="analysis-item"><span class="label">${f.label}:</span><span class="value">${f.value}</span></div>`;
+        html += `<div class="md-kv">
+            <span class="md-kv-key">${escapeHtml(f.label)}</span>
+            <span class="md-kv-val">${escapeHtml(f.value)}</span>
+        </div>`;
     }
-
-    // Confidence bar
-    const conf = (intent.confidence || 0) * 100;
-    const confClass = conf >= 70 ? 'high' : conf >= 40 ? 'medium' : 'low';
-    html += `<div style="margin-top:8px;font-size:12px;color:#64748b">Confidence: ${conf.toFixed(0)}%</div>`;
-    html += `<div class="confidence-bar"><div class="confidence-fill ${confClass}" style="width:${conf}%"></div></div>`;
     html += '</div>';
 
-    // Pipeline section
-    if (pipeline) {
-        html += '<div class="analysis-section">';
-        html += '<h3><i class="fas fa-cogs"></i> Pipeline Result</h3>';
+    const conf = Number(intent.confidence || 0) * 100;
+    const confClass = conf >= 70 ? 'is-high' : conf >= 40 ? 'is-medium' : 'is-low';
+    html += `
+        <div class="md-progress-wrap">
+            <div class="md-progress-label">
+                <span>Confidence</span>
+                <span>${conf.toFixed(0)}%</span>
+            </div>
+            <div class="md-progress-track">
+                <div class="md-progress-fill ${confClass}" style="width:${conf}%"></div>
+            </div>
+        </div>`;
+    html += '</section>';
 
-        html += `<div class="analysis-item"><span class="label">Stage:</span><span class="value">${pipeline.stage_reached || 'N/A'}</span></div>`;
-        html += `<div class="analysis-item"><span class="label">Thành công:</span><span class="value">${pipeline.success ? '✅ Yes' : '❌ No'}</span></div>`;
+    // ── Section 2: Pipeline ──
+    if (hasPipeline) {
+        html += '<section class="md-section">';
+        html += '<h2 class="md-h2"><i class="fas fa-cogs"></i> Pipeline Result</h2>';
+
+        html += '<div class="md-kv-grid">';
+        html += `<div class="md-kv"><span class="md-kv-key">Stage Reached</span><span class="md-kv-val">${escapeHtml(pipeline.stage_reached || 'N/A')}</span></div>`;
+        const success = !!pipeline.success;
+        html += `<div class="md-kv"><span class="md-kv-key">Trạng thái</span><span class="md-kv-val ${success ? 'is-pos' : 'is-neg'}">${success ? 'Success' : 'Failed'}</span></div>`;
 
         if (pipeline.plan) {
-            html += `<div class="analysis-item"><span class="label">Template:</span><span class="value">${pipeline.plan.matched_template_id || 'N/A'}</span></div>`;
-            html += `<div class="analysis-item"><span class="label">Mode:</span><span class="value">${pipeline.plan.mode || 'N/A'}</span></div>`;
-            html += `<div class="analysis-item"><span class="label">Confidence:</span><span class="value">${(pipeline.plan.confidence * 100).toFixed(0)}%</span></div>`;
+            const plan = pipeline.plan;
+            html += `<div class="md-kv"><span class="md-kv-key">Template</span><span class="md-kv-val">${escapeHtml(plan.matched_template_id || 'N/A')}</span></div>`;
+            html += `<div class="md-kv"><span class="md-kv-key">Mode</span><span class="md-kv-val">${escapeHtml(plan.mode || 'N/A')}</span></div>`;
+            const planConf = Number(plan.confidence || 0) * 100;
+            html += `<div class="md-kv"><span class="md-kv-key">Plan Conf.</span><span class="md-kv-val">${planConf.toFixed(0)}%</span></div>`;
+        }
+        html += '</div>';
 
-            if (pipeline.plan.blocks && pipeline.plan.blocks.length > 0) {
-                html += '<div style="margin-top:8px"><span class="label">Blocks:</span>';
-                html += '<div class="tag-list" style="margin-top:4px">';
-                for (const b of pipeline.plan.blocks) {
-                    const btype = typeof b === 'string' ? b : b.block_type;
-                    html += `<span class="tag">${btype}</span>`;
-                }
-                html += '</div></div>';
+        if (pipeline.plan && Array.isArray(pipeline.plan.blocks) && pipeline.plan.blocks.length > 0) {
+            html += '<h3 class="md-h3">Blocks</h3>';
+            html += '<div class="tag-list">';
+            for (const b of pipeline.plan.blocks) {
+                const btype = typeof b === 'string' ? b : b.block_type;
+                html += `<span class="tag">${escapeHtml(btype)}</span>`;
             }
+            html += '</div>';
         }
 
         if (pipeline.error) {
-            html += `<div style="margin-top:8px;padding:8px;background:#fef2f2;border-radius:6px;font-size:12px;color:#dc2626">⚠️ ${pipeline.error}</div>`;
+            html += `
+                <div class="md-alert md-alert--error" style="margin-top:12px">
+                    <i class="fas fa-triangle-exclamation"></i>
+                    <div><strong>Lỗi pipeline:</strong> ${escapeHtml(pipeline.error)}</div>
+                </div>`;
+        } else if (success) {
+            html += `
+                <div class="md-alert md-alert--success" style="margin-top:12px">
+                    <i class="fas fa-circle-check"></i>
+                    <div>Pipeline hoàn tất thành công, mạch đã được build và sẵn sàng để render.</div>
+                </div>`;
         }
-
-        html += '</div>';
+        html += '</section>';
     }
 
-    if (analysis) {
+    // ── Section 3: Topology Analysis ──
+    if (hasAnalysis) {
         const cascade = analysis.cascading || {};
         const stageTable = Array.isArray(cascade.stage_table) ? cascade.stage_table : [];
 
-        html += '<div class="analysis-section">';
-        html += '<h3><i class="fas fa-project-diagram"></i> Topology Analysis</h3>';
+        html += '<section class="md-section">';
+        html += '<h2 class="md-h2"><i class="fas fa-project-diagram"></i> Topology Analysis</h2>';
 
-        html += `<div class="analysis-item"><span class="label">Stages:</span><span class="value">${cascade.stage_count ?? 'N/A'}</span></div>`;
+        html += '<div class="md-kv-grid">';
+        html += `<div class="md-kv"><span class="md-kv-key">Stage Count</span><span class="md-kv-val">${escapeHtml(cascade.stage_count ?? 'N/A')}</span></div>`;
+        if (cascade.total_gain !== undefined && cascade.total_gain !== null) {
+            const totalGain = Number(cascade.total_gain);
+            const sign = Number.isFinite(totalGain) ? (totalGain >= 0 ? 'is-pos' : 'is-neg') : '';
+            html += `<div class="md-kv"><span class="md-kv-key">Total Gain</span><span class="md-kv-val is-mono ${sign}">${Number.isFinite(totalGain) ? totalGain.toFixed(3) : escapeHtml(cascade.total_gain)}</span></div>`;
+        }
+        if (cascade.overall_bandwidth_hz !== undefined && cascade.overall_bandwidth_hz !== null) {
+            html += `<div class="md-kv"><span class="md-kv-key">Bandwidth</span><span class="md-kv-val is-mono">${escapeHtml(formatHz(cascade.overall_bandwidth_hz))}</span></div>`;
+        }
+        html += '</div>';
 
         if (stageTable.length > 0) {
-            html += '<div style="margin-top:8px;font-size:12px;color:#334155">Cascading Stage Table</div>';
-            html += '<div style="margin-top:6px;overflow:auto">';
-            html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
-            html += '<thead><tr style="background:#f8fafc">';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Stage</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Type</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Gain</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Equation</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Zin</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">Zout</th>';
-            html += '<th style="text-align:left;padding:6px;border-bottom:1px solid #e2e8f0">BW</th>';
-            html += '</tr></thead><tbody>';
-
+            html += '<h3 class="md-h3">Cascading Stage Table</h3>';
+            html += '<div class="md-table-wrap"><table class="md-table">';
+            html += '<thead><tr><th>Stage</th><th>Type</th><th>Gain</th><th>Equation</th><th>Zin</th><th>Zout</th><th>BW</th></tr></thead>';
+            html += '<tbody>';
             for (const row of stageTable) {
+                const gainNum = row.gain !== undefined ? Number(row.gain) : NaN;
+                const gainTxt = Number.isFinite(gainNum) ? gainNum.toFixed(4) : 'N/A';
                 html += '<tr>';
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${row.stage ?? 'N/A'}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${row.type || 'N/A'}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${row.gain !== undefined ? Number(row.gain).toFixed(4) : 'N/A'}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${row.equation || 'N/A'}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${formatOhm(row.zin_ohm)}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${formatOhm(row.zout_ohm)}</td>`;
-                html += `<td style="padding:6px;border-bottom:1px solid #f1f5f9">${formatHz(row.bandwidth_hz)}</td>`;
+                html += `<td class="is-mono">${escapeHtml(row.stage ?? 'N/A')}</td>`;
+                html += `<td>${escapeHtml(row.type || 'N/A')}</td>`;
+                html += `<td class="is-mono">${escapeHtml(gainTxt)}</td>`;
+                html += `<td class="is-mono">${escapeHtml(row.equation || 'N/A')}</td>`;
+                html += `<td class="is-mono">${escapeHtml(formatOhm(row.zin_ohm))}</td>`;
+                html += `<td class="is-mono">${escapeHtml(formatOhm(row.zout_ohm))}</td>`;
+                html += `<td class="is-mono">${escapeHtml(formatHz(row.bandwidth_hz))}</td>`;
                 html += '</tr>';
             }
-
             html += '</tbody></table></div>';
         }
 
-        html += '</div>';
+        if (Array.isArray(analysis.notes) && analysis.notes.length > 0) {
+            html += '<h3 class="md-h3">Nhận xét</h3>';
+            html += '<ul class="md-ul">';
+            for (const note of analysis.notes) html += `<li>${escapeHtml(note)}</li>`;
+            html += '</ul>';
+        }
+
+        if (analysis.recommendation) {
+            html += `
+                <div class="md-alert md-alert--info" style="margin-top:12px">
+                    <i class="fas fa-lightbulb"></i>
+                    <div><strong>Gợi ý:</strong> ${escapeHtml(analysis.recommendation)}</div>
+                </div>`;
+        }
+        html += '</section>';
     }
 
+    html += '</div>';
     el.innerHTML = html;
 }
 
@@ -1687,9 +2616,12 @@ function createIndustrialJobError(message, jobStatus = '') {
 }
 
 async function submitIndustrialPcbExport(circuitId) {
-    const resp = await fetch(`/api/circuits/export/${encodeURIComponent(circuitId)}/pcb/industrial/submit`, {
-        method: 'POST',
-    });
+    // Default strict PCB (placement + DRC + 45° routing). Use routing_mode=industrial for legacy A*.
+    const qs = new URLSearchParams({ routing_mode: 'strict' });
+    const resp = await fetch(
+        `/api/circuits/export/${encodeURIComponent(circuitId)}/pcb/industrial/submit?${qs.toString()}`,
+        { method: 'POST' },
+    );
 
     const payload = await resp.json().catch(() => ({}));
     if (!resp.ok) {

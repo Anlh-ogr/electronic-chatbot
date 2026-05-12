@@ -5,11 +5,30 @@
 /**
  * Chuyển markdown text → HTML.
  * Hỗ trợ: bold, italic, code, links, lists, tables, headings.
+ * Math regions ($...$, $$...$$, \(...\), \[...\]) are protected from HTML
+ * escaping so KaTeX auto-render can process them intact.
  */
 function renderMarkdown(text) {
     if (!text) return '';
 
     let html = text;
+
+    // ── Step 1: protect math regions before HTML-escaping ──────────────
+    // Extract $$...$$, $...$, \[...\], \(...\) and store in placeholders.
+    const mathRegions = [];
+    const MATH_PLACEHOLDER = '\x00MATH\x00';
+
+    function saveMath(match) {
+        mathRegions.push(match);
+        return MATH_PLACEHOLDER + (mathRegions.length - 1) + MATH_PLACEHOLDER;
+    }
+
+    // Order matters: block before inline to avoid partial matches
+    html = html.replace(/\$\$[\s\S]*?\$\$/g, saveMath);
+    html = html.replace(/\\\[[\s\S]*?\\\]/g, saveMath);
+    html = html.replace(/\\\([\s\S]*?\\\)/g, saveMath);
+    // Inline $ — avoid matching currency/standalone $ by requiring content
+    html = html.replace(/\$(?!\s)([^$\n]+?)(?<!\s)\$/g, saveMath);
 
     // Escape HTML (trừ markdown)
     html = html.replace(/&/g, '&amp;')
@@ -49,6 +68,11 @@ function renderMarkdown(text) {
     if (!html.startsWith('<')) {
         html = '<p>' + html + '</p>';
     }
+
+    // ── Step 2: restore protected math regions ───────────────────────────
+    html = html.replace(/\x00MATH\x00(\d+)\x00MATH\x00/g, function(_, idx) {
+        return mathRegions[parseInt(idx, 10)] || '';
+    });
 
     return html;
 }
