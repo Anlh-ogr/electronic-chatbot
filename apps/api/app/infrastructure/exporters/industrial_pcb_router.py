@@ -175,6 +175,7 @@ class IndustrialPCBRouter:
             diff_pair_report=phase3_report,
             power_report=phase4_report,
         )
+        metrics["track_count"] = len(all_segments)
         objective = self._evaluate_objective(metrics=metrics, weights=objective_weights)
 
         report = {

@@ -235,8 +235,13 @@ class PostgresCircuitRepository:
             return "port"
         if text in {"gnd", "ground", "0"}:
             return "ground"
-        if text in {"op-amp", "op_amp", "opamp", "op amp"}:
+        if text in {"op-amp", "op_amp", "opamp", "op amp", "opamp_ic", "operational_amplifier"}:
             return "opamp"
+        # Explicit BJT aliases so they pass through to ComponentType.normalize
+        if text in {"bjt", "npn", "pnp", "transistor", "q_npn", "q_pnp"}:
+            return text  # ComponentType.normalize handles these via alias table
+        if text in {"bjt_npn", "bjt_pnp"}:
+            return text  # Direct enum values, always valid
         return text or "resistor"
 
     @staticmethod
@@ -314,7 +319,7 @@ class PostgresCircuitRepository:
             if not isinstance(comp, dict):
                 continue
 
-            comp_id = str(comp.get("id") or comp.get("ref_id") or "").strip()
+            comp_id = str(comp.get("id") or comp.get("ref_id") or comp.get("ref") or "").strip()
             if not comp_id:
                 continue
             comp_type = PostgresCircuitRepository._normalize_component_type(comp.get("type"))

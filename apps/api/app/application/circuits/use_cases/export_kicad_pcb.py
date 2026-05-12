@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 import uuid
 
+from pydantic import ValidationError
+
 from app.domains.circuits.entities import Circuit
 from app.application.circuits.ports import (
     CircuitRepositoryPort,
@@ -143,14 +145,29 @@ class ExportKiCadPCBUseCase:
 
             routing_report = self._extract_routing_metadata()
 
+            from app.infrastructure.exporters.kicad_pcb_exporter import KiCadPCBExporter
+
+            _bw, _bh = KiCadPCBExporter._resolve_board_size(circuit)
+            _last_sz = getattr(self.exporter, "get_last_board_size_mm", None)
+            if callable(_last_sz):
+                resolved = _last_sz()
+                if resolved is not None:
+                    _bw, _bh = resolved
+
             metadata: Dict[str, Any] = {
                 "circuit_name": circuit.name or "Unnamed",
                 "component_count": len(circuit.components),
                 "kicad_version": "8.0",  # Target KiCad version
                 "oracle": oracle_report,
+                "board_width_mm": _bw,
+                "board_height_mm": _bh,
             }
             if routing_report is not None:
                 metadata["routing"] = routing_report
+                m = routing_report.get("metrics") or {}
+                tc = m.get("track_count")
+                if tc is not None:
+                    metadata["trace_count"] = tc
             
             response = ExportCircuitResponse(
                 circuit_id=request.circuit_id,
@@ -185,6 +202,8 @@ class ExportKiCadPCBUseCase:
             return response
             
         except CircuitNotFoundError:
+            raise
+        except ValidationError:
             raise
         except ExportError:
             raise

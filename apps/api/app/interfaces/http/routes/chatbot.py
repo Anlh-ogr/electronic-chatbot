@@ -163,6 +163,10 @@ class SimulationRequest(BaseModel):
     tran_start: Optional[Any] = Field(default=None, description="Schema field for transient start")
     nodes_to_monitor: Optional[List[str]] = Field(default=None, description="Schema field for probe vectors")
     source_params: Optional[Dict[str, Any]] = Field(default=None, description="Schema field for SIN source setup")
+    circuit_id: Optional[str] = Field(
+        default=None,
+        description="Optional circuit id used to resolve spice_deck artifact when payload has no netlist",
+    )
 
 
 class WaveformTraceResponse(BaseModel):
@@ -275,14 +279,41 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             if result.circuit_data:
                 from app.application.ai.circuit_ir_schema import CircuitIR as _CircuitIR
                 cid = result.circuit_id or result.circuit_data.get("circuit_id")
-                
+
                 # Strip mọi field không thuộc CircuitIR schema (circuit_id, meta, v.v.)
                 _valid_keys = set(_CircuitIR.model_fields.keys())
                 clean = {k: v for k, v in result.circuit_data.items() if k in _valid_keys}
-                
+
                 yield f"event: circuit_ready\ndata: {json.dumps({'circuit_id': cid, 'circuit_data': clean, 'sch_url': result.sch_url, 'spice_url': result.spice_url, 'session_id': result.session_id, 'user_message_id': result.user_message_id, 'assistant_message_id': result.assistant_message_id})}\n\n"
                 yield f"event: render_ready\ndata: {json.dumps({'circuit_id': cid, 'sch_url': result.sch_url, 'pcb_url': None, 'ngspice_url': result.spice_url})}\n\n"
-                yield f"event: text\ndata: {json.dumps({'message': result.message})}\n\n"
+
+            # ── Text event: include analysis/intent/pipeline/params so the
+            # right-panel tabs (Thông số, Phân tích) can be populated. ──
+            text_payload: Dict[str, Any] = {
+                "message": result.message,
+                "mode": result.mode,
+                "success": result.success,
+                "processing_time_ms": round(result.processing_time_ms, 1),
+            }
+            if result.intent:
+                text_payload["intent"] = result.intent
+            if result.pipeline:
+                text_payload["pipeline"] = result.pipeline
+            if result.params:
+                text_payload["params"] = result.params
+            if result.analysis:
+                text_payload["analysis"] = result.analysis
+            if result.validation:
+                text_payload["validation"] = result.validation
+            if result.physics_validation:
+                text_payload["physics_validation"] = result.physics_validation
+            if result.suggestions:
+                text_payload["suggestions"] = result.suggestions
+            if result.template_id:
+                text_payload["template_id"] = result.template_id
+            if result.circuit_id or (result.circuit_data and result.circuit_data.get("circuit_id")):
+                text_payload["circuit_id"] = result.circuit_id or result.circuit_data.get("circuit_id")
+            yield f"event: text\ndata: {json.dumps(text_payload, ensure_ascii=False)}\n\n"
 
         except Exception as e:
             import json
@@ -556,6 +587,78 @@ async def simulate_circuit(request: SimulationRequest) -> SimulationResponse:
                 sim_payload["source_params"] = request.source_params
             if request.netlist:
                 sim_payload.setdefault("spice_netlist", request.netlist)
+
+            # Step 1: payload resolution chain (backward compatible)
+            netlist = (
+                sim_payload.get("spice_netlist")
+                or sim_payload.get("netlist")
+                or sim_payload.get("ngspice_netlist")
+            )
+            if netlist:
+                sim_payload["spice_netlist"] = netlist
+
+            # Step 2: fallback to artifact DB
+            if not sim_payload.get("spice_netlist"):
+                resolved_circuit_id = (
+                    str(request.circuit_id or "").strip()
+                    or str(sim_payload.get("circuit_id") or "").strip()
+                    or str((sim_payload.get("meta") or {}).get("circuit_id") or "").strip()
+                )
+                logger.info(
+                    "SPICE_RESOLVE_INPUT",
+                    extra={
+                        "stage": "SPICE_RESOLVE_INPUT",
+                        "request_circuit_id": str(request.circuit_id or "").strip(),
+                        "payload_circuit_id": str(sim_payload.get("circuit_id") or "").strip(),
+                        "resolved_circuit_id": resolved_circuit_id,
+                    },
+                )
+                if resolved_circuit_id:
+                    db = SessionLocal()
+                    try:
+                        artifact_repo = CircuitArtifactRepository(db)
+                        artifact = await artifact_repo.get_by_circuit_and_type(
+                            circuit_id=resolved_circuit_id,
+                            artifact_type="spice_deck",
+                        )
+                    finally:
+                        db.close()
+
+                    if artifact is None or not str(getattr(artifact, "content", "")).strip():
+                        raise HTTPException(
+                            status_code=404,
+                            detail=(
+                                f"No spice_deck artifact for circuit_id={resolved_circuit_id}. "
+                                "Call POST /api/chat first."
+                            ),
+                        )
+                    sim_payload["spice_netlist"] = artifact.content
+                    logger.info(
+                        "SPICE_RESOLVE_ARTIFACT",
+                        extra={
+                            "stage": "SPICE_RESOLVE_ARTIFACT",
+                            "circuit_id": resolved_circuit_id,
+                            "artifact_id": artifact.id,
+                        },
+                    )
+                else:
+                    # Keep previous behavior as last resort when circuit_id is absent.
+                    try:
+                        from app.application.ai.simulation_service import NgspiceCompilerService
+                        from app.application.ai.circuit_ir_schema import CircuitIR as AppCircuitIR
+
+                        ir_dict = _template_to_ir_dict(sim_payload, normalize_power_rails=True)
+                        app_ir_dict = _convert_template_ir_to_app_ir(ir_dict)
+                        app_ir = AppCircuitIR.model_validate(app_ir_dict)
+                        deck = NgspiceCompilerService().generate_spice_deck(app_ir)
+                        sim_payload.setdefault("spice_netlist", deck)
+                    except Exception as synth_exc:
+                        logger.warning(
+                            "Server-side netlist synthesis failed (no circuit_id, no inline netlist): %s",
+                            synth_exc,
+                            exc_info=True,
+                        )
+
             result = simulator.simulate_from_circuit_data(sim_payload)
         else:
             if request.analysis.type.lower() != "transient":
@@ -574,18 +677,22 @@ async def simulate_circuit(request: SimulationRequest) -> SimulationResponse:
 
         payload = result.to_dict()
         return SimulationResponse(**payload)
+    except HTTPException:
+        raise
     except Exception as e:
+        from app.application.ai.simulation_service import simulation_error_http_detail
+
         logger.error("Simulation endpoint error: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "simulation_failed", "message": str(e)},
+            detail=simulation_error_http_detail(e),
         )
 
 
 @router.post("/simulate/stream")
 async def simulate_circuit_stream(request: SimulationRequest) -> StreamingResponse:
     """Run simulation with SSE progress events for near real-time chatbot UX."""
-    from app.application.ai.simulation_service import to_sse_event
+    from app.application.ai.simulation_service import simulation_error_http_detail, to_sse_event
 
     simulator = _get_simulation_service()
 
@@ -612,6 +719,61 @@ async def simulate_circuit_stream(request: SimulationRequest) -> StreamingRespon
                     sim_payload["source_params"] = request.source_params
                 if request.netlist:
                     sim_payload.setdefault("spice_netlist", request.netlist)
+
+                # Step 1: payload resolution chain
+                netlist = (
+                    sim_payload.get("spice_netlist")
+                    or sim_payload.get("netlist")
+                    or sim_payload.get("ngspice_netlist")
+                )
+                if netlist:
+                    sim_payload["spice_netlist"] = netlist
+
+                # Step 2: fallback to artifact DB
+                if not sim_payload.get("spice_netlist"):
+                    resolved_circuit_id = (
+                        str(request.circuit_id or "").strip()
+                        or str(sim_payload.get("circuit_id") or "").strip()
+                        or str((sim_payload.get("meta") or {}).get("circuit_id") or "").strip()
+                    )
+                    if resolved_circuit_id:
+                        try:
+                            db = SessionLocal()
+                            try:
+                                artifact_repo = CircuitArtifactRepository(db)
+                                artifact = await artifact_repo.get_by_circuit_and_type(
+                                    circuit_id=resolved_circuit_id,
+                                    artifact_type="spice_deck",
+                                )
+                            finally:
+                                db.close()
+                            if artifact and str(getattr(artifact, "content", "")).strip():
+                                sim_payload["spice_netlist"] = artifact.content
+                                logger.info(
+                                    "SPICE_RESOLVE_ARTIFACT (stream)",
+                                    extra={"stage": "SPICE_RESOLVE_ARTIFACT", "circuit_id": resolved_circuit_id},
+                                )
+                        except Exception:
+                            logger.debug("Artifact lookup failed in stream path", exc_info=True)
+
+                # Step 3: server-side synthesis fallback
+                if not sim_payload.get("spice_netlist"):
+                    try:
+                        from app.application.ai.simulation_service import NgspiceCompilerService
+                        from app.application.ai.circuit_ir_schema import CircuitIR as AppCircuitIR
+
+                        ir_dict = _template_to_ir_dict(sim_payload, normalize_power_rails=True)
+                        app_ir_dict = _convert_template_ir_to_app_ir(ir_dict)
+                        app_ir = AppCircuitIR.model_validate(app_ir_dict)
+                        deck = NgspiceCompilerService().generate_spice_deck(app_ir)
+                        sim_payload.setdefault("spice_netlist", deck)
+                    except Exception as synth_exc:
+                        logger.warning(
+                            "Server-side netlist synthesis failed in stream path: %s",
+                            synth_exc,
+                            exc_info=True,
+                        )
+
                 result = simulator.simulate_from_circuit_data(sim_payload)
             else:
                 if request.analysis.type.lower() != "transient":
@@ -630,7 +792,7 @@ async def simulate_circuit_stream(request: SimulationRequest) -> StreamingRespon
 
             yield to_sse_event("result", result.to_dict())
         except Exception as exc:
-            yield to_sse_event("error", {"error": "simulation_failed", "message": str(exc)})
+            yield to_sse_event("error", simulation_error_http_detail(exc))
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
@@ -1004,6 +1166,217 @@ def _template_to_ir_dict(circuit_data: Dict[str, Any], normalize_power_rails: bo
     }
 
 
+def _convert_template_ir_to_app_ir(ir_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a minimal application-level CircuitIR dict from the template IR.
+
+    The goal is to populate the required fields of the strict pydantic model
+    with sensible defaults so the compiler can run. This is intentionally
+    permissive and provides reasonable fallbacks.
+
+    Topology detection: choose `architecture.stages[0].topology` based on the
+    first detected active device (op-amp → non_inverting, BJT → common_emitter,
+    MOSFET → common_source) so the compiler produces a correct deck for non-BJT
+    designs (e.g. LM358 non-inverting amplifier).
+    """
+    meta = ir_dict.get("meta", {}) or {}
+    components = ir_dict.get("components", []) or []
+    nets = ir_dict.get("nets", []) or []
+    ports = ir_dict.get("ports", []) or []
+
+    # Detect topology hint up-front so it can drive both stage topology and
+    # the choice of active_device_ref.
+    topology_hint_raw = str(
+        ir_dict.get("topology_type")
+        or meta.get("topology_type")
+        or meta.get("topology")
+        or ""
+    ).lower()
+
+    # Map components
+    app_components = []
+    first_active: Optional[str] = None
+    first_active_kind: Optional[str] = None
+    for idx, c in enumerate(components):
+        ref = str(c.get("id") or c.get("ref") or f"X{idx+1}").strip().upper()
+        ctype = str(c.get("type") or "resistor").strip()
+        # normalize some common aliases
+        if "bjt" in ctype.lower():
+            ctype_norm = "bjt_npn"
+        elif "cap" in ctype.lower():
+            ctype_norm = "capacitor"
+        elif "ind" in ctype.lower():
+            ctype_norm = "inductor"
+        elif "opamp" in ctype.lower() or "op_amp" in ctype.lower() or "op-amp" in ctype.lower():
+            ctype_norm = "opamp_ic"
+        elif ctype.lower() in {"gnd", "ground"}:
+            ctype_norm = "ground"
+        elif ctype.lower() in {"vcc", "vdd", "voltage_source", "power_symbol"}:
+            ctype_norm = "power_supply"
+        else:
+            ctype_norm = ctype.lower()
+
+        params = c.get("parameters", {}) or {}
+        # value extraction
+        value = c.get("value") or ""
+        if not value:
+            # common param keys
+            for key in ("resistance", "capacitance", "inductance", "voltage"):
+                if key in params:
+                    pv = params.get(key)
+                    if isinstance(pv, dict):
+                        value = pv.get("value", "")
+                    else:
+                        value = pv
+                    break
+
+        # model fallback (required by schema)
+        model = "GENERIC"
+        if "model" in params:
+            mv = params.get("model")
+            if isinstance(mv, dict):
+                model = str(mv.get("value") or mv.get("model") or "GENERIC")
+            else:
+                model = str(mv)
+        elif ctype_norm.startswith("bjt"):
+            model = "QNPN"
+        elif ctype_norm.startswith("mosfet"):
+            model = "MOSFET"
+
+        if first_active is None and ctype_norm.startswith(("bjt", "mosfet", "opamp")):
+            first_active = ref
+            if ctype_norm.startswith("opamp"):
+                first_active_kind = "opamp"
+            elif ctype_norm.startswith("bjt"):
+                first_active_kind = "bjt"
+            elif ctype_norm.startswith("mosfet"):
+                first_active_kind = "mosfet"
+
+        app_components.append({
+            "ref": ref,
+            "type": ctype_norm,
+            "value": str(value or ""),
+            "model": str(model),
+            "role": c.get("role") or "unknown_passive",
+            "topology_stage": int(c.get("topology_stage") or 0),
+            "standardized_value": c.get("standardized_value") or c.get("std_value") or "",
+            "operating_point_check": c.get("operating_point_check", ""),
+            "footprint": c.get("footprint") or c.get("kicad", {}).get("footprint", ""),
+            "kicad_symbol": c.get("kicad", {}).get("symbol_name", ""),
+        })
+
+    # Map nets
+    app_nets = []
+    for n in nets:
+        name = n.get("name") or n.get("net_name") or n.get("id") or ""
+        nodes = []
+        for cp in n.get("connected_pins", []) or []:
+            comp_id = str(cp.get("component_id") or cp.get("component") or "").strip()
+            pin = str(cp.get("pin_name") or cp.get("pin") or "").strip()
+            if comp_id and pin:
+                nodes.append(f"{comp_id}:{pin}".upper())
+        if nodes:
+            app_nets.append({"net_name": name or nodes[0].replace(":", "_") , "nodes": nodes})
+
+    # Ports → probe nodes (must match actual net_name strings for ngspice wrdata)
+    probe_nodes: List[str] = ["0"]
+    seen_probe: set[str] = {"0"}
+
+    def _add_probe_node(name: str) -> None:
+        u = str(name or "").strip().upper()
+        if not u:
+            return
+        if u not in seen_probe:
+            seen_probe.add(u)
+            probe_nodes.append(u)
+
+    for n in app_nets:
+        nn = str(n.get("net_name") or "").strip().upper()
+        nodes_upper = [str(x).upper() for x in (n.get("nodes") or [])]
+        if any(x.startswith("IN:") for x in nodes_upper):
+            _add_probe_node(nn or "IN")
+        if any(x.startswith("OUT:") for x in nodes_upper):
+            _add_probe_node(nn or "OUT")
+        low = nn.lower()
+        if low in {"vcc", "vdd", "v+", "vbat", "vsupply", "vpower"}:
+            _add_probe_node(nn)
+
+    for p in ports:
+        pname = str(p.get("name") or p.get("id") or "").upper()
+        if pname in {"VIN", "VOUT"}:
+            _add_probe_node("IN" if pname == "VIN" else "OUT")
+
+    if len(probe_nodes) <= 1:
+        for fallback in ("IN", "OUT", "VCC"):
+            _add_probe_node(fallback)
+
+    # Fill minimal analysis/architecture/power/signal_flow
+    analysis = {
+        "circuit_name": meta.get("circuit_name") or meta.get("version") or "generated_circuit",
+        "topology_classification": ir_dict.get("topology_type") or meta.get("topology_type") or "unknown",
+        "design_explanation": "",
+        "math_basis": "",
+        "expected_bom": [],
+        "calculations_table": [],
+        "calculated_values": {"gain_dB": 0.0, "bandwidth_Hz": 0.0, "input_impedance_ohm": 0.0, "output_impedance_ohm": 0.0},
+    }
+
+    # Pick stage topology that matches the actual active device family so the
+    # compiler emits the right deck (X-subckt for op-amp, Q line for BJT, ...).
+    def _infer_stage_topology() -> str:
+        # 1. Honor explicit topology hint from meta/ir_dict when usable.
+        hint = topology_hint_raw
+        if hint:
+            if "non_invert" in hint or "non-invert" in hint or "noninvert" in hint:
+                return "non_inverting"
+            if "invert" in hint and "non" not in hint:
+                return "inverting"
+            if "differential" in hint or "diff_amp" in hint:
+                return "differential"
+            if "common_emitter" in hint or "common-emitter" in hint or hint == "ce":
+                return "common_emitter"
+            if "common_collector" in hint or "common-collector" in hint or hint == "cc":
+                return "common_collector"
+            if "common_base" in hint or "common-base" in hint or hint == "cb":
+                return "common_base"
+            if "common_source" in hint or "common-source" in hint or hint == "cs":
+                return "common_source"
+            if "common_drain" in hint or "common-drain" in hint or hint == "cd":
+                return "common_drain"
+        # 2. Infer from detected active device family.
+        if first_active_kind == "opamp":
+            return "non_inverting"
+        if first_active_kind == "mosfet":
+            return "common_source"
+        return "common_emitter"
+
+    stage_topology = _infer_stage_topology()
+    architecture = {
+        "topology_type": "Single-stage",
+        "stage_count": 1,
+        "stages": [{
+            "id": "S1",
+            "topology": stage_topology,
+            "active_device_ref": first_active or (app_components[0]["ref"] if app_components else ""),
+        }],
+    }
+
+    power_and_coupling = {"power_rail": "Single (VCC-GND)", "output_strategy": "Common Load", "interstage_coupling": "None"}
+
+    signal_flow = {"input_node": "IN", "output_node": "OUT", "main_chain": [], "stage_links": []}
+
+    return {
+        "is_valid_request": True,
+        "clarification_question": "",
+        "analysis": analysis,
+        "architecture": architecture,
+        "power_and_coupling": power_and_coupling,
+        "signal_flow": signal_flow,
+        "components": app_components,
+        "nets": app_nets,
+        "probe_nodes": list({n for n in probe_nodes}),
+    }
+
+
 @router.post("/export-kicad")
 async def export_kicad(request: ExportKicadRequest):
     """
@@ -1062,7 +1435,7 @@ class ExportByCircuitIdRequest(BaseModel):
     circuit_id: str = Field(..., min_length=1)
 
 
-@router.post("/export-kicad")
+@router.post("/export-kicad/by-id")
 async def export_kicad_by_id(request: ExportByCircuitIdRequest):
     """Export artifacts for a stored circuit identifier.
 

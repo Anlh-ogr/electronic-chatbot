@@ -106,6 +106,10 @@ class ComponentType(Enum):
         aliases["pwr_port"] = cls.PORT
         aliases["vcc_port"] = cls.PORT
         aliases["gnd_port"] = cls.PORT
+        # LLM / app CircuitIR schema uses opamp_ic; normalize to domain OPAMP.
+        aliases["opamp_ic"] = cls.OPAMP
+        aliases["op_amp"] = cls.OPAMP
+        aliases["operational_amplifier"] = cls.OPAMP
         return aliases
 
     """

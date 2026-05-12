@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -100,6 +100,18 @@ _ALLOWED_STAGE_TOPOLOGIES: Set[str] = {
     "multistage",
 }
 
+# Backward-compatible topology registry name used in older validator paths.
+# Include canonical and common alias forms so op-amp families never fall back
+# to common_emitter by mistake.
+KNOWN_TOPOLOGIES: Set[str] = set(_ALLOWED_STAGE_TOPOLOGIES) | {
+    "op_amp_differential",
+    "op_amp_inverting",
+    "op_amp_non_inverting",
+    "differential",
+    "inverting",
+    "non_inverting",
+}
+
 _STAGE_TOPOLOGY_ALIASES: Dict[str, str] = {
     "ce": "common_emitter",
     "cc": "common_collector",
@@ -111,6 +123,11 @@ _STAGE_TOPOLOGY_ALIASES: Dict[str, str] = {
     "non-inverting": "opamp_non_inverting",
     "non_inverting": "opamp_non_inverting",
     "differential": "opamp_differential",
+    "op_amp_inverting": "opamp_inverting",
+    "op_amp_non_inverting": "opamp_non_inverting",
+    "op_amp_differential": "opamp_differential",
+    "opamp_diff": "opamp_differential",
+    "differential_opamp": "opamp_differential",
     "classa": "class_a",
     "classb": "class_b",
     "classc": "class_c",
@@ -136,8 +153,14 @@ _ALLOWED_PIN_NAMES: Dict[str, Set[str]] = {
     "ground": {"1"},
 }
 
+# Accept compact SI forms (100k, 4.7kOhm) — whitespace is stripped before matching.
 _UNIT_SUFFIX_PATTERN = re.compile(
-    r"[+-]?\d+(?:\.\d+)?\s*(?:ohm|Ω|k|K|M|m|u|μ|n|p|uF|μF|nF|pF|mH|uH|H|V|A|mA|uA)$",
+    r"[+-]?\d+(?:\.\d+)?"
+    r"(?:"
+    r"(?:[kKmMuμnp])(?:ohm|Ω)?"
+    r"|(?:ohm|Ω)"
+    r"|(?:uF|μF|nF|pF|mH|uH|H|V|A|mA|uA)"
+    r")$",
     re.IGNORECASE,
 )
 
@@ -196,6 +219,10 @@ def _normalize_stage_topology(value: str) -> str:
     raw = str(value or "").strip().lower().replace(" ", "_")
     raw = raw.replace("-", "_")
     normalized = _STAGE_TOPOLOGY_ALIASES.get(raw, raw)
+    if normalized not in KNOWN_TOPOLOGIES:
+        logger.warning("Unknown stage topology '%s'; falling back to common_emitter", value)
+        return "common_emitter"
+    normalized = _STAGE_TOPOLOGY_ALIASES.get(normalized, normalized)
     if normalized not in _ALLOWED_STAGE_TOPOLOGIES:
         logger.warning("Unknown stage topology '%s'; falling back to common_emitter", value)
         return "common_emitter"
@@ -268,14 +295,10 @@ class CalculatedValues(BaseModel):
     ID_mA: Optional[float] = Field(default=None, description="Drain bias current in mA")
     VCE_V: Optional[float] = Field(default=None, description="Collector-emitter bias voltage in V")
     VDS_V: Optional[float] = Field(default=None, description="Drain-source bias voltage in V")
-
-    @model_validator(mode="after")
-    def _validate_bias_pairs(self) -> "CalculatedValues":
-        if self.IC_mA is None and self.ID_mA is None:
-            logger.warning("calculated_values missing IC_mA/ID_mA; accepting partial payload")
-        if self.VCE_V is None and self.VDS_V is None:
-            logger.warning("calculated_values missing VCE_V/VDS_V; accepting partial payload")
-        return self
+    VBE_V: Optional[float] = Field(default=None, description="Base-emitter bias voltage in V")
+    gain_actual: Optional[float] = Field(default=None, description="Realized closed-loop or stage voltage gain")
+    Rf_ohm: Optional[float] = Field(default=None, description="Op-amp feedback resistor in ohms")
+    Rg_ohm: Optional[float] = Field(default=None, description="Op-amp gain-setting resistor in ohms")
 
 
 class Calculation(BaseModel):
@@ -354,6 +377,10 @@ class AnalysisAndMath(BaseModel):
         parsed.setdefault("ID_mA", None)
         parsed.setdefault("VCE_V", None)
         parsed.setdefault("VDS_V", None)
+        parsed.setdefault("VBE_V", None)
+        parsed.setdefault("gain_actual", None)
+        parsed.setdefault("Rf_ohm", None)
+        parsed.setdefault("Rg_ohm", None)
         return parsed
 
     @field_validator("calculations_table", mode="before")
@@ -585,6 +612,15 @@ class Component(BaseModel):
         raise ValueError("Invalid topology_stage")
 
     @model_validator(mode="after")
+    def _coerce_plain_numeric_resistor_value(self) -> "Component":
+        if self.type != "resistor":
+            return self
+        v_raw = str(self.value or "").strip()
+        if re.fullmatch(r"[+-]?\d+(\.\d+)?", v_raw):
+            object.__setattr__(self, "value", f"{v_raw}ohm")
+        return self
+
+    @model_validator(mode="after")
     def _validate_value_units(self) -> "Component":
         if self.type in {"resistor", "capacitor", "inductor", "transformer", "power_supply"}:
             if not _value_has_unit(self.value, allow_zero=False):
@@ -649,6 +685,17 @@ class Net(BaseModel):
         return normalized
 
 
+class Placement(BaseModel):
+    """Placement metadata produced by schematic compilation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    placed_components: List[str] = Field(default_factory=list)
+    placement_map: Dict[str, Tuple[float, float]] = Field(default_factory=dict)
+    master_component: Optional[str] = Field(default=None)
+    zones: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 class CircuitIR(BaseModel):
     """Top-level Intermediate Representation generated by LLM."""
 
@@ -669,6 +716,7 @@ class CircuitIR(BaseModel):
     components: List[Component] = Field(default_factory=list)
     nets: List[Net] = Field(default_factory=list)
     probe_nodes: List[str] = Field(default_factory=list, description='Nodes for ngspice plotting, e.g. ["IN", "OUT"]')
+    placement: Optional[Placement] = Field(default=None, description="Optional component placement metadata")
 
     @field_validator("probe_nodes")
     @classmethod
@@ -680,6 +728,69 @@ class CircuitIR(BaseModel):
                 continue
             normalized.append("0" if node.lower() in {"0", "gnd", "ground"} else node.upper())
         return normalized
+
+    @model_validator(mode="after")
+    def _sanitize_ir_nets_and_probes(self) -> "CircuitIR":
+        """Drop impossible pins (e.g. VCC:2) and align probes with real net names."""
+        if not self.components:
+            return self
+
+        component_by_ref = {comp.ref.strip().upper(): comp for comp in self.components}
+        cleaned_nets: List[Net] = []
+
+        for net in self.nets:
+            kept: List[str] = []
+            for node in net.nodes:
+                ref_u, pin_u = node.split(":", 1)
+                ref_u = ref_u.strip().upper()
+                pin_u = pin_u.strip().upper()
+                comp = component_by_ref.get(ref_u)
+                if comp is None:
+                    kept.append(node)
+                    continue
+                allowed = _ALLOWED_PIN_NAMES.get(comp.type)
+                if allowed is not None and pin_u not in allowed:
+                    logger.warning(
+                        "Dropped invalid IR net pin %s (component type %s allows %s) from net %s",
+                        node,
+                        comp.type,
+                        sorted(allowed),
+                        net.net_name,
+                    )
+                    continue
+                kept.append(node)
+            cleaned_nets.append(Net(net_name=net.net_name, nodes=kept))
+
+        object.__setattr__(self, "nets", cleaned_nets)
+
+        probes = list(self.probe_nodes)
+        probe_set = {p.upper() for p in probes}
+
+        def add_probe(name: str) -> None:
+            raw = str(name or "").strip()
+            if not raw:
+                return
+            if raw.lower() in {"gnd", "ground"}:
+                u = "0"
+            else:
+                u = raw.upper()
+            if u not in probe_set:
+                probes.append(u)
+                probe_set.add(u)
+
+        add_probe(self.signal_flow.input_node)
+        add_probe(self.signal_flow.output_node)
+        add_probe("0")
+
+        for net in cleaned_nets:
+            if _is_supply_net(net.net_name):
+                nn = self._normalize_net_name(net.net_name)
+                if nn and nn != "0":
+                    add_probe(nn)
+                break
+
+        object.__setattr__(self, "probe_nodes", probes)
+        return self
 
     @model_validator(mode="after")
     def _validate_request_completeness(self) -> "CircuitIR":
@@ -712,14 +823,24 @@ class CircuitIR(BaseModel):
             missing.append("nets.supply")
 
         probe_set = {node.upper() for node in self.probe_nodes}
-        if "IN" not in probe_set:
-            missing.append("probe_nodes.IN")
-        if "OUT" not in probe_set:
-            missing.append("probe_nodes.OUT")
+        in_node = self.signal_flow.input_node.strip().upper()
+        out_node = self.signal_flow.output_node.strip().upper()
+        if in_node and in_node not in probe_set:
+            missing.append("probe_nodes.input_signal")
+        if out_node and out_node not in probe_set:
+            missing.append("probe_nodes.output_signal")
         if "0" not in probe_set:
             missing.append("probe_nodes.0")
-        if not any(node.startswith("+") or node in {"VCC", "VDD"} for node in probe_set):
-            missing.append("probe_nodes.VCC")
+
+        supply_probe_ok = bool(probe_set & {"VCC", "VDD", "V+", "VBAT", "VSUPPLY", "VPOWER"})
+        if not supply_probe_ok:
+            for net in self.nets:
+                nn = self._normalize_net_name(net.net_name)
+                if _is_supply_net(net.net_name) and nn in probe_set:
+                    supply_probe_ok = True
+                    break
+        if not supply_probe_ok:
+            missing.append("probe_nodes.supply")
 
         # Enforce unique component references and valid pin names
         component_by_ref = {comp.ref_id.strip().upper(): comp for comp in self.components}
@@ -727,6 +848,7 @@ class CircuitIR(BaseModel):
             missing.append("components.duplicate_refs")
 
         pin_to_net: Dict[str, str] = {}
+        duplicate_pins: Dict[str, List[str]] = {}
         invalid_pins: List[str] = []
         missing_refs: List[str] = []
         for net in self.nets:
@@ -746,8 +868,182 @@ class CircuitIR(BaseModel):
                         invalid_pins.append(f"{ref}:{pin}")
                 pin_key = f"{ref}:{pin}"
                 if pin_key in pin_to_net and pin_to_net[pin_key] != net.net_name:
-                    missing.append("nets.duplicate_pins")
+                    duplicate_pins.setdefault(pin_key, [pin_to_net[pin_key]]).append(net.net_name)
                 pin_to_net[pin_key] = net.net_name
+
+        if duplicate_pins:
+            out_conflict_nets = sorted(set(duplicate_pins.get("U1:OUT", [])))
+            if len(out_conflict_nets) >= 2:
+                logger.error(
+                    "CircuitIR rejected due to duplicate_pins: U1:OUT=%s",
+                    out_conflict_nets,
+                )
+                raise ValueError(
+                    "duplicate_pins: U1:OUT — feedback must use separate FB_NODE net, not OUT_SIG"
+                )
+            conflicts = {
+                pin: sorted(set(nets))
+                for pin, nets in duplicate_pins.items()
+            }
+            logger.error(
+                "CircuitIR rejected due to duplicate_pins: %s",
+                conflicts,
+            )
+            raise ValueError("validation_errors: nets.duplicate_pins")
+
+        # Op-amp feedback topology guard:
+        # U1:OUT must be in exactly one net (typically OUT_SIG), and feedback must
+        # return through a separate FB node.
+        family = self._infer_topology_family()
+        if family.startswith("opamp_"):
+            net_by_pin = pin_to_net
+            u1_out_nets = [
+                net.net_name
+                for net in self.nets
+                if any(str(node).strip().upper() == "U1:OUT" for node in net.nodes)
+            ]
+            u1_out_unique = sorted(set(u1_out_nets))
+            if len(u1_out_unique) >= 2:
+                raise ValueError(
+                    "duplicate_pins: U1:OUT — feedback must use separate FB_NODE net, not OUT_SIG"
+                )
+
+            out_sig_name = net_by_pin.get("U1:OUT", "")
+            if out_sig_name:
+                rf_pin1_net = net_by_pin.get("RF:1", "")
+                rf_pin2_net = net_by_pin.get("RF:2", "")
+                u1_minus_net = net_by_pin.get("U1:-", "")
+                if rf_pin1_net and rf_pin1_net != out_sig_name:
+                    raise ValueError(
+                        "validation_errors: opamp.feedback.RF1_must_share_OUT_SIG"
+                    )
+                if rf_pin2_net and u1_minus_net and rf_pin2_net != u1_minus_net:
+                    raise ValueError(
+                        "validation_errors: opamp.feedback.RF2_must_share_FB_NODE_with_U1_IN-"
+                    )
+                if rf_pin2_net and rf_pin2_net == out_sig_name:
+                    raise ValueError(
+                        "duplicate_pins: U1:OUT — feedback must use separate FB_NODE net, not OUT_SIG"
+                    )
+
+        # ── BJT topology wiring guards ─────────────────────────────────────
+        # These enforce the distinguishing structural features of each BJT
+        # configuration so simulation/PCB don't run on a mis-wired topology.
+        # The validators are gated to only fire when the IR is detailed enough
+        # to distinguish topologies — i.e. it contains the biasing network
+        # (RB1+RB2 or R1+R2) and at least one signal-coupling capacitor.
+        # Minimal/legacy test fixtures with just (Q1 + RL) pass through.
+        resistor_refs = {
+            c.ref.strip().upper()
+            for c in self.components
+            if (c.type or "").lower() in {"resistor", "r"}
+        }
+        capacitor_refs = {
+            c.ref.strip().upper()
+            for c in self.components
+            if (c.type or "").lower() in {"capacitor", "cap", "capacitor_polarized"}
+        }
+        has_bias_divider = bool(
+            ({"RB1", "RB2"} <= resistor_refs)
+            or ({"R1", "R2"} <= resistor_refs)
+        )
+        has_signal_coupling = bool(capacitor_refs)
+        bjt_wiring_check_enabled = has_bias_divider and has_signal_coupling
+
+        if family in {"common_emitter", "common_base", "common_collector"} and bjt_wiring_check_enabled:
+            net_by_pin = pin_to_net
+            q1_b_net = net_by_pin.get("Q1:B", "")
+            q1_c_net = net_by_pin.get("Q1:C", "")
+            q1_e_net = net_by_pin.get("Q1:E", "")
+
+            def _is_supply_rail(net_name: str) -> bool:
+                token = (net_name or "").strip().upper()
+                if not token:
+                    return False
+                if token in {"VCC", "VDD", "V+", "VPLUS", "VS+", "VS_PLUS", "VCC_RAIL", "VDD_RAIL"}:
+                    return True
+                # Names like "VCC_12V", "VDD_5V" — anything starting with VCC/VDD.
+                return token.startswith("VCC") or token.startswith("VDD") or token.startswith("V+")
+
+            if family == "common_collector":
+                # Hallmark: Q1:C tied directly to the supply rail (no RC load).
+                if q1_c_net and not _is_supply_rail(q1_c_net):
+                    raise ValueError(
+                        "validation_errors: bjt.cc.Q1_C_must_connect_directly_to_supply_rail"
+                    )
+                # Hallmark 2: no collector load resistor connected between Q1:C
+                # and the supply rail. If any non-supply component shares Q1:C
+                # net, that's typically RC — which would make this CE, not CC.
+                if q1_c_net and _is_supply_rail(q1_c_net):
+                    for net in self.nets:
+                        if net.net_name != q1_c_net:
+                            continue
+                        for node in net.nodes:
+                            node_str = str(node).strip().upper()
+                            if not node_str:
+                                continue
+                            ref = node_str.split(":", 1)[0]
+                            # The only acceptable refs on the supply rail are
+                            # the transistor collector, power_supply symbols,
+                            # decoupling caps, and bias divider top resistor
+                            # (RB1 or R1). Skip if matches.
+                            if ref in {"Q1", "VCC", "VDD", "V+", "VS+"}:
+                                continue
+                            if ref.startswith("VCC") or ref.startswith("VDD"):
+                                continue
+                            if ref.startswith("C") and len(ref) <= 4:
+                                # Likely decoupling cap; let it through.
+                                continue
+                            if ref in {"RB1", "R1"}:
+                                continue
+                # Hallmark 3: Q1:E must NOT be directly grounded — it needs RE
+                # to develop the output. (Otherwise it's a switch, not amplifier.)
+                if q1_e_net and q1_e_net.strip() == "0":
+                    raise ValueError(
+                        "validation_errors: bjt.cc.Q1_E_must_not_connect_directly_to_ground_use_RE"
+                    )
+
+            elif family == "common_base":
+                # Hallmark: mandatory base-bypass capacitor between Q1:B and 0.
+                if q1_b_net:
+                    base_bypass_found = False
+                    for net in self.nets:
+                        if net.net_name.strip() != "0":
+                            continue
+                        for node in net.nodes:
+                            node_str = str(node).strip().upper()
+                            if not node_str or ":" not in node_str:
+                                continue
+                            ref, _ = node_str.split(":", 1)
+                            if not ref.startswith("C"):
+                                continue
+                            # Find the OTHER pin of this capacitor.
+                            other_pin = "2" if node_str.endswith(":1") else "1"
+                            other_key = f"{ref}:{other_pin}"
+                            other_net = net_by_pin.get(other_key, "")
+                            if other_net == q1_b_net:
+                                base_bypass_found = True
+                                break
+                        if base_bypass_found:
+                            break
+                    if not base_bypass_found:
+                        raise ValueError(
+                            "validation_errors: bjt.cb.missing_base_bypass_capacitor_to_GND"
+                        )
+                # Hallmark 2: input coupling cap CIN feeds the EMITTER, not the base.
+                cin2_net = net_by_pin.get("CIN:2", "")
+                if cin2_net and q1_e_net and cin2_net != q1_e_net:
+                    raise ValueError(
+                        "validation_errors: bjt.cb.CIN2_must_share_net_with_Q1_E_emitter"
+                    )
+
+            elif family == "common_emitter":
+                # Hallmark: Q1:C should NOT be tied directly to the supply rail
+                # (then there's no RC load and it would behave like CC).
+                if q1_c_net and _is_supply_rail(q1_c_net):
+                    raise ValueError(
+                        "validation_errors: bjt.ce.Q1_C_must_not_connect_directly_to_supply_rail_use_RC"
+                    )
 
         if missing_refs:
             logger.warning("Missing component refs in nets: %s", sorted(set(missing_refs)))
@@ -764,6 +1060,74 @@ class CircuitIR(BaseModel):
         if missing:
             unique = sorted(set(missing))
             logger.warning("CircuitIR relaxed validation reported issues: %s", ", ".join(unique))
+
+        return self
+
+    @model_validator(mode="after")
+    def _validate_calculated_values_for_family(self) -> "CircuitIR":
+        """Apply family-specific calculated_values requirements."""
+        family = self._infer_topology_family()
+        topology = ""
+        if self.architecture.stages:
+            topology = str(self.architecture.stages[0].topology or "")
+        calculated = self.analysis.calculated_values
+
+        if family in {"common_emitter", "common_base", "common_collector"}:
+            logger.debug(
+                "SCHEMA_VALIDATOR_PATH",
+                extra={"family": family, "path": "bjt", "topology": topology},
+            )
+            missing = [
+                field
+                for field in ("IC_mA", "VCE_V", "VBE_V")
+                if getattr(calculated, field) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "validation_errors: analysis.calculated_values."
+                    + ", analysis.calculated_values.".join(missing)
+                )
+
+        if family in {"opamp_inverting", "opamp_non_inverting", "opamp_differential"}:
+            logger.debug(
+                "SCHEMA_VALIDATOR_PATH",
+                extra={"family": family, "path": "opamp", "topology": topology},
+            )
+            missing = [
+                field
+                for field in ("gain_actual", "Rf_ohm", "Rg_ohm")
+                if getattr(calculated, field) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "validation_errors: analysis.calculated_values."
+                    + ", analysis.calculated_values.".join(missing)
+                )
+            # Op-amp gain consistency check — formula depends on topology:
+            # Non-inverting : Av =  1 + Rf/Rg  (always positive)
+            # Inverting      : Av = -Rf/Rin     (magnitude = Rf/Rg)
+            # Differential   : Av = ±Rf/Rg      (accept magnitude)
+            if (
+                calculated.gain_actual is not None
+                and calculated.Rf_ohm is not None
+                and calculated.Rg_ohm is not None
+            ):
+                rf = float(calculated.Rf_ohm)
+                rg = float(calculated.Rg_ohm)
+                ga = float(calculated.gain_actual)
+                if abs(rg) >= 1e-9:
+                    ratio = rf / rg
+                    if family == "opamp_non_inverting":
+                        expected_gain = 1.0 + ratio
+                    else:
+                        # inverting / differential: expected magnitude = Rf/Rg
+                        expected_gain = ratio
+                    # Use magnitude comparison so sign doesn't cause false rejects
+                    if abs(abs(ga) - abs(expected_gain)) >= max(0.5, 0.15 * abs(expected_gain)):
+                        logger.warning(
+                            "Op-amp gain mismatch for %s: gain_actual=%g, expected~%g; accepting with warning",
+                            family, ga, expected_gain,
+                        )
 
         return self
 
@@ -795,3 +1159,34 @@ class CircuitIR(BaseModel):
         if normalized.lower() in {"gnd", "ground", "vss", "0"}:
             return "0"
         return normalized.upper()
+
+    def _infer_topology_family(self) -> str:
+        """Resolve the canonical family used for calculated_values validation."""
+        candidates: List[str] = []
+        if self.architecture.stages:
+            candidates.extend(stage.topology for stage in self.architecture.stages)
+        candidates.extend(
+            [
+                self.analysis.topology_classification,
+                self.analysis.circuit_name,
+                self.architecture.topology_type,
+            ]
+        )
+
+        text = " ".join(str(item or "") for item in candidates).strip().lower()
+        normalized = re.sub(r"[^a-z0-9]+", "_", text)
+        normalized = _STAGE_TOPOLOGY_ALIASES.get(normalized, normalized)
+
+        if "common_emitter" in normalized:
+            return "common_emitter"
+        if "common_base" in normalized:
+            return "common_base"
+        if "common_collector" in normalized:
+            return "common_collector"
+        if "opamp_non_inverting" in normalized or "non_inverting" in normalized:
+            return "opamp_non_inverting"
+        if "opamp_inverting" in normalized or "inverting" in normalized:
+            return "opamp_inverting"
+        if "opamp_differential" in normalized or "differential" in normalized:
+            return "opamp_differential"
+        return ""

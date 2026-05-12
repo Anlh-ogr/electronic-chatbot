@@ -502,16 +502,21 @@ class KiCad8SchematicCompiler:
             else:
                 raw_layout = nx.spring_layout(graph, seed=42)
         except Exception as exc:
-            logger.warning("graph layout failed (%s). Falling back to spring layout.", exc)
-            try:
-                raw_layout = nx.spring_layout(graph, seed=42)
-            except Exception:
-                return self._fallback_line_placement(refs)
+            logger.warning("graph layout failed (%s). Falling back to line placement.", exc)
+            return self._fallback_line_placement(refs)
 
-        return self._normalize_layout_to_grid(raw_layout)
+        normalized = self._normalize_layout_to_grid(raw_layout)
+        # Ensure all refs have placements; use fallback for missing ones
+        if not normalized or len(normalized) < len(refs):
+            logger.warning(f"Layout incomplete ({len(normalized) if normalized else 0}/{len(refs)}); using fallback")
+            return self._fallback_line_placement(refs)
+        return normalized
 
-    def compile_to_sch(self, ir: CircuitIR) -> str:
-        """Compile CircuitIR into a minimal valid KiCad 8 schematic string."""
+    def compile_to_sch(self, ir: CircuitIR) -> Dict[str, Any]:
+        """Compile CircuitIR into a minimal valid KiCad 8 schematic string.
+        
+        Returns dict with 'schematic' and 'placement' keys.
+        """
         from app.application.ai.kicad_symbol_library import get_kicad_symbol_mapper
         
         placements = self._calculate_placement(ir)
@@ -571,6 +576,8 @@ class KiCad8SchematicCompiler:
             symbol_lines.append('  )')
             lines.extend(symbol_lines)
 
+        wire_count = 0
+        junction_count = 0
         for net in ir.nets:
             points: List[Tuple[float, float]] = []
             for node in net.nodes:
@@ -586,15 +593,77 @@ class KiCad8SchematicCompiler:
             if len(points) < 2:
                 continue
 
+            if len(points) >= 3:
+                junction_count += 1
+
             anchor = points[0]
             for point in points[1:]:
                 lines.append(
                     f'  (wire (pts (xy {anchor[0]:.3f} {anchor[1]:.3f}) (xy {point[0]:.3f} {point[1]:.3f})) '
                     f'(stroke (width 0) (type default)) (uuid "{uuid.uuid4().hex}"))'
                 )
+                wire_count += 1
 
         lines.append(')')
-        return "\n".join(lines) + "\n"
+        sch_content = "\n".join(lines) + "\n"
+
+        master = self._infer_master_component(ir, placements)
+
+        return {
+            "schematic": sch_content,
+            "placement": {
+                "placed_components": list(placements.keys()),
+                "placement_map": placements,
+                "master_component": master,
+                "zones": [],
+            },
+            "metadata": {
+                "wires": wire_count,
+                "junctions": junction_count,
+            },
+        }
+
+    def _infer_master_component(
+        self,
+        ir: CircuitIR,
+        placements: Dict[str, Tuple[float, float]],
+    ) -> Optional[str]:
+        """Prefer the active amplifying device for placement/logging, not an arbitrary first ref."""
+        placed = {str(k).strip().upper() for k in placements.keys()}
+        try:
+            for st in ir.architecture.stages or []:
+                ref = str(getattr(st, "active_device_ref", "") or "").strip().upper()
+                if ref and ref in placed:
+                    return ref
+        except Exception:
+            pass
+
+        ranked: List[Tuple[int, str]] = []
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            if ref not in placed:
+                continue
+            ct = str(comp.type or "").strip().lower()
+            if ct in {"bjt_npn", "bjt_pnp", "npn", "pnp"}:
+                ranked.append((0, ref))
+            elif ct in {"mosfet_n", "mosfet_p"}:
+                ranked.append((1, ref))
+            elif ct == "opamp_ic":
+                ranked.append((2, ref))
+        if ranked:
+            ranked.sort(key=lambda x: (x[0], x[1]))
+            return ranked[0][1]
+
+        skip_types = {"power_supply", "ground", "connector", "power_symbol"}
+        for comp in ir.components:
+            ref = comp.ref_id.strip().upper()
+            if ref not in placed:
+                continue
+            if str(comp.type or "").strip().lower() in skip_types:
+                continue
+            return ref
+
+        return next(iter(placements.keys()), None) if placements else None
 
     def _normalize_layout_to_grid(self, layout: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
         xs = [float(pos[0]) for pos in layout.values()]

@@ -25,6 +25,7 @@ import json
 import logging
 import asyncio
 import functools
+import math
 import os
 import re
 import time
@@ -498,7 +499,11 @@ class ChatbotService:
         artifact_id = uuid.uuid4().hex  # keep hex for filename
         circuit_id = str(uuid.uuid4())  # uuid format for DB lookup
 
-        sch_content = sch_compiler.compile_to_sch(validated_ir)
+        sch_result = sch_compiler.compile_to_sch(validated_ir)
+        sch_content = sch_result["schematic"] if isinstance(sch_result, dict) else sch_result
+        placement_data = sch_result.get("placement", {}) if isinstance(sch_result, dict) else {}
+        sch_export_meta = sch_result.get("metadata", {}) if isinstance(sch_result, dict) else {}
+        
         spice_deck = spice_compiler.generate_spice_deck(validated_ir)
 
         sch_file_name = f"{artifact_id}.kicad_sch"
@@ -509,10 +514,16 @@ class ChatbotService:
         spice_file_path = output_dir / spice_file_name
         spice_file_path.write_text(spice_deck, encoding="utf-8")
 
+        circuit_data = validated_ir.model_dump(mode="json")
+        # Add placement data to circuit_data for logging
+        if placement_data:
+            circuit_data["placement"] = placement_data
+        
+        sch_bytes = len(sch_content.encode("utf-8")) if isinstance(sch_content, str) else None
         return {
             "message": "Circuit compiled successfully",
             "mode": selected_mode.value,
-            "circuit_data": validated_ir.model_dump(mode="json"),          # ← dùng dict đã inject, không gọi lại model_dump
+            "circuit_data": circuit_data,
             "circuit_id": circuit_id,
             "download_url": f"/api/chat/compiled/{sch_file_name}",
             "spice_deck_ready": True,
@@ -520,6 +531,11 @@ class ChatbotService:
             "spice_deck_url": f"/api/chat/compiled/{spice_file_name}",
             "self_correction_retries": retries_used,
             "artifact_id": artifact_id,
+            "metadata": {
+                "wires": sch_export_meta.get("wires"),
+                "junctions": sch_export_meta.get("junctions"),
+                "file_size_bytes": sch_bytes,
+            },
         }
 
     @staticmethod
@@ -870,8 +886,14 @@ class ChatbotService:
 
         # ─── Step 2: LLM generates complete CircuitIR ───
         # The LLM is the SOLE engine for circuit generation (no ai_core rule-based fallback)
+        # Pre-compute component values via ParameterSolver so the LLM starts
+        # from a known-good biasing/gain solution instead of inventing values.
+        # Solver covers all six supported topologies (CE/CB/CC + inverting/
+        # non_inverting/differential); for unsupported families it is a no-op
+        # and we just pass the raw user text through.
+        llm_requirements = self._augment_with_solver_hint(intent)
         ir_result = self._router.generate_circuit_ir(
-            intent.raw_text,
+            llm_requirements,
             mode=mode,
             max_schema_retries=3,
             max_completeness_retries=2,
@@ -944,6 +966,113 @@ class ChatbotService:
 
         response.processing_time_ms = (time.time() - start) * 1000
         return response
+
+    @staticmethod
+    def _augment_with_solver_hint(intent: "CircuitIntent") -> str:
+        """Prepend pre-computed component values to the LLM requirements text.
+
+        Uses `ParameterSolver` to compute R/C values that match the requested
+        gain for the detected topology family, then injects the result as a
+        constraint block inside the requirements. The LLM is instructed to
+        anchor its component choices on these values (it may still adjust them
+        for biasing or stability, but it should not invent unrelated numbers).
+
+        No-op when the family is unsupported by the solver or the gain target
+        is missing — in that case the original raw text is returned unchanged.
+        """
+        raw = (intent.raw_text or "").strip()
+        family = (intent.circuit_type or "").strip()
+        gain = intent.gain_target
+
+        if not raw:
+            return raw
+        if not family or family == "unknown":
+            return raw
+        if gain is None:
+            return raw
+
+        try:
+            from app.domains.circuits.ai_core.parameter_solver import (
+                ParameterSolver,
+            )
+        except Exception as exc:  # pragma: no cover — solver is in-tree
+            logger.warning("ParameterSolver import failed; skipping hint: %s", exc)
+            return raw
+
+        try:
+            solver = ParameterSolver(preferred_series="E24")
+            solved = solver.solve(
+                target_gain=float(gain),
+                family=family,
+                metadata={
+                    "vcc": float(intent.vcc) if intent.vcc is not None else 12.0,
+                    "solver_hints": {},
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "ParameterSolver.solve failed for family=%s gain=%s: %s",
+                family,
+                gain,
+                exc,
+                exc_info=True,
+            )
+            return raw
+
+        if not solved or not solved.success or not solved.values:
+            return raw
+
+        def _fmt_ohm(val: float) -> str:
+            if not math.isfinite(val) or val <= 0:
+                return str(val)
+            if val >= 1_000_000:
+                return f"{val / 1_000_000:.2f}MΩ"
+            if val >= 1_000:
+                return f"{val / 1_000:.2f}kΩ"
+            return f"{val:.0f}Ω"
+
+        lines: List[str] = []
+        lines.append(
+            f"\n\n--- PRE-COMPUTED COMPONENT VALUES (computed by ParameterSolver for family={family}, target_gain={gain}) ---"
+        )
+        lines.append(
+            "Use these resistor values as the design anchor. You MAY round to the nearest E24 standard value if needed, "
+            "but DO NOT invent unrelated numbers — the gain math has already been balanced for you."
+        )
+        for name, val in solved.values.items():
+            try:
+                fval = float(val)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(fval) or fval <= 0:
+                continue
+            lines.append(f"  - {name} = {_fmt_ohm(fval)}  (raw: {fval:.4g} Ω)")
+        if solved.gain_formula:
+            lines.append(f"Gain formula: {solved.gain_formula}")
+        if solved.actual_gain is not None and math.isfinite(solved.actual_gain):
+            lines.append(
+                f"Solver-computed Av = {solved.actual_gain:.3f} (target = {gain})"
+            )
+        if solved.equations_used:
+            lines.append("Equations used:")
+            for eq in solved.equations_used:
+                lines.append(f"  • {eq}")
+        if solved.notes:
+            lines.append("Solver notes: " + "; ".join(solved.notes))
+        if solved.warnings:
+            lines.append("Solver warnings: " + "; ".join(solved.warnings))
+        lines.append("--- END PRE-COMPUTED VALUES ---")
+
+        log_stage(
+            "PARAM_SOLVER",
+            family=family,
+            target_gain=gain,
+            actual_gain=solved.actual_gain,
+            values_count=len(solved.values),
+            success=bool(solved.success),
+        )
+
+        return raw + "\n".join(lines)
 
     def _attach_compile_artifacts_to_response(
         self,
@@ -1034,6 +1163,7 @@ class ChatbotService:
                     circuit_name=ir_payload.get("meta", {}).get("circuit_name", "Unnamed"),
                     session_id=chat_id,
                     message_id=message_id,
+                    ir=ir,
                 )
 
                 ir_id = await ir_repo.save_ir(
@@ -3859,7 +3989,12 @@ class ChatbotService:
                 "execution_time_ms": sim_dict.get("execution_time_ms", 0),
                 "probe_count": len(sim_payload.get("nodes_to_monitor", [])),
             }
-        except (SimulationError, Exception) as exc:
+        except SimulationError as exc:
+            payload = exc.detail_payload()
+            payload["status"] = "failed"
+            payload["reason"] = str(exc)
+            return payload
+        except Exception as exc:
             return {"status": "failed", "reason": str(exc)}
 
     def _should_auto_simulate(self, circuit_data: Dict[str, Any]) -> bool:

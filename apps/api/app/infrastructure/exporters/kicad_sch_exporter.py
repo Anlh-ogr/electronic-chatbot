@@ -4,14 +4,6 @@
 Module này cung cấp triển khai cụ thể của ExporterPort cho định dạng KiCad
 .kicad_sch. Nó điều phối layout planning + schematic serialization để
 tạo ra file .kicad_sch hoàn chỉnh.
-
-Vietnamese:
-- Trách nhiệm: Xuất Circuit entities thành KiCad schematic format
-- Quy trình: Circuit → Layout planning → Serialization → .kicad_sch text
-
-English:
-- Responsibility: Export Circuit entities to KiCad schematic format
-- Workflow: Circuit → Layout planning → Serialization → .kicad_sch text
 """
 
 from __future__ import annotations
@@ -21,6 +13,7 @@ from __future__ import annotations
 # datetime: Timestamp metadata cho schematic files
 from dataclasses import dataclass
 from types import SimpleNamespace
+import math
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
 
@@ -37,11 +30,103 @@ from app.infrastructure.exporters.layout_planner import LayoutPlanner
 from app.infrastructure.exporters.kicad_sch_serializer import KiCadSchSerializer
 from app.infrastructure.exporters.placement import GRID_MM, classify, compose, solve_stage
 from app.infrastructure.exporters.placement.orthogonal_router import route_net, route_pair
-from app.infrastructure.exporters.placement.pin_resolver import resolve_pins
+from app.infrastructure.exporters.placement.pin_resolver import get_pin_coordinate, pin_offset_for_instance
 from app.infrastructure.exporters.placement.role_inferrer import infer_roles
+from app.infrastructure.exporters.graphviz_schematic_layout import (
+    center_placements_mm,
+    layout_schematic_with_pygraphviz,
+)
+from app.infrastructure.exporters.connectivity_validator import (
+    ConnectivityReport,
+    run_connectivity_validation,
+)
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Junction detection helpers (module-level so both class copies can share)
+# ---------------------------------------------------------------------------
+
+def _pt_on_orthogonal_segment(
+    pt: Tuple[float, float],
+    a: Tuple[float, float],
+    b: Tuple[float, float],
+) -> bool:
+    """Return True iff *pt* lies STRICTLY between endpoints *a* and *b*
+    on an axis-aligned (orthogonal) wire segment.
+    """
+    px, py = pt
+    ax, ay = a
+    bx, by = b
+    if ax == bx == px:          # vertical segment
+        lo, hi = (min(ay, by), max(ay, by))
+        return lo < py < hi
+    if ay == by == py:          # horizontal segment
+        lo, hi = (min(ax, bx), max(ax, bx))
+        return lo < px < hi
+    return False
+
+
+def _find_junctions_from_wires(wires: list, forced: set | None = None) -> set:
+    """Detect KiCad junction points from a list of routed wire dicts.
+
+    Algorithm
+    ---------
+    Route_pair produces L-shaped polylines [P1, corner, P2].  When two
+    separate polylines share the same corner or when a wire endpoint lands
+    on the interior of another wire, the naive "count all points ≥ 3"
+    approach misses junctions because corners appear at most once per
+    polyline.
+
+    Fix: first *decompose* every polyline into individual 2-point segments,
+    then count segment **endpoints** only.  Any grid point touched by 3 or
+    more segment endpoints is a T/X junction and needs a KiCad junction dot.
+    Additionally, any segment endpoint that falls strictly *inside* another
+    segment (not at its endpoints) is a T-junction and also needs a dot.
+    """
+    # Step 1 – decompose polylines into individual straight 2-pt segments
+    segments: list[tuple[tuple, tuple]] = []
+    for wire in wires:
+        pts = wire.get("points", [])
+        for i in range(len(pts) - 1):
+            a = (round(pts[i][0], 6), round(pts[i][1], 6))
+            b = (round(pts[i + 1][0], 6), round(pts[i + 1][1], 6))
+            if a != b:
+                segments.append((a, b))
+
+    # Step 2 – count how many segment endpoints touch each grid point
+    ep_count: dict[tuple, int] = {}
+    for a, b in segments:
+        ep_count[a] = ep_count.get(a, 0) + 1
+        ep_count[b] = ep_count.get(b, 0) + 1
+
+    junctions: set[tuple] = set()
+
+    # Rule 1 – 3+ segment endpoints → fan-out junction or X-crossing
+    for pt, cnt in ep_count.items():
+        if cnt >= 3:
+            junctions.add(pt)
+
+    # Rule 2 – endpoint strictly inside another segment → T-junction
+    all_eps = list(ep_count.keys())
+    for ep in all_eps:
+        if ep in junctions:
+            continue  # already flagged
+        for a, b in segments:
+            if ep in (a, b):
+                continue
+            if _pt_on_orthogonal_segment(ep, a, b):
+                junctions.add(ep)
+                break
+
+    # Merge any hub points forced by the caller (hub-and-spoke centroids where
+    # only 2 wires meet because one net-pin IS at the hub coordinate).
+    if forced:
+        junctions.update(forced)
+
+    return junctions
 
 
 class KiCadSchExporter(ExporterPort):
@@ -59,6 +144,9 @@ class KiCadSchExporter(ExporterPort):
         self.serializer = KiCadSchSerializer()
         self.quality_evaluator = LayoutQualityEvaluator()
         self._last_layout_quality_report: LayoutQualityReport | None = None
+        self._last_connectivity_report: ConnectivityReport | None = None
+        self._placement_done = False
+        self._finalize_done = False
     
     async def export(
         self,
@@ -97,16 +185,37 @@ class KiCadSchExporter(ExporterPort):
             net_count = len(getattr(circuit, "nets", {}))
             logger.info(f"[SCH DEBUG] Generating SCH for circuit_id={cid}, components={comp_count}, nets={net_count}")
             self._last_layout_quality_report = None
+            self._placement_done = False
+            self._finalize_done = False
 
             # Fail-fast: ensure circuit has components and nets
             if not getattr(circuit, 'components', None) or not getattr(circuit, 'nets', None):
                 raise ExportError(format_type=format_type.value, reason=f"Empty circuit: components={len(getattr(circuit,'components',{}))}, nets={len(getattr(circuit,'nets',{}))}")
 
-            placements, rotations, pin_positions = self._agr_place_components(circuit)
+            gv = layout_schematic_with_pygraphviz(circuit)
+            if gv is not None:
+                placements, rotations = gv
+                logger.info("[SCH DEBUG] Placement source=pygraphviz (dot)")
+            else:
+                placements, rotations, _agr_pins = self._agr_place_components(circuit)
+                logger.info("[SCH DEBUG] Placement source=AGR solver")
+
+            # Snap → normalise → centre → re-snap.
+            # center_placements_mm() shifts by an arbitrary (dx, dy) that takes
+            # placements off the 2.54 mm grid; the second snap brings them back.
             placements = self._snap_placements(placements, GRID_MM)
             placements = self._normalize_origin(placements, GRID_MM * 4.0)
-            pin_positions = self._rebuild_pin_positions(circuit, placements, rotations, pin_positions)
-            wires = self._route_wires(circuit, pin_positions)
+            placements = center_placements_mm(placements)
+            placements = self._snap_placements(placements, GRID_MM)
+
+            # Always build pin_positions from FINAL on-grid placements.
+            # Passing {} forces a full recompute; re-using a stale dict would
+            # cause _rebuild_pin_positions to skip every key (already present)
+            # and leave all coordinates tied to the pre-snap positions — making
+            # route_pair() snap wire endpoints to different grid cells than the
+            # pin positions, which orphans every pin in the netlist.
+            pin_positions = self._rebuild_pin_positions(circuit, placements, rotations, {})
+            wires, forced_junctions = self._route_wires(circuit, pin_positions)
             wires = self._snap_wires(wires, GRID_MM)
             wires = self._filter_short_wires(wires, GRID_MM)
 
@@ -120,14 +229,24 @@ class KiCadSchExporter(ExporterPort):
             wires = self._snap_wires(wires, GRID_MM)
             wires = self._filter_short_wires(wires, GRID_MM)
 
+            # ── Connectivity validation (Req 1–9) ──────────────────────
+            self._last_connectivity_report = run_connectivity_validation(
+                circuit,
+                placements,
+                rotations,
+                pin_positions,
+                wires,
+                emit_debug_log=logger.isEnabledFor(logging.DEBUG),
+            )
+
             self._last_layout_quality_report = self._evaluate_layout_quality_agr(
                 circuit,
                 placements,
                 wires,
             )
 
-            # Find junctions
-            junctions = self._find_junctions(wires)
+            # Find junctions — include hub points from hub-and-spoke routing
+            junctions = _find_junctions_from_wires(wires, forced=forced_junctions)
 
             # Serialize to KiCad format
             ir = CircuitIR(
@@ -256,24 +375,61 @@ class KiCadSchExporter(ExporterPort):
         rotations: Dict[str, int],
         existing: Dict[Tuple[str, str], Tuple[float, float]],
     ) -> Dict[Tuple[str, str], Tuple[float, float]]:
+        """Compute absolute pin connection-point coordinates for every pin in the circuit.
+
+        Uses ``get_pin_coordinate`` (the canonical pin-offset function) so that
+        wire endpoints always land on the symbol's physical connection dot — never
+        on the component centre.  Each result is derived from the FINAL on-grid
+        component placement, so the caller must ensure placements are grid-snapped
+        before calling this method.
+        """
         pin_positions: Dict[Tuple[str, str], Tuple[float, float]] = dict(existing)
+
+        def _place_pin(comp_id: str, ctype: str, pin_name: str) -> None:
+            key = (comp_id, pin_name)
+            if key in pin_positions:
+                return
+            cx, cy = placements.get(comp_id, (0.0, 0.0))
+            rot = int(rotations.get(comp_id, 0))
+            pin_positions[key] = get_pin_coordinate(cx, cy, ctype, str(pin_name), rot)
+
         for comp_id, component in circuit.components.items():
-            x, y = placements.get(comp_id, (0.0, 0.0))
-            rotation = int(rotations.get(comp_id, 0))
-            offsets = resolve_pins(component.type.value, rotation)
+            ctype_val = str(getattr(component.type, "value", component.type))
             for pin_name in component.pins:
-                if (comp_id, pin_name) in pin_positions:
+                _place_pin(comp_id, ctype_val, str(pin_name))
+
+        # Nets may reference pins not listed on ``component.pins`` (e.g. alternate
+        # spellings from SPICE netlist) — resolve those too so no wire is orphaned.
+        for net in circuit.nets.values():
+            for pref in net.connected_pins:
+                comp = circuit.components.get(pref.component_id)
+                if comp is None:
                     continue
-                offset = offsets.get(str(pin_name), (0.0, 0.0))
-                pin_positions[(comp_id, pin_name)] = (x + offset[0], y + offset[1])
+                ctype_val = str(getattr(comp.type, "value", comp.type))
+                _place_pin(pref.component_id, ctype_val, str(pref.pin_name))
+
         return pin_positions
 
     def _route_wires(
         self,
         circuit: Circuit,
         pin_positions: Dict[Tuple[str, str], Tuple[float, float]],
-    ) -> list:
+    ) -> tuple[list, set]:
+        """Route all nets and return (wires, forced_junctions).
+
+        Strategy
+        --------
+        * 2-pin net  → direct L-wire via ``route_pair``.
+        * 3+ pin net → hub-and-spoke: every pin connects to the net centroid
+          (snapped to KiCad grid).  All wire endpoints converge at the hub,
+          guaranteeing ≥3 endpoint occurrences there so ``_find_junctions``
+          always detects the junction correctly.  The hub coordinate is added
+          to ``forced_junctions`` to handle the edge case where the centroid
+          coincides with an existing pin (endpoint count = 2, not 3).
+        """
         wires: list = []
+        forced_junctions: set = set()
+
         for net in circuit.nets.values():
             points: List[Tuple[float, float]] = []
             for pin in net.connected_pins:
@@ -284,10 +440,31 @@ class KiCadSchExporter(ExporterPort):
             points = self._unique_points(points)
             if len(points) < 2:
                 continue
-            points = sorted(points, key=lambda p: (p[0], p[1]))
-            for wire in route_net(points, grid_mm=GRID_MM):
+
+            if len(points) == 2:
+                wire = route_pair(points[0], points[1], grid_mm=GRID_MM)
                 wires.append({"points": wire.points})
-        return wires
+                continue
+
+            # 3+ pins: hub-and-spoke topology
+            cx = sum(p[0] for p in points) / len(points)
+            cy = sum(p[1] for p in points) / len(points)
+            hub = (round(cx / GRID_MM) * GRID_MM, round(cy / GRID_MM) * GRID_MM)
+
+            for pt in points:
+                if abs(pt[0] - hub[0]) < 1e-6 and abs(pt[1] - hub[1]) < 1e-6:
+                    # Pin already sits at hub; mark hub as forced junction so
+                    # the junction dot is placed even when only 2 other wires
+                    # converge here (endpoint count would be 2, not 3).
+                    forced_junctions.add(hub)
+                    continue
+                wire = route_pair(pt, hub, grid_mm=GRID_MM)
+                wires.append({"points": wire.points})
+
+            # Always mark hub as forced junction for nets with 3+ pins.
+            forced_junctions.add(hub)
+
+        return wires, forced_junctions
 
     def _unique_points(self, points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         unique: List[Tuple[float, float]] = []
@@ -339,13 +516,7 @@ class KiCadSchExporter(ExporterPort):
         return filtered
 
     def _find_junctions(self, wires: list) -> set:
-        counts: Dict[Tuple[float, float], int] = {}
-        for wire in wires:
-            points = wire.get("points", [])
-            for point in points:
-                key = (round(point[0], 6), round(point[1], 6))
-                counts[key] = counts.get(key, 0) + 1
-        return {point for point, count in counts.items() if count >= 3}
+        return _find_junctions_from_wires(wires)
 
     def _ensure_power_flags(
         self,
@@ -374,7 +545,9 @@ class KiCadSchExporter(ExporterPort):
             )
             extra_components[comp_id] = component
 
-            flag_pos = (anchor[0] + (GRID_MM * 4.0), anchor[1])
+            # Place PWR_FLAG 8 grid units right and 3 grid units above the
+            # anchor so it doesn't collide with the power-rail text or symbol.
+            flag_pos = (anchor[0] + (GRID_MM * 8.0), anchor[1] - (GRID_MM * 3.0))
             placements[comp_id] = self._snap_point(flag_pos, GRID_MM)
             rotations[comp_id] = 0
             pin_positions[(comp_id, "1")] = placements[comp_id]
@@ -502,6 +675,10 @@ class _AGRComponent:
         rotations: Dict[str, int],
     ) -> Tuple[Dict[str, tuple], list, Dict[str, int]]:
         """Auto-fix pass: snap to grid, resolve overlaps, reroute, and validate connectivity."""
+        if self._finalize_done:
+            raise RuntimeError("_finalize_layout_and_validate() called more than once in one export run")
+        self._finalize_done = True
+
         fixed_placements = self.layout_planner._snap_placements_to_grid(
             placements,
             self.layout_planner.grid_snap,
@@ -577,76 +754,28 @@ class _AGRComponent:
                     return False
         return True
 
-        """
-        Returns a dict mapping component_id -> (x_mm, y_mm, rotation_degrees)
-        based on the standard Common Emitter amplifier topology.
-        rotation: 0 = horizontal, 90 = vertical
-        """
-        # Normalize component IDs to uppercase for matching
-        comp_ids = {getattr(c, 'id', str(k)).upper(): (k, c) for k, c in getattr(circuit, 'components', {}).items()}
-
-        PLACEMENT_MAP = {
-            "VCC":  (150,  40,  0),
-            "RC":   (150,  65, 90),
-            "Q1":   (150, 100,  0),
-            "R1":   (110,  75, 90),
-            "R2":   (110, 125, 90),
-            "CIN":  ( 80, 100,  0),
-            "C1":   ( 80, 100,  0),
-            "RE":   (150, 145, 90),
-            "RE1":  (150, 140, 90),
-            "RE2":  (150, 158, 90),
-            "CE":   (175, 155,  0),
-            "COUT": (200, 100,  0),
-            "C2":   (200, 100,  0),
-            "GND":  (150, 175,  0),
-        }
-
-        result: dict = {}
-        grid_x, grid_y = 250, 50
-        col = 0
-
-        # Iterate over component objects to preserve original IDs
-        for comp_id, comp in getattr(circuit, 'components', {}).items():
-            key = comp_id.upper()
-            if key in PLACEMENT_MAP:
-                x, y, rot = PLACEMENT_MAP[key]
-                result[comp_id] = (float(x), float(y), int(rot))
-            else:
-                # Unknown component — place in fallback grid (right side)
-                result[comp_id] = (float(grid_x + col * 40), float(grid_y), 90)
-                col += 1
-                if col > 3:
-                    col = 0
-                    grid_y += 50
-
-        return result
-
-
     def _topology_aware_placement(self, circuit) -> dict:
+        if self._placement_done:
+            raise RuntimeError("_topology_aware_placement() called more than once in one export run")
+        self._placement_done = True
+
         PLACEMENT_MAP = {
-            # Cột giữa (X=50): VCC → RC → Q1(BJT) → RE1 → RE2 → GND
-            "VCC":  (50,10,0),   # nguồn trên cùng
-            "RC":   (50,20,0),   # song song R1, ngay dưới VCC
-            "Q1":   (50,50,0),   # BJT, RC nối vào C
-            "RE1":  (50,68,0),   # thẳng dưới Q1(E)
-            "RE2":  (50,82,0),   # nối tiếp RE1
-            "GND":  (50,97,0),   # dưới cùng
-
-            # Cột trái (X=25): R1 → R2 song song với RE1/RE2/CE
-            "R1":   (25,20,0),   # cùng Y với RC (song song VCC)
-            "R2":   (25,74,0),   # cùng Y với RE1 (nối điểm B của Q1 → GND)
-
-            # Tụ bypass emitter (X=75): song song RE1+RE2
-            "CE":   (75,74,0),   # song song RE2, nối GND
-
-            # Ngõ vào (X=5): CIN nối ngang vào B của Q1, qua điểm giữa R1-R2
-            "CIN":  (5,50,0),
-            "C1":   (5,50,0),
-
-            # Ngõ ra (X=95): COUT nối ngang từ C của Q1
-            "COUT": (95,50,0),
-            "C2":   (95,50,0),
+            # Left→right signal; vertical rail VCC→Q→GND (mm-ish coordinates, centered later).
+            "VCC":  (148, 22, 0),
+            "RC":   (148, 46, 90),
+            "Q1":   (148, 82, 0),
+            "RE1":  (148, 114, 90),
+            "RE2":  (148, 134, 90),
+            "GND":  (148, 172, 0),
+            "R1":   (102, 52, 90),
+            "R2":   (102, 118, 90),
+            "CE":   (188, 122, 0),
+            "CIN":  (62, 82, 0),
+            "C1":   (62, 82, 0),
+            "COUT": (218, 82, 0),
+            "C2":   (218, 82, 0),
+            "IN":   (28, 82, 0),
+            "OUT":  (252, 82, 0),
         }
         result = {}
         grid_x, grid_y, col = 250, 50, 0
@@ -657,10 +786,17 @@ class _AGRComponent:
             for c in components
         ]
 
+        def _norm(s: str) -> str:
+            return s.replace("_", "").replace("-", "")
+
         for comp_id, comp in items:
             key = comp_id.upper()
+            norm_key = _norm(key)
             if key in PLACEMENT_MAP:
                 result[comp_id] = PLACEMENT_MAP[key]
+            elif norm_key in PLACEMENT_MAP:
+                # Handles IR-generated names like C_IN→CIN, C_OUT→COUT, C_E→CE
+                result[comp_id] = PLACEMENT_MAP[norm_key]
             else:
                 result[comp_id] = (grid_x + col * 40, grid_y, 90)
                 col += 1
@@ -1360,18 +1496,5 @@ class _AGRComponent:
         return snapped
     
     def _find_junctions(self, wires: list) -> set:
-        """Find junction points in wire routing.
-        
-        Args:
-            wires: List of wire data dictionaries
-            
-        Returns:
-            Set of junction coordinates
-        """
-        counts: Dict[Tuple[float, float], int] = {}
-        for wire in wires:
-            points = wire.get("points", [])
-            for point in points:
-                key = (round(point[0], 6), round(point[1], 6))
-                counts[key] = counts.get(key, 0) + 1
-        return {point for point, count in counts.items() if count >= 3}
+        """Find junction points in wire routing (delegates to module-level helper)."""
+        return _find_junctions_from_wires(wires)

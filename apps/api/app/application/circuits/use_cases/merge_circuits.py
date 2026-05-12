@@ -115,7 +115,8 @@ class MergeCircuitsUseCase:
             message_id=None,
         )
 
-        sch_content = self._compiler.compile_to_sch(merged_ir)
+        sch_result = self._compiler.compile_to_sch(merged_ir)
+        sch_content = sch_result["schematic"] if isinstance(sch_result, dict) else sch_result
         self._output_dir.mkdir(parents=True, exist_ok=True)
         sch_file_name = f"{uuid.uuid4().hex}.kicad_sch"
         sch_file_path = self._output_dir / sch_file_name

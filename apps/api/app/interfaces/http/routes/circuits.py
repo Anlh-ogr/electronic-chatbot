@@ -23,7 +23,7 @@ from typing import Dict, Any, List, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 from app.db.database import SessionLocal #sync session
@@ -73,7 +73,11 @@ from app.infrastructure.repositories.composition_repository import CompositionRe
 from app.db.session import get_session
 from app.application.ai.circuit_ir_schema import CircuitIR
 from app.infrastructure.simulation.ngspice_exporter import NgspiceExporter
-from app.application.ai.simulation_service import NgSpiceSimulationService, NgspiceCompilerService
+from app.application.ai.simulation_service import (
+    NgSpiceSimulationService,
+    NgspiceCompilerService,
+    simulation_error_http_detail,
+)
 from app.core.structured_logger import log_stage
 
 logger = logging.getLogger(__name__)
@@ -87,6 +91,7 @@ router = APIRouter(
 # Compiled artifacts directory (shared with chatbot compiled endpoint)
 _API_ROOT = Path(__file__).resolve().parents[4]
 _COMPILED_DIR = _API_ROOT / "artifacts" / "compiled"
+_EXPORTS_PCB_DIR = _API_ROOT / "artifacts" / "exports" / "pcb"
 
 
 class KeepIRRequest(BaseModel):
@@ -116,8 +121,8 @@ def _build_pcb_export_options(
     enable_power_zones: bool,
 ) -> Dict[str, Any]:
     selected_mode = routing_mode.strip().lower()
-    if selected_mode not in {"draft", "industrial"}:
-        selected_mode = "draft"
+    if selected_mode not in {"draft", "industrial", "strict"}:
+        selected_mode = "strict"
 
     return {
         "oracle_validate": oracle_validate,
@@ -164,6 +169,32 @@ def _resolve_export_file(base_dir: Path, filename: str) -> Path:
     return candidate
 
 
+def _resolve_pcb_export_file(filename: str) -> Path:
+    """Resolve a .kicad_pcb served under /exports/pcb/.
+
+    Industrial export writes to artifacts/exports/pcb; legacy paths used compiled/.
+    """
+    safe_name = Path(filename).name
+    search_bases = (_EXPORTS_PCB_DIR, _COMPILED_DIR)
+    last_not_found: Optional[HTTPException] = None
+    for base_dir in search_bases:
+        try:
+            return _resolve_export_file(base_dir, safe_name)
+        except HTTPException as exc:
+            if exc.status_code != status.HTTP_404_NOT_FOUND:
+                raise
+            last_not_found = exc
+            continue
+    if last_not_found is not None:
+        raise last_not_found
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={
+            "error": "export_not_found",
+            "message": f"Export artifact '{safe_name}' was not found",
+        },
+    )
+
 
 @router.get("/{circuit_id}/exports/sch/{filename}")
 async def get_sch_file(circuit_id: str, filename: str):
@@ -184,7 +215,8 @@ async def get_sch_file(circuit_id: str, filename: str):
 @router.get("/{circuit_id}/exports/pcb/{filename}")
 async def get_pcb_file(circuit_id: str, filename: str):
     """Serve .kicad_pcb file for KiCanvas or direct download."""
-    path = _resolve_export_file(_COMPILED_DIR, filename)
+    _ = circuit_id
+    path = _resolve_pcb_export_file(filename)
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -574,8 +606,8 @@ async def export_circuit_to_pcb(
         description="Fail export when oracle validation does not pass",
     ),
     routing_mode: str = Query(
-        default="draft",
-        description="Routing mode: draft | industrial",
+        default="strict",
+        description="Routing mode: strict | draft | industrial",
     ),
     enforce_related_spacing: bool = Query(
         default=True,
@@ -665,6 +697,16 @@ async def export_circuit_to_pcb(
                 "details": e.details
             }
         )
+
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "pcb_validation_failed",
+                "message": "KiCad PCB layout or DRC validation failed",
+                "errors": e.errors(),
+            },
+        )
     
     except ExportError as e:
         raise HTTPException(
@@ -739,13 +781,17 @@ async def submit_industrial_pcb_export_job(
         default=False,
         description="Enable Phase-4 zone planning for power/ground nets",
     ),
+    routing_mode: str = Query(
+        default="industrial",
+        description="PCB pipeline: strict (anchor, DRC, 45°) | industrial (A*) | draft",
+    ),
     job_queue: IndustrialRoutingJobQueue = Depends(get_industrial_routing_job_queue),
 ) -> JSONResponse:
     """Submit industrial PCB export as an async background job."""
     options = _build_pcb_export_options(
         oracle_validate=oracle_validate,
         oracle_strict=oracle_strict,
-        routing_mode="industrial",
+        routing_mode=routing_mode,
         enforce_related_spacing=enforce_related_spacing,
         related_spacing_min_mm=related_spacing_min_mm,
         related_spacing_max_mm=related_spacing_max_mm,
@@ -977,18 +1023,6 @@ async def download_kicad_export_file(circuit_id: str, filename: str) -> FileResp
     """Serve exported KiCad schematic artifacts referenced by download_url."""
     _ = circuit_id  # kept for URL compatibility
     file_path = _resolve_export_file(Path("./artifacts/exports"), filename)
-    return FileResponse(
-        path=str(file_path),
-        media_type="text/plain",
-        filename=file_path.name,
-    )
-
-
-@router.get("/{circuit_id}/exports/pcb/{filename}")
-async def download_kicad_pcb_export_file(circuit_id: str, filename: str) -> FileResponse:
-    """Serve exported KiCad PCB artifacts referenced by industrial job results."""
-    _ = circuit_id  # kept for URL compatibility
-    file_path = _resolve_export_file(Path("./artifacts/exports/pcb"), filename)
     return FileResponse(
         path=str(file_path),
         media_type="text/plain",
@@ -1467,15 +1501,9 @@ async def simulate_circuit(
                 logger.debug("SIMULATE_COMPLETED structured log failed", exc_info=True)
         except Exception as exc:
             logger.exception("SIM STREAM ERROR for circuit_id=%s", circuit_id)
-            yield _to_sse_event(
-                "error",
-                {
-                    "error": "simulation_failed",
-                    "type": exc.__class__.__name__,
-                    "message": repr(exc),
-                    "circuit_id": circuit_id,
-                },
-            )
+            err_body = simulation_error_http_detail(exc)
+            err_body["circuit_id"] = circuit_id
+            yield _to_sse_event("error", err_body)
 
     return StreamingResponse(
         _event_gen(),

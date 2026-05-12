@@ -99,20 +99,28 @@ class NgspiceRunner:
         analyzed.netlist_used = netlist
         return analyzed
 
-    def _build_netlist(
-        self,
-        components: "ComponentSet",
-        topology: str,
-        sim_config: SimulationConfig,
-    ) -> str:
+    def _build_netlist(self,components: "ComponentSet",topology: str,sim_config: SimulationConfig,) -> str:
         """Tao netlist SPICE theo topology co ban."""
         freq = max(sim_config.frequency, 1.0)
+        
         step = 1.0 / (freq * max(1.0 / max(sim_config.step_size_factor, 1e-4), 10.0))
         stop = sim_config.duration_cycles / freq
 
         topo = (topology or components.topology or "common_emitter").strip().lower()
         vcc = max(components.VCC, 0.1)
 
+        # debug log
+        logger.warning(
+            "NGSPICE BUILD NETLIST: topology=%s VCC=%.2f R1=%s R2=%s RC=%s RE=%s beta=%s",
+            topo,
+            components.VCC,
+            getattr(components, "R1", "?"),
+            getattr(components, "R2", "?"),
+            getattr(components, "RC", "?"),
+            getattr(components, "RE", "?"),
+            getattr(components, "beta", "?"),
+        )
+        
         if topo in {"common_emitter", "common_base", "common_collector"}:
             return (
                 "* CE Amplifier\n"
@@ -160,6 +168,12 @@ class NgspiceRunner:
                 ".end\n"
             )
 
+        # unknown topo warning
+        logger.warning(
+            "NGSPICE TOPOLOGY UNKNOWN: '%s' — dùng generic pass-through fallback",
+            topo,
+        )
+
         return (
             "* Generic pass-through topology\n"
             f"Vin in 0 SIN(0 {sim_config.vin_amplitude} {freq})\n"
@@ -176,11 +190,21 @@ class NgspiceRunner:
 
     def _execute_ngspice(self, netlist: str, ngspice_path: str) -> Optional[str]:
         """Ghi netlist tam, chay ngspice batch mode va doc waveform text."""
+        
+        # log debug
+        logger.warning(
+            "NGSPICE EXECUTE: path=%s netlist_lines=%d first_line=%s",
+            ngspice_path,
+            len(netlist.splitlines()),
+            netlist.splitlines()[0] if netlist else "<empty>",
+        )
+        
         with tempfile.TemporaryDirectory() as temp_dir:
             cir_path = os.path.join(temp_dir, "design.cir")
             wave_path = os.path.join(temp_dir, "waveform.out")
 
             rendered_netlist = netlist.replace("__WAVEFORM_FILE__", f'"{wave_path.replace("\\", "/")}"')
+            
             with open(cir_path, "w", encoding="utf-8") as f:
                 f.write(rendered_netlist)
 
@@ -192,22 +216,52 @@ class NgspiceRunner:
                     timeout=30,
                 )
             except FileNotFoundError:
+                logger.warning(
+                    "NGSPICE EXECUTE FAIL: binary not found path=%s",
+                    ngspice_path,
+                )
                 return None
+            
             except subprocess.TimeoutExpired:
+                logger.warning("NGSPICE EXECUTE TIMEOUT: timeout=30s")
                 return "__NGSPICE_ERROR__timeout after 30s"
+            
             except Exception as exc:  # pragma: no cover
+                logger.warning(
+                    "NGSPICE EXECUTE EXCEPTION: %s",
+                    str(exc)[:500],
+                )
                 return f"__NGSPICE_ERROR__{exc}"
 
             if proc.returncode != 0:
                 message = (proc.stderr or proc.stdout or "unknown ngspice error").strip()
+             
+                # debug
+                logger.warning(
+                    "NGSPICE RETURNCODE %d: stderr=%s",
+                    proc.returncode,
+                    message[:500],
+                )   
                 return f"__NGSPICE_ERROR__{message}"
 
             if not os.path.exists(wave_path):
                 message = (proc.stdout or "").strip()
+                
+                logger.warning(
+                    "NGSPICE WAVEFORM MISSING: wave_path=%s stdout=%s",
+                    wave_path,
+                    message[:500],
+                )
                 return f"__NGSPICE_ERROR__missing waveform output file. {message}"
 
             with open(wave_path, "r", encoding="utf-8", errors="ignore") as wf:
-                return wf.read()
+                waveform_text = wf.read()
+
+                logger.warning(
+                    "NGSPICE SUCCESS: waveform_chars=%d",
+                    len(waveform_text),
+                )
+                return waveform_text
 
     def _parse_raw_output(self, raw_output: str) -> Dict[str, List[float]]:
         """Parse file wrdata cua ngspice thanh waveform dict."""

@@ -18,18 +18,57 @@ English:
 
 from __future__ import annotations
 
-# ====== Lý do sử dụng thư viện ======
+import logging
 # typing: Type hints cho PCB s-expression generation
-# datetime: Timestamps cho PCB metadata
 # uuid: Unique IDs cho nets/segments
-from typing import Any, Dict, List, Optional, Tuple
-from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
 import uuid
 
 # ====== Domain & Infrastructure layers ======
 from app.domains.circuits.entities import Circuit
 from app.domains.circuits.ir import CircuitIR
 from app.infrastructure.exporters.kicad_footprint_library import KiCadFootprintLibrary
+
+logger = logging.getLogger(__name__)
+
+# ── Footprint map keyed by reference-designator prefix ──────────────────────
+# Used as the primary footprint override: takes priority over the type-based
+# library lookup so common passives and ICs always get the correct footprint.
+_FOOTPRINT_BY_REF_PREFIX: Dict[str, str] = {
+    "R": "Resistor_SMD:R_0805_2012Metric",
+    "C": "Capacitor_SMD:C_0805_2012Metric",
+    "L": "Inductor_SMD:L_0805_2012Metric",
+    "U": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "J": "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
+    "Q": "Package_TO_SOT_THT:TO-92_Inline",
+    "D": "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal",
+    "SW": "Button_Switch_THT:SW_Push_6mm_H5mm",
+}
+
+# ── Component types that must NOT appear as physical footprints on a PCB ─────
+_POWER_COMPONENT_TYPES: Set[str] = {
+    "ground",
+    "power_symbol",
+    "power_supply",
+}
+
+# ── Reference prefixes / exact names that indicate schematic-only symbols ────
+_POWER_REF_EXACT: Set[str] = {
+    "VCC", "VEE", "VDD", "VSS", "GND", "AGND", "DGND",
+    "+15V", "-15V", "+5V", "-5V", "+3V3", "+12V", "-12V",
+    "PWR_FLAG",
+}
+
+
+def _is_power_component(comp_id: str, comp_type_value: str) -> bool:
+    """Return True when the component is schematic-only (no physical PCB footprint)."""
+    ref = comp_id.upper().strip()
+    if ref in _POWER_REF_EXACT:
+        return True
+    if ref.startswith("PWR") or ref.startswith("#PWR"):
+        return True
+    ctype = (comp_type_value or "").lower()
+    return ctype in _POWER_COMPONENT_TYPES
 
 
 # ====== PCB Serializer ======
@@ -77,8 +116,13 @@ class KiCadPCBSerializer:
             KiCad .kicad_pcb file content as string
         """
         circuit = ir.circuit
-        
-        # Build net map
+
+        # Pre-compute pad→net map once for the whole board so each
+        # _build_footprint call can do an O(1) lookup.
+        pad_net_map = self._build_pad_net_map(nets)
+
+        # Build net map (must happen after filtering power symbols so indices
+        # match only the nets carried by physical components)
         self._build_net_map(nets)
         
         lines = []
@@ -91,14 +135,30 @@ class KiCadPCBSerializer:
         lines.extend(self._build_nets())
         lines.append("")
         
-        # Footprints (component instances)
+        # Footprints (component instances) — skip schematic-only power symbols
+        skipped_power: List[str] = []
         for comp_id, component in circuit.components.items():
+            comp_type_val = (
+                component.type.value
+                if hasattr(component.type, "value")
+                else str(component.type)
+            )
+            if _is_power_component(comp_id, comp_type_val):
+                skipped_power.append(comp_id)
+                continue
             if comp_id in placements:
                 x, y = placements[comp_id]
                 lines.extend(self._build_footprint(
-                    comp_id, component, x, y, nets
+                    comp_id, component, x, y, nets, pad_net_map
                 ))
                 lines.append("")
+
+        if skipped_power:
+            logger.debug(
+                "PCB serializer: skipped %d power/schematic-only symbols: %s",
+                len(skipped_power),
+                skipped_power,
+            )
 
         if board_size is not None:
             lines.extend(self._build_board_outline(board_size))
@@ -218,27 +278,38 @@ class KiCadPCBSerializer:
         component,
         x: float,
         y: float,
-        nets: Dict[str, List[str]]
+        nets: Dict[str, List[str]],
+        pad_net_map: Optional[Dict[tuple, str]] = None,
     ) -> List[str]:
         """Build footprint instance for a component.
-        
+
         Args:
             comp_id: Component ID
             component: Component entity
             x, y: Position in mm
-            nets: Net connections
-            
-        Returns:
-            Lines of footprint definition
+            nets: Net connections {net_name -> [comp_id.pin, ...]}
+            pad_net_map: Pre-built (comp_id, pad_num) -> net_name map
         """
+        if pad_net_map is None:
+            pad_net_map = self._build_pad_net_map(nets)
+
         comp_type = component.type.value if hasattr(component.type, 'value') else str(component.type)
         effective_comp_type = self._effective_comp_type(component, comp_type)
-        
-        # Get footprint from library
+
+        # ── Footprint selection priority ────────────────────────────────────
+        # 1. Explicit footprint attr on the component (comes from KiCad sync)
+        # 2. Ref-prefix lookup (R→Resistor_SMD, C→Capacitor_SMD, Q→TO-92, …)
+        # 3. Type-based library lookup (opamp, bjt_npn, mosfet_n, …)
+        ref = comp_id.upper()
+        ref_prefix = ref[0] if ref else "X"
+
         if hasattr(component, 'footprint') and component.footprint:
             footprint = component.footprint
+        elif ref_prefix in _FOOTPRINT_BY_REF_PREFIX:
+            footprint = _FOOTPRINT_BY_REF_PREFIX[ref_prefix]
         else:
             footprint = KiCadFootprintLibrary.get_footprint(effective_comp_type)
+
         description = KiCadFootprintLibrary.get_description(effective_comp_type)
         pads = KiCadFootprintLibrary.get_pads(effective_comp_type)
         drawings = KiCadFootprintLibrary.get_drawings(effective_comp_type)
@@ -332,7 +403,11 @@ class KiCadPCBSerializer:
         
         # ── Pads ───────────────────────────────────────────────
         for pad in pads:
-            pad_net = self._find_pad_net(comp_id, pad["number"], effective_comp_type, nets)
+            # Primary: direct lookup using the pre-built map
+            pad_net = pad_net_map.get((comp_id, pad["number"]), "")
+            if not pad_net:
+                # Fallback: try case-insensitive ref and try domain pin names
+                pad_net = self._find_pad_net(comp_id, pad["number"], effective_comp_type, nets)
             net_idx = self._net_map.get(pad_net, 0)
             
             lines.extend([
@@ -349,6 +424,53 @@ class KiCadPCBSerializer:
         lines.append("  )")
         
         return lines
+
+    def _build_pad_net_map(
+        self, nets: Dict[str, List[str]]
+    ) -> Dict[tuple, str]:
+        """Build a (comp_id, pad_num) -> net_name map from the nets dict.
+
+        Handles both dot-separated ("R1.1") and colon-separated ("R1:1") pin
+        references and resolves domain pin names to pad numbers via the
+        footprint library's pin_map.
+
+        The returned keys use the ORIGINAL comp_id casing from the nets dict
+        and the footprint pad number (a string like "1", "2", "3").
+        """
+        result: Dict[tuple, str] = {}
+        # Also build a case-folded shadow so _find_pad_net can try upper-case refs
+        upper_result: Dict[tuple, str] = {}
+
+        for net_name, pin_refs in nets.items():
+            for pin_ref in pin_refs:
+                # Normalise separator: accept "R1.1" or "R1:1"
+                if "." in pin_ref:
+                    cid, pin_name = pin_ref.split(".", 1)
+                elif ":" in pin_ref:
+                    cid, pin_name = pin_ref.split(":", 1)
+                else:
+                    continue
+
+                # Record using the domain pin name as the pad key (direct match
+                # works for resistors/capacitors where pin names ARE pad numbers)
+                key = (cid, pin_name)
+                if key not in result:
+                    result[key] = net_name
+
+                # Also try to resolve the domain pin name to a footprint pad
+                # number via the component type's pin_map.  We don't know the
+                # comp type here, so we store an upper-case version and the
+                # per-type resolution happens in _find_pad_net as fallback.
+                upper_key = (cid.upper(), pin_name.upper())
+                if upper_key not in upper_result:
+                    upper_result[upper_key] = net_name
+
+        # Merge upper-case shadow into result (won't override original casing entries)
+        for k, v in upper_result.items():
+            if k not in result:
+                result[k] = v
+
+        return result
 
     def _effective_comp_type(self, component, raw_type: str) -> str:
         """Map normalized one-pin sources to one-pin connector footprints on PCB."""
@@ -371,60 +493,88 @@ class KiCadPCBSerializer:
         comp_id: str,
         pad_num: str,
         comp_type: str,
-        nets: Dict[str, List[str]]
+        nets: Dict[str, List[str]],
     ) -> str:
-        """Find which net a component pad is connected to.
-        
-        Nets use domain pin names (e.g. Q1.C, Q1.B, Q1.E) while footprints
-        use pad numbers (1, 2, 3).  We try both the pad number directly
-        and the reverse-mapped domain pin name(s).
-        
-        Args:
-            comp_id: Component ID
-            pad_num: Pad number (footprint)
-            comp_type: Component type string for pin_map lookup
-            nets: Net definitions {net_name -> [comp_id.pin, ...]}
-            
-        Returns:
-            Net name or empty string
+        """Find which net a pad belongs to (fallback used after pad_net_map miss).
+
+        Builds candidate pin-reference strings for the given (comp_id, pad_num)
+        and searches the nets dict.  Handles:
+        - dot vs colon separator in net pin refs
+        - domain pin names vs pad numbers (via footprint library pin_map)
+        - case-insensitive component-id matching
         """
-        # Build reverse map: pad_number -> list of domain pin names
         pin_map = KiCadFootprintLibrary.get_pin_map(comp_type)
+        # pad_number → [domain_pin_name, ...]
         reverse_map: Dict[str, List[str]] = {}
         for pin_name, mapped_pad in pin_map.items():
-            reverse_map.setdefault(mapped_pad, []).append(pin_name)
+            reverse_map.setdefault(str(mapped_pad), []).append(pin_name)
 
-        # Candidate references to look for in nets
-        candidates = {f"{comp_id}.{pad_num}"}
-        for domain_pin in reverse_map.get(pad_num, []):
-            candidates.add(f"{comp_id}.{domain_pin}")
+        # Build all candidate strings we might find in the nets dict
+        domain_pins = reverse_map.get(str(pad_num), [])
+        candidate_pins: List[str] = [pad_num] + domain_pins
 
+        candidates: set = set()
+        for sep in (".", ":"):
+            for cid in (comp_id, comp_id.upper(), comp_id.lower()):
+                for p in candidate_pins:
+                    candidates.add(f"{cid}{sep}{p}")
+                    candidates.add(f"{cid}{sep}{p.upper()}")
+
+        # Flat set of all net pin-refs for fast membership test
+        all_refs: Dict[str, str] = {}
         for net_name, connections in nets.items():
-            for candidate in candidates:
-                if candidate in connections:
-                    return net_name
+            for conn in connections:
+                if conn not in all_refs:
+                    all_refs[conn] = net_name
+                # Also normalise separator and case to handle mismatches
+                norm = conn.replace(":", ".").upper()
+                if norm not in all_refs:
+                    all_refs[norm] = net_name
+
+        for cand in candidates:
+            net = all_refs.get(cand) or all_refs.get(cand.replace(":", ".").upper())
+            if net:
+                return net
         return ""
     
     def _build_tracks(self, tracks: List[Dict]) -> List[str]:
-        """Build PCB track definitions.
-        
-        Args:
-            tracks: List of track definitions with start, end, net, layer, width
-            
-        Returns:
-            Lines of track definitions
+        """Build PCB track and via definitions.
+
+        Accepts two entry formats in the `tracks` list:
+        - Segment: {"start": (x,y), "end": (x,y), "net": ..., "layer": ..., "width": ...}
+        - Standalone via: {"via": True, "x": float, "y": float, "net": ..., "layer": ...}
         """
         lines = []
         for track in tracks:
+            # ── Standalone via emitted by two-layer router ──────────────────
+            if track.get("via"):
+                net_name = track.get("net", "")
+                net_idx = self._net_map.get(net_name, 0)
+                vx = float(track.get("x", 0))
+                vy = float(track.get("y", 0))
+                via_uuid = self._get_uuid(f"via_standalone_{vx}_{vy}_{net_name}")
+                lines.extend([
+                    "  (via",
+                    f'    (at {vx} {vy})',
+                    '    (size 0.8)',
+                    '    (drill 0.4)',
+                    '    (layers "F.Cu" "B.Cu")',
+                    f'    (net {net_idx})',
+                    f'    (uuid "{via_uuid}")',
+                    "  )",
+                ])
+                continue
+
+            # ── Normal segment ───────────────────────────────────────────────
             start_x, start_y = track["start"]
             end_x, end_y = track["end"]
             net_name = track.get("net", "")
             net_idx = self._net_map.get(net_name, 0)
             layer = track.get("layer", "F.Cu")
             width = track.get("width", 0.5 if self._is_power_net(net_name) else 0.25)
-            
+
             track_uuid = self._get_uuid(f"track_{start_x}_{start_y}_{end_x}_{end_y}")
-            
+
             lines.extend([
                 "  (segment",
                 f'    (start {start_x} {start_y})',
@@ -448,7 +598,7 @@ class KiCadPCBSerializer:
                     f'    (uuid "{via_uuid}")',
                     "  )",
                 ])
-        
+
         return lines
     
     def _build_zones(

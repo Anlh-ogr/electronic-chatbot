@@ -411,6 +411,7 @@ _ALIASES: Dict[str, str] = {
     "bjt": "bjt_npn",
     "mosfet": "mosfet_n",
     "capacitor_electrolytic": "capacitor_polarized",
+    "opamp_ic": "opamp",
 }
 
 
@@ -441,6 +442,62 @@ class KiCadFootprintLibrary:
     @classmethod
     def get_drawings(cls, component_type: str) -> list:
         return cls._resolve(component_type).get("drawings", [])
+
+    @classmethod
+    def get_courtyard_bbox_local(cls, component_type: str) -> Tuple[float, float, float, float]:
+        """Axis-aligned courtyard bounds in footprint-local coordinates (mm).
+
+        Parsed from ``F.CrtYd`` ``fp_line`` segments in the footprint definition.
+        Falls back to a pad bounding box + margin when no courtyard is found.
+        """
+        pads = cls.get_pads(component_type)
+        if pads:
+            xs = [float(p["at"][0]) for p in pads]
+            ys = [float(p["at"][1]) for p in pads]
+            pmin_x = min(xs)
+            pmax_x = max(xs)
+            pmin_y = min(ys)
+            pmax_y = max(ys)
+            for p in pads:
+                sz = p.get("size", (1.6, 1.6))
+                sx = float(sz[0]) if isinstance(sz, (list, tuple)) else float(sz)
+                sy = float(sz[1]) if isinstance(sz, (list, tuple)) and len(sz) > 1 else sx
+                px, py = float(p["at"][0]), float(p["at"][1])
+                pmin_x = min(pmin_x, px - sx / 2)
+                pmax_x = max(pmax_x, px + sx / 2)
+                pmin_y = min(pmin_y, py - sy / 2)
+                pmax_y = max(pmax_y, py + sy / 2)
+            fallback = (pmin_x - 1.0, pmin_y - 1.0, pmax_x + 1.0, pmax_y + 1.0)
+        else:
+            fallback = (-2.0, -2.0, 2.0, 2.0)
+
+        crt_min_x = crt_max_x = crt_min_y = crt_max_y = None
+
+        def _walk(items) -> None:
+            nonlocal crt_min_x, crt_max_x, crt_min_y, crt_max_y
+            for item in items:
+                if isinstance(item, list):
+                    _walk(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                layer = str(item.get("layer", ""))
+                if "CrtYd" not in layer:
+                    continue
+                typ = item.get("type")
+                if typ == "fp_line":
+                    x1, y1 = float(item["start"][0]), float(item["start"][1])
+                    x2, y2 = float(item["end"][0]), float(item["end"][1])
+                    for x, y in ((x1, y1), (x2, y2)):
+                        crt_min_x = x if crt_min_x is None else min(crt_min_x, x)
+                        crt_max_x = x if crt_max_x is None else max(crt_max_x, x)
+                        crt_min_y = y if crt_min_y is None else min(crt_min_y, y)
+                        crt_max_y = y if crt_max_y is None else max(crt_max_y, y)
+
+        _walk(cls.get_drawings(component_type))
+        if crt_min_x is None:
+            return fallback
+        return (crt_min_x, crt_min_y, crt_max_x, crt_max_y)
 
     @classmethod
     def get_pin_map(cls, component_type: str) -> Dict[str, str]:

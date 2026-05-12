@@ -23,10 +23,16 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
-
+from app.application.ai.circuit_ir_schema import CircuitIR
 from pydantic import BaseModel, ValidationError
 
 from app.application.ai.schema_utils import prepare_vertex_schema
+
+response_schema = prepare_vertex_schema(
+    CircuitIR.model_json_schema(),
+    debug_label="CircuitIR"
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +41,10 @@ if TYPE_CHECKING:
 
 PromptContent = Any
 
-_VERTEX_OUTPUT_TOKEN_CAP = 8192
-
+_VERTEX_OUTPUT_TOKEN_CAP = 65535
 
 def _env(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
-
 
 def _cap_vertex_output_tokens(value: Optional[int]) -> int:
     try:
@@ -49,11 +53,10 @@ def _cap_vertex_output_tokens(value: Optional[int]) -> int:
         requested = _VERTEX_OUTPUT_TOKEN_CAP
     if requested <= 0:
         requested = _VERTEX_OUTPUT_TOKEN_CAP
-    return min(requested, _VERTEX_OUTPUT_TOKEN_CAP)
+    return requested
 
 class LLMRole(str, Enum):
     GENERAL = "general"
-    # Alias tuong thich nguoc: role cu deu map ve luong chung.
     ROUTER = "general"
     EXTRACTION = "general"
     REASONING = "general"
@@ -77,8 +80,8 @@ class ModelConfig:
     project_id: str = ""
     location: str = ""
     base_url: str = ""
-    timeout_sec: float = 30.0
-    max_tokens: int = 1024
+    timeout_sec: float = 300.0
+    max_tokens: int = _VERTEX_OUTPUT_TOKEN_CAP
     temperature: float = 0.0
 
 @dataclass
@@ -107,13 +110,15 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
         return default
 
     def _mode_location(mode_name: str) -> str:
-        default_mode_location = preview_location if mode_name in ("Think", "Ultra") else location
+        SAFE_DEFAULTS = {
+            "Fast":  "asia-southeast1",
+            "Think": "us-central1",
+            "Pro":   "us-central1",   # gemini-2.5-pro không có asia-southeast1
+            "Ultra": "asia-northeast1",
+        }
         return _first_env(
-            [
-                f"Google_Cloud_{mode_name}_Locationx",
-                f"Google_Cloud_{mode_name}_Location",
-            ],
-            default_mode_location,
+            [f"Google_Cloud_{mode_name}_Locationx", f"Google_Cloud_{mode_name}_Location"],
+            SAFE_DEFAULTS.get(mode_name, location),
         )
 
     def _first_int_env(names: List[str], default: int) -> int:
@@ -148,20 +153,21 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
             timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
         )
 
-    fast_timeout = _first_float_env(["Google_Cloud_Fast_Timeout_Sec"], 35.0)
-    think_timeout = _first_float_env(["Google_Cloud_Think_Timeout_Sec"], 40.0)
-    pro_timeout = _first_float_env(["Google_Cloud_Pro_Timeout_Sec"], 45.0)
-    ultra_timeout = _first_float_env(["Google_Cloud_Ultra_Timeout_Sec"], 60.0)
+    fast_timeout = _first_float_env(["Google_Cloud_Fast_Timeout_Sec"], 120.0)
+    think_timeout = _first_float_env(["Google_Cloud_Think_Timeout_Sec"], 150.0)
+    pro_timeout = _first_float_env(["Google_Cloud_Pro_Timeout_Sec"], 180.0)
+    ultra_timeout = _first_float_env(["Google_Cloud_Ultra_Timeout_Sec"], 300.0)
+
+    fast_tokens = _first_int_env(["Google_Cloud_Fast_Max_Tokens"], 65535)
+    think_tokens = _first_int_env(["Google_Cloud_Think_Max_Tokens"], 64000)
+    pro_tokens = _first_int_env(["Google_Cloud_Pro_Max_Tokens"], 65535)
+    ultra_tokens = _first_int_env(["Google_Cloud_Ultra_Max_Tokens"], 64000)
     
-    fast_tokens = _first_int_env(["Google_Cloud_Fast_Max_Tokens"], 16384)
-    think_tokens = _first_int_env(["Google_Cloud_Think_Max_Tokens"], 12288)
-    pro_tokens = _first_int_env(["Google_Cloud_Pro_Max_Tokens"], 16384)
-    ultra_tokens = _first_int_env(["Google_Cloud_Ultra_Max_Tokens"], 24576)
     
     fast_model = _google(["Google_Cloud_Fast_Model"], "gemini-2.5-flash", fast_timeout, fast_tokens, model_location=_mode_location("Fast"))
-    think_model = _google(["Google_Cloud_Think_Model"], "gemini-3.1-flash-lite-preview", think_timeout, think_tokens, model_location=_mode_location("Think"))
+    think_model = _google(["Google_Cloud_Think_Model"], "gemini-2.5-flash", think_timeout, think_tokens, model_location=_mode_location("Think"))
     pro_model = _google(["Google_Cloud_Pro_Model"], "gemini-2.5-pro", pro_timeout, pro_tokens, model_location=_mode_location("Pro"))
-    ultra_model = _google(["Google_Cloud_Ultra_Model"], "gemini-3.1-pro-preview-customtools", ultra_timeout, ultra_tokens, model_location=_mode_location("Ultra"))
+    ultra_model = _google(["Google_Cloud_Ultra_Model"], "gemini-2.5-pro", ultra_timeout, ultra_tokens, model_location=_mode_location("Ultra"))
     
     fast: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=fast_model, fallbacks=[think_model, pro_model, ultra_model]),}
     think: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=think_model, fallbacks=[pro_model, ultra_model, fast_model]),}
@@ -198,7 +204,7 @@ class LLMRouter:
             or _env("Google_Cloud_API_Key")
         )
         try:
-            self._json_schema_retries = max(0, int(_env("LLM_JSON_SCHEMA_MAX_RETRIES", "2") or "2"))
+            self._json_schema_retries = max(0, int(_env("LLM_JSON_SCHEMA_MAX_RETRIES", "1") or "1"))
         except ValueError:
             self._json_schema_retries = 2
         logger.info(
@@ -266,14 +272,7 @@ class LLMRouter:
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def generate_circuit_ir(
-        self,
-        requirements: str,
-        *,
-        mode: Optional[LLMMode] = None,
-        max_schema_retries: Optional[int] = None,
-        max_completeness_retries: int = 2,
-    ) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
+    def generate_circuit_ir(self,requirements: str,*,mode: Optional[LLMMode] = None,max_schema_retries: Optional[int] = None,max_completeness_retries: int = 2,) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
         """Generate CircuitIR JSON via Gemini and parse directly to CircuitIR.
 
         Implements a two-level retry strategy:
@@ -284,142 +283,193 @@ class LLMRouter:
         """
         from app.application.ai.circuit_ir_schema import CircuitIR
 
-        req_text = (requirements or "").strip()
+        req_text = self._augment_requirements_with_defaults(requirements)
         if not req_text:
             logger.warning("generate_circuit_ir received empty requirements")
             return None
 
         system_prompt = """
-You are an EDA expert generating a CircuitIR JSON for analog amplifier designs.
-Output strictly VALID JSON ONLY. No markdown, no explanations, no code fences.
+            You are an EDA expert generating CircuitIR JSON for amplifier designs.
+            Focus only on BJT NPN and op-amp circuits.
 
-╔════════════════════════════════════════════════════════════════════════════════╗
-║                            CORE DESIGN INVARIANTS                              ║
-╚════════════════════════════════════════════════════════════════════════════════╝
+            Output STRICTLY VALID JSON ONLY.
+            No markdown.
+            No explanations.
+            No code fences.
 
-1. Node Uniqueness (CRITICAL): A physical component pin (e.g., C2:2, Q1:B) MUST belong to EXACTLY ONE net.
-2. Power/Ground: Include explicit components for power_supply and ground. Use one-pin symbols (pin "1").
-3. Probe nodes: MUST include IN, OUT, VCC or VDD, and 0.
-4. BJT CE Gain: If Av is specified, strictly use split emitter (RE1, RE2). AC bypass CE across RE2 only.
-5. Op-Amp: Always include power supply decoupling capacitors (0.1uF) close to VCC/VEE pins.
-6. FET/MOSFET: Gate draws no DC current; ensure proper DC bias resistor to GND or VDD.
-7. Multistage: Output separate stage objects in architecture.stages for each stage.
+            LOCALIZATION + FORMULA POLICY (applies to ALL human-readable string fields):
+            - All descriptive/explanatory fields written for the end-user MUST be in Vietnamese (tiếng Việt). This includes (but is not limited to):
+              `analysis.circuit_name`, `analysis.topology_classification`, `analysis.design_summary`,
+              `analysis.design_explanation`, `analysis.math_basis`, `analysis.notes`,
+              `power_and_coupling.*` description strings, and any `notes`/`message`/`reason` text.
+            - Keep ALL identifiers (component refs like R1, Q1, U1, net names like VCC, GND, OUT, model strings like LM358/QNPN, units like V/A/Hz/Ω/F/H, JSON keys, enum strings) in their original ASCII form. DO NOT translate identifiers, units, or enums.
+            - Any mathematical formula appearing inside descriptive fields MUST be written in KaTeX-compatible LaTeX:
+                • inline: `$A_v = 1 + R_f/R_g$`
+                • display: `$$A_v = 1 + \\dfrac{R_f}{R_g}$$`
+              Do NOT use Markdown code fences or plain `=`/`*`/`/` for formulas in description text. Always use `$...$` (or `$$...$$`) delimiters so KaTeX auto-render can typeset them.
+            - Numeric values inside `calculated_values` stay as plain JSON numbers (no LaTeX, no units in the value itself).
 
-╔════════════════════════════════════════════════════════════════════════════════╗
-║                                SCHEMA RULES                                    ║
-╚════════════════════════════════════════════════════════════════════════════════╝
+            SUPPORTED FOCUS:
+            - BJT NPN: common_emitter, common_collector, common_base
+            - Op-Amp: inverting, non_inverting, differential
 
-R1. Component fields REQUIRED:
-        - ref (unique, e.g., Q1, R1, C1, U1, M1)
-        - type: bjt_npn | bjt_pnp | mosfet_n | mosfet_p | jfet_n | jfet_p | opamp_ic |
-                        resistor | capacitor | inductor | transformer | power_supply | ground | connector
-        - value with units (ohm, k, uF, nF, mH, V, A)
-        - model (SPICE model string, e.g., BC547, LM741, IRF540)
-        - role: bias_top | bias_bottom | load | degeneration | bypass_cap |
-                        coupling_in | coupling_out | feedback | output_pair_top |
-                        output_pair_bottom | supply | ground | gate_drive | lc_filter |
-                        stage_bridge | unknown_passive
-        - topology_stage (integer, 0-based stage index)
-R2. Pin naming MUST follow:
-        - BJT: Q1:B, Q1:C, Q1:E
-        - MOSFET/JFET: M1:G, M1:D, M1:S
-        - Op-Amp: U1:+, U1:-, U1:OUT, U1:VS+, U1:VS-
-        - Resistor: R1:1, R1:2
-        - Capacitor: C1:1, C1:2
-        - Inductor: L1:1, L1:2
-        - Power/Ground: VCC:1, GND:1
-R2b. Include connector components for IN and OUT (type "connector", pin "1").
-R3. Nets:
-        - Ground MUST be net_name "0".
-        - Nodes MUST use "REF:PIN" format.
-        - Include at least one supply net (VCC, VDD, or +/- rail).
-R4. Stages (multistage only): Each stage has id, topology, active_device_ref, coupling_to_next.
-        coupling_to_next: rc | direct | transformer | null
-R5. Calculated values MUST include: gain_dB, bandwidth_Hz, input_impedance_ohm,
-        output_impedance_ohm, IC_mA or ID_mA, VCE_V or VDS_V.
-R6. Do not hardcode example topology values; select based on the user request.
-R7. Component count is variable; do not assume fixed R/C count.
-R8. CRITICAL: All component values MUST strictly include units (e.g. '10k', '100uF', '2N3904', '8ohm'). Do not output dimensionless numbers for resistors, capacitors, loads, or supply values.
-R9. CRITICAL: calculated_values MUST be a flat JSON object (Dictionary), NOT a list, string, or nested array.
-R10. design_explanation, math_basis, and design_summary MUST be in Vietnamese.
-R10b. Keep design_explanation under 300 words, math_basis under 200 words, design_summary under 100 words. Be concise.
-R11. Fail-fast: If unable to design, set is_valid_request=false and provide clarification_question.
+            INFERENCE POLICY:
+            - If the user does not name a topology explicitly, infer the most likely supported topology from the remaining cues.
+            - Prefer BJT NPN common_emitter when the request mentions gain, VCC, or transistor-style amplification without an op-amp.
+            - Prefer op-amp non_inverting or inverting when the request mentions op-amp, virtual ground, feedback, or resistive feedback networks.
+            - Do NOT return is_valid_request=false just because the topology name is missing or unknown.
+            - Only return is_valid_request=false when the user request is not an amplifier request at all, or when the request is truly underspecified after inference.
+            - If you infer topology, populate the chosen topology fields directly and keep the request valid.
 
-╔════════════════════════════════════════════════════════════════════════════════╗
-║                        JSON SKELETON (DO NOT COPY VALUES)                      ║
-╚════════════════════════════════════════════════════════════════════════════════╝
+            RULES:
+            1. Every circuit must include explicit power_supply and ground.
+            2. Ground net name must be "0".
+            3. Use REF:PIN format only.
+            4. Required connectors: IN and OUT (signal nets may be named IN_SIG / OUT_SIG only if those net_name values match signal_flow and probe_nodes).
+            5. Pin naming:
+            - BJT: Q1:B, Q1:C, Q1:E
+            - OpAmp: U1:+, U1:-, U1:OUT, U1:VS+, U1:VS-
+            - Resistor: R1:1, R1:2
+            - Capacitor: C1:1, C1:2
+            - Power rail symbols (type power_supply): ONLY pin "1" exists in IR. Connect VCC:1 (or VDD:1) to the positive rail net (e.g. VCC). NEVER emit VCC:2, VDD:2, or any second pin on power_supply — the negative reference is implicit via the separate ground net "0" and/or GND:1.
+            - Ground symbol (type ground): ONLY GND:1 on net "0".
+            - Connector: IN:1, OUT:1
+            - probe_nodes must repeat those same net_name spellings for signals, rail, and "0" (see rule 15).
+            6. Allowed component types only:
+            - bjt_npn
+            - opamp_ic
+            - resistor
+            - capacitor
+            - power_supply
+            - ground
+            - connector
+            Do not introduce MOSFET, class-D, Darlington, or other non-BJT/non-op-amp device families.
+            7. Allowed roles only:
+            - bias_top
+            - bias_bottom
+            - load
+            - degeneration
+            - bypass_cap
+            - coupling_in
+            - coupling_out
+            - feedback
+            - supply
+            - ground
+            - unknown_passive
+            8. All values must include units.
+            9. Do not create floating nets, duplicate nets, or unused components.
+            10. architecture.topology_type must be "Single-stage".
+            11. architecture.stage_count must be 1.
+            12. For common_emitter with gain requirement, use RE1 + RE2 and bypass CE across RE2 only.
+            13. For op-amp circuits, include 0.1uF decoupling from VS+ to 0 and from VS- to 0 when dual supply is used.
+            14. Keep output compact.
+            15. signal_flow.input_node and signal_flow.output_node MUST equal the actual small-signal net_name strings in nets[] and MUST each appear in probe_nodes (exact SPICE node spellings).
+            16. Each physical pin must belong to exactly one net. Never assign the same component pin to two different nets.
+            17. For BJT common-emitter AC coupling capacitors, use these exact pin/net assignments:
+            - CIN:1 → IN_SIG (external input)
+            - CIN:2 → BASE_Q1 (connects to Q1:B / BJT base node)
+            - COUT:1 → COLLECTOR_Q1 (connects to Q1:C / BJT collector node)
+            - COUT:2 → OUT_SIG (external output)
+            Never put CIN:1, CIN:2, COUT:1, or COUT:2 on more than one net.
+            18. For BJT common_collector (emitter follower):
+            - Q1:C MUST connect directly to VCC. DO NOT place any collector load resistor (no RC) between Q1:C and VCC.
+            - Q1:B → BASE_Q1 (shared by RB1:2 and RB2:1 and CIN:2).
+            - Q1:E → EMITTER_Q1 (shared by RE:1 and COUT:1).
+            - COUT:1 → EMITTER_Q1, COUT:2 → OUT_SIG. Output is taken from the emitter; voltage gain ≈ 1.
+            19. For BJT common_base:
+            - Q1:E → EMITTER_Q1 (shared by CIN:2 and RE:1). Input is injected at the emitter via CIN.
+            - Q1:B → BASE_Q1 (shared by RB1:2 and RB2:1). MANDATORY base-bypass capacitor: CB:1 → BASE_Q1, CB:2 → 0. Without CB, the stage is NOT common-base.
+            - Q1:C → COLLECTOR_Q1 (shared by RC:2 and COUT:1). Output is taken from the collector.
+            - CIN:1 → IN_SIG, CIN:2 → EMITTER_Q1. COUT:1 → COLLECTOR_Q1, COUT:2 → OUT_SIG.
+            20. For opamp_inverting:
+            - U1:+ → 0 (non-inverting input tied directly to ground reference).
+            - RIN:1 → IN_SIG, RIN:2 → U1_INV_IN.
+            - RF:1 → OUT_SIG (feedback path FROM output), RF:2 → U1_INV_IN (summing junction).
+            - U1:- → U1_INV_IN. U1:OUT → OUT_SIG.
+            - Av = -RF/RIN. The signal path is DC-coupled — DO NOT add CIN/COUT AC coupling caps for op-amp circuits.
+            21. For opamp_non_inverting:
+            - U1:+ → IN_SIG. U1:- → U1_INV_IN.
+            - RG:1 → 0, RG:2 → U1_INV_IN.
+            - RF:1 → OUT_SIG, RF:2 → U1_INV_IN.
+            - U1:OUT → OUT_SIG.
+            - Av = 1 + RF/RG. DC-coupled signal path — DO NOT add AC coupling caps.
+            22. For opamp_differential:
+            - Inputs are IN_PLUS_SIG and IN_MINUS_SIG (both small-signal). Output is OUT_SIG.
+            - R1:1 → IN_MINUS_SIG, R1:2 → U1_INV_IN. R2:1 → U1_INV_IN, R2:2 → OUT_SIG.
+            - R3:1 → IN_PLUS_SIG, R3:2 → U1_NON_INV_IN. R4:1 → U1_NON_INV_IN, R4:2 → 0.
+            - U1:- → U1_INV_IN. U1:+ → U1_NON_INV_IN. U1:OUT → OUT_SIG.
+            - For balanced differential gain, MUST satisfy R1 = R3 (input pair matched) AND R2 = R4 (feedback/ground pair matched). Av_diff = R2/R1.
+            - signal_flow.input_node MAY name either IN_PLUS_SIG or IN_MINUS_SIG; ensure probe_nodes lists BOTH.
+            23. Op-amp decoupling caps (rule 13 expansion):
+            - Single supply: 1 × 0.1uF cap from VCC to 0.
+            - Dual supply: 1 × 0.1uF cap from VS+ (positive rail) to 0 AND 1 × 0.1uF cap from VS- (negative rail) to 0.
+            These decoupling caps are NOT counted as signal-path coupling capacitors — they are local supply bypass only.
 
-{
-    "is_valid_request": true,
-    "_thought_process_": "<Short internal reasoning/calculations>",
-    "analysis": {
-        "circuit_name": "<Contextual name>",
-        "topology_classification": "<e.g., Common Source / Differential>",
-        "design_explanation": "<Vietnamese explanation>",
-        "math_basis": "<Vietnamese formulas>",
-        "design_summary": "<Vietnamese summary>",
-        "expected_bom": ["<Part1>", "<Part2>"],
-        "calculations_table": [
+            EXPECTED COMPONENT INVENTORY (per topology, minimum required count — fewer than this is invalid):
+            - common_emitter:   1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE OR RE1+RE2 per rule 12) + 2×capacitor coupling (CIN, COUT) + 1×capacitor bypass (CE across RE2) + 1×voltage_source (VTB or VIN) + 1×power_supply (VCC) + 1×ground
+            - common_collector: 1×bjt_npn (Q1) + 3×resistor (RB1, RB2, RE)                          + 2×capacitor coupling (CIN, COUT)                                       + 1×voltage_source              + 1×power_supply              + 1×ground   [NO RC, NO bypass cap]
+            - common_base:      1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE)                      + 2×capacitor coupling (CIN, COUT) + 1×capacitor base-bypass (CB to GND) + 1×voltage_source              + 1×power_supply              + 1×ground
+            - opamp_inverting:     1×opamp_ic (U1) + 2×resistor (RIN, RF)                + 1×capacitor decoupling (0.1uF VCC→0) [+ 1 more if dual supply] + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
+            - opamp_non_inverting: 1×opamp_ic (U1) + 2×resistor (RG, RF)                 + 1×capacitor decoupling [+ 1 if dual]                          + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
+            - opamp_differential:  1×opamp_ic (U1) + 4×resistor (R1, R2, R3, R4 matched pairs R1=R3, R2=R4) + 1×capacitor decoupling [+ 1 if dual]      + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
+
+            JSON SHAPE:
             {
-                "target_component": "<ID>",
-                "formula": "<Math>",
-                "calculated_value": "4700",
-                "unit": "ohm",
-                "vin": "0", "vout": "0", "zin": "0", "f_cutoff": "0",
-                "component_stage": "0"
+            "is_valid_request": true,
+            "analysis": {
+                "circuit_name": "",
+                "topology_classification": "",
+                "design_summary": "",
+                "calculated_values": {
+                "gain_dB": 0.0,
+                "bandwidth_Hz": 0.0,
+                "input_impedance_ohm": 0.0,
+                "output_impedance_ohm": 0.0,
+                "IC_mA": 0.0,
+                "VCE_V": 0.0
+                }
+            },
+            "architecture": {
+                "topology_type": "Single-stage",
+                "stage_count": 1,
+                "stages": [
+                {
+                    "id": "S1",
+                    "topology": "",
+                    "active_device_ref": ""
+                }
+                ]
+            },
+            "power_and_coupling": {
+                "power_rail": "",
+                "output_strategy": ""
+            },
+            "signal_flow": {
+                "input_node": "IN",
+                "output_node": "OUT",
+                "main_chain": ["S1"]
+            },
+            "components": [
+                {
+                "ref": "",
+                "type": "",
+                "value": "",
+                "model": "",
+                "role": "",
+                "topology_stage": 0
+                }
+            ],
+            "nets": [
+                {
+                "net_name": "",
+                "nodes": []
+                }
+            ],
+            "probe_nodes": []
             }
-        ],
-        "calculated_values": {
-            "gain_dB": 20.0,
-            "bandwidth_Hz": 100000.0,
-            "input_impedance_ohm": 10000.0,
-            "output_impedance_ohm": 200.0,
-            "IC_mA": 2.0,
-            "VCE_V": 6.0
-        }
-    },
-    "architecture": {
-        "topology_type": "Single-stage",
-        "stage_count": 1,
-        "stages": [
-            {
-                "id": "S1",
-                "topology": "common_emitter",
-                "active_device_ref": "Q1",
-                "coupling_to_next": null
-            }
-        ]
-    },
-    "power_and_coupling": {
-        "power_rail": "Single +12V",
-        "output_strategy": "Single-ended",
-        "interstage_coupling": "RC Coupling"
-    },
-    "signal_flow": {
-        "input_node": "IN",
-        "output_node": "OUT",
-        "main_chain": ["S1"],
-        "stage_links": []
-    },
-    "components": [
-        {
-            "ref": "R1",
-            "type": "resistor",
-            "value": "10k",
-            "model": "Generic",
-            "role": "load",
-            "topology_stage": 0
-        }
-    ],
-    "nets": [
-        {"net_name": "VCC", "nodes": ["VCC:1", "R1:1"]},
-        {"net_name": "0", "nodes": ["GND:1", "R1:2"]}
-    ],
-    "probe_nodes": ["IN", "OUT", "VCC", "0"]
-}
 
-NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
-""".strip()
+            Generate the complete CircuitIR JSON for the user request.
+            """.strip()
 
         last_error_fields: List[str] = []
         last_error_message = ""
@@ -470,6 +520,8 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
             except ValidationError as exc:
                 last_error_message = str(exc)
                 last_error_fields = self._extract_validation_fields(exc)
+                if "nets.duplicate_pins" in last_error_fields:
+                    logger.error("CircuitIR rejected due to duplicate_pins — retrying generation")
                 logger.warning(
                     "CircuitIR validation failed at retry %d/%d: %s",
                     retry_attempt,
@@ -496,6 +548,38 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
             }
         return None
 
+    @staticmethod
+    def _augment_requirements_with_defaults(requirements: str) -> str:
+        """Inject a deterministic default for underspecified amplifier requests.
+
+        Generic create/design/build requests that mention amplifier intent plus
+        gain and supply values are interpreted as a single-stage BJT common-emitter
+        amplifier unless the user explicitly names another topology or device.
+        """
+        req_text = (requirements or "").strip()
+        if not req_text:
+            return ""
+
+        lowered = req_text.lower()
+        create_like = any(token in lowered for token in ("create", "design", "build", "generate", "tạo", "thiết kế", "synthesize"))
+        amplifier_like = any(token in lowered for token in ("amplifier", "amplify", "khuếch đại", "khuếch đại"))
+        explicit_topology = any(token in lowered for token in (
+            "common emitter", "common_emitter", "ce", "common collector", "common_collector", "cc",
+            "common base", "common_base", "cb", "common source", "common_source", "cs",
+            "common drain", "common_drain", "cd", "inverting", "non-inverting", "non_inverting",
+            "differential", "class ab", "class_ab", "class d", "class_d", "darlington",
+        ))
+        explicit_device = any(token in lowered for token in ("op-amp", "opamp", "mosfet", "bjt", "darlington", "class d", "class_d"))
+
+        if create_like and amplifier_like and not explicit_topology and not explicit_device:
+            return (
+                req_text
+                + "\n\nDefault topology hint: interpret this as a single-stage BJT common-emitter amplifier with an NPN transistor. "
+                + "Preserve the requested gain target, supply voltage, and standard IN/OUT ports."
+            )
+
+        return req_text
+
     def is_available(self, role: LLMRole, mode: Optional[LLMMode] = None) -> bool:
         config = self._get_config(role, mode)
         if not config:
@@ -518,7 +602,7 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                             "model": f"{m.provider.value}/{m.model_id}",
                             "has_key": bool(m.api_key),
                             "project_configured": bool(m.project_id),
-                            "location": m.location or "asia-southeast1",
+                            "location": m.location or "(not set)",
                             "tier": "primary" if i == 0 else f"fallback_{i}",
                         }
                         for i, m in enumerate([config.primary] + config.fallbacks)
@@ -532,8 +616,8 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
         for err in exc.errors():
             loc = err.get("loc", []) or []
             msg = str(err.get("msg", ""))
-            if msg.startswith("validation_errors:"):
-                suffix = msg.split(":", 1)[1]
+            if "validation_errors:" in msg:
+                suffix = msg.split("validation_errors:", 1)[1]
                 for item in suffix.split(","):
                     field = item.strip()
                     if field:
@@ -583,7 +667,92 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
             )
             normalized["architecture"] = architecture_copy
 
+        normalized["nets"] = LLMRouter._repair_duplicate_opamp_output_nets(normalized.get("nets"))
+
         return normalized
+
+    @staticmethod
+    def _repair_duplicate_opamp_output_nets(raw_nets: Any) -> Any:
+        """Auto-heal common LLM wiring error: U1:OUT duplicated across two nets.
+
+        We keep the OUT pin on the most likely output net (prefers names containing
+        `OUT`) and remove that same pin from any other net to satisfy
+        `nets.duplicate_pins` validation.
+        """
+        if not isinstance(raw_nets, list):
+            return raw_nets
+
+        nets: List[Dict[str, Any]] = []
+        for net in raw_nets:
+            if not isinstance(net, dict):
+                nets.append(net)
+                continue
+            copied = dict(net)
+            nodes = copied.get("nodes")
+            copied["nodes"] = list(nodes) if isinstance(nodes, list) else []
+            nets.append(copied)
+
+        occurrences: Dict[str, List[Tuple[int, int, str]]] = {}
+        for net_idx, net in enumerate(nets):
+            net_name = str(net.get("net_name") or "")
+            for node_idx, node in enumerate(net.get("nodes", [])):
+                parsed = LLMRouter._parse_pin_ref(node)
+                if parsed is None:
+                    continue
+                ref, pin = parsed
+                if not ref.startswith("U") or not LLMRouter._is_opamp_output_pin(pin):
+                    continue
+                pin_key = f"{ref}:{pin}"
+                occurrences.setdefault(pin_key, []).append((net_idx, node_idx, net_name))
+
+        changed = False
+        for pin_key, uses in occurrences.items():
+            if len(uses) <= 1:
+                continue
+            keep_entry = max(uses, key=lambda x: (1 if "OUT" in x[2].upper() else 0, -x[0]))
+            keep_net_idx, _, keep_net_name = keep_entry
+            for net_idx, node_idx, _ in uses:
+                if net_idx == keep_net_idx:
+                    continue
+                node_list = nets[net_idx].get("nodes", [])
+                if 0 <= node_idx < len(node_list):
+                    node_list[node_idx] = None
+                    changed = True
+            logger.warning(
+                "Auto-healed duplicate op-amp output pin %s by keeping it on net '%s'",
+                pin_key,
+                keep_net_name,
+            )
+
+        if not changed:
+            return raw_nets
+
+        for net in nets:
+            node_list = net.get("nodes", [])
+            if isinstance(node_list, list):
+                net["nodes"] = [n for n in node_list if isinstance(n, str) and str(n).strip()]
+        return nets
+
+    @staticmethod
+    def _parse_pin_ref(node: Any) -> Optional[Tuple[str, str]]:
+        text = str(node or "").strip()
+        if not text:
+            return None
+        if ":" in text:
+            ref, pin = text.split(":", 1)
+        elif "." in text:
+            ref, pin = text.split(".", 1)
+        else:
+            return None
+        ref = ref.strip().upper()
+        pin = pin.strip().upper()
+        if not ref or not pin:
+            return None
+        return ref, pin
+
+    @staticmethod
+    def _is_opamp_output_pin(pin: str) -> bool:
+        return pin in {"OUT", "OUTPUT", "VO", "VOUT", "O"}
 
     @staticmethod
     def _normalize_flat_object_list(
@@ -772,46 +941,38 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
         configs = self._mode_configs.get(resolved_mode, {})
         return configs.get(role) or configs.get(LLMRole.GENERAL)
 
-    def _try_call_json(
-        self,
-        model: ModelConfig,
-        system: str,
-        user_content: str,
-        temperature: Optional[float],
-        max_tokens: Optional[int],
-        response_model: Optional[Type[BaseModel]],
-        schema_retries: int,
-    ) -> Optional[Dict[str, Any]]:
+    def _try_call_json(self,model: ModelConfig,system: str,user_content: str,temperature: Optional[float],max_tokens: Optional[int],response_model: Optional[Type[BaseModel]],schema_retries: int,) -> Optional[Dict[str, Any]]:
         temp = temperature if temperature is not None else model.temperature
         tokens = _cap_vertex_output_tokens(max_tokens if max_tokens is not None else model.max_tokens)
         response_schema = (
-            prepare_vertex_schema(
-                response_model.model_json_schema(),
-                debug_label=response_model.__name__,
-            )
-            if response_model is not None
-            else None
+            prepare_vertex_schema(response_model.model_json_schema(), debug_label=response_model.__name__)
+            if response_model is not None else None
         )
 
         attempts = schema_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                obj = self._gemini_json(
-                    model,
-                    system,
-                    user_content,
-                    temp,
-                    tokens,
-                    response_schema=response_schema,
-                )
+                obj = self._gemini_json(model, system, user_content, temp, tokens, response_schema=response_schema)
             except Exception as e:
+                err_str = str(e)
+                
+                if "Unsupported region" in err_str:
+                    logger.error(
+                        "[%s/%s] Region %s không được hỗ trợ — skip model",
+                        model.provider.value, model.model_id, model.location,
+                    )
+                    return None  
+                
+                if "has no field named" in err_str and ("$defs" in err_str or "additionalProperties" in err_str):
+                    logger.error(
+                        "[%s/%s] Schema Vertex không hợp lệ — cần fix schema_utils.py\nFull error: %s",
+                        model.provider.value, model.model_id, err_str[:600],   # ← thêm err_str vào đây
+                    )
+                    return None
+                
                 logger.warning(
                     "[%s/%s] JSON call failed (attempt %s/%s): %s",
-                    model.provider.value,
-                    model.model_id,
-                    attempt,
-                    attempts,
-                    e,
+                    model.provider.value, model.model_id, attempt, attempts, err_str[:200],
                 )
                 continue
 
@@ -822,6 +983,7 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                 validated = response_model.model_validate(obj)
                 return validated.model_dump(mode="json")
             except ValidationError as e:
+                validation_fields = self._extract_validation_fields(e)
                 normalized_obj = self._normalize_json_payload(obj, response_model)
                 if normalized_obj is not obj:
                     try:
@@ -835,6 +997,13 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                         )
                         return validated.model_dump(mode="json")
                     except ValidationError as normalized_error:
+                        normalized_fields = self._extract_validation_fields(normalized_error)
+                        if (
+                            getattr(response_model, "__name__", "") == "CircuitIR"
+                            and "nets.duplicate_pins" in normalized_fields
+                        ):
+                            logger.error("CircuitIR rejected due to duplicate_pins — retrying generation")
+                            return normalized_obj
                         logger.warning(
                             "[%s/%s] JSON schema validation failed after normalization (attempt %s/%s): %s",
                             model.provider.value,
@@ -843,6 +1012,12 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
                             attempts,
                             normalized_error,
                         )
+                if (
+                    getattr(response_model, "__name__", "") == "CircuitIR"
+                    and "nets.duplicate_pins" in validation_fields
+                ):
+                    logger.error("CircuitIR rejected due to duplicate_pins — retrying generation")
+                    return obj
                 logger.warning(
                     "[%s/%s] JSON schema validation failed (attempt %s/%s): %s",
                     model.provider.value,
@@ -878,20 +1053,32 @@ NOW GENERATE A COMPLETE CircuitIR FOR THE USER REQUEST BELOW:
         response_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         from app.application.ai.googlecloud_client import GoogleCloudClient, GoogleCloudMessage
+        import json, json_repair
         
-        client = GoogleCloudClient(api_key=model.api_key,
-                                   model=model.model_id,
-                                   timeout_sec=model.timeout_sec,
-                                   project_id=model.project_id,
-                                   location=model.location,)
-        
-        messages = [GoogleCloudMessage(role="user", content=user_content)]
-        
-        return client.chat_json(
-            messages, system_instruction=system,
-            temperature=temperature, max_tokens=max_tokens,
-            response_schema=response_schema,
+        client = GoogleCloudClient(
+            api_key=model.api_key, model=model.model_id,
+            timeout_sec=model.timeout_sec, project_id=model.project_id, location=model.location,
         )
+        messages = [GoogleCloudMessage(role="user", content=user_content)]
+
+        try:
+            return client.chat_json(
+                messages, system_instruction=system,
+                temperature=temperature, max_tokens=max_tokens,
+                response_schema=response_schema,
+            )
+        except json.JSONDecodeError as jde:
+            raw = getattr(jde, "doc", None)  # json.JSONDecodeError có attr .doc = raw string
+            if raw and len(raw) > 50:
+                try:
+                    repaired = json_repair.repair_json(raw, return_objects=True)
+                    if isinstance(repaired, dict) and repaired:
+                        logger.info("[%s/%s] JSON repaired from JSONDecodeError",
+                                    model.provider.value, model.model_id)
+                        return repaired
+                except Exception:
+                    pass
+            raise
 
     def _gemini_text(self, model: ModelConfig, system: str, user_content: str, temperature: float, max_tokens: int,) -> str:
         from app.application.ai.googlecloud_client import GoogleCloudClient, GoogleCloudMessage

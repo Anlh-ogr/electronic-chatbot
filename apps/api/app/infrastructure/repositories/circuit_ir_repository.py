@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -12,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.structured_logger import log_stage
 
 from app.application.ai.circuit_ir_schema import CircuitIR
+
+
+logger = logging.getLogger(__name__)
 
 
 class CircuitIRRepository:
@@ -26,15 +30,15 @@ class CircuitIRRepository:
         circuit_name: str,
         session_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        ir: Optional[CircuitIR] = None,
     ) -> str:
         """Ensure parent row in circuits table exists before inserting into circuit_irs.
         
         This satisfies the FK constraint circuit_irs.circuit_id -> circuits.circuit_id.
         Returns circuit_id if inserted, or if row already exists.
         """
-        import logging
-        logger = logging.getLogger(__name__)
-        
+        circuit_name = self._generated_name_if_unnamed(circuit_name, ir)
+
         # Check if circuit already exists
         result = await self.session.execute(
             text("SELECT circuit_id FROM circuits WHERE circuit_id = :circuit_id"),
@@ -96,6 +100,7 @@ class CircuitIRRepository:
 
         topology_type = ir.architecture.topology_type if ir.architecture is not None else None
         circuit_name = ir.analysis.circuit_name if ir.analysis is not None else None
+        circuit_name = self._generated_name_if_unnamed(circuit_name, ir)
         stage_count = ir.architecture.stage_count if ir.architecture is not None else 1
         power_rail = (
             ir.power_and_coupling.power_rail
@@ -160,6 +165,64 @@ class CircuitIRRepository:
             probe_count=len(probe_nodes),
         )
         return ir_id
+
+    def _generated_name_if_unnamed(self, name: Optional[str], ir: Optional[CircuitIR]) -> str:
+        current = str(name or "").strip()
+        if current and current.lower() != "unnamed":
+            return current
+        if ir is None:
+            return "Unnamed Circuit"
+
+        family = self._extract_topology_family(ir)
+        gain_target = self._extract_gain_target(ir)
+        generated = f"{family.replace('_', ' ').title()} – Gain {gain_target}x"
+        logger.info("Generated circuit name from IR: %s", generated)
+        return generated
+
+    def _extract_topology_family(self, ir: CircuitIR) -> str:
+        topology = getattr(ir, "topology", None)
+        family = str(getattr(topology, "family", "") or "").strip()
+        if family:
+            return family.removeprefix("opamp_")
+
+        if ir.architecture is not None and ir.architecture.stages:
+            stage_topology = str(ir.architecture.stages[0].topology or "").strip()
+            if stage_topology:
+                return stage_topology.removeprefix("opamp_")
+
+        text = " ".join(
+            [
+                str(getattr(ir.analysis, "topology_classification", "") or ""),
+                str(getattr(ir.analysis, "circuit_name", "") or ""),
+            ]
+        ).lower()
+        normalized = text.replace("-", "_").replace(" ", "_")
+        for family in (
+            "common_emitter",
+            "common_base",
+            "common_collector",
+            "non_inverting",
+            "inverting",
+            "differential",
+        ):
+            if family in normalized:
+                return family
+        return "circuit"
+
+    def _extract_gain_target(self, ir: CircuitIR) -> str:
+        topology = getattr(ir, "topology", None)
+        raw = getattr(topology, "gain_target", None)
+        if raw is None and ir.analysis is not None:
+            raw = getattr(ir.analysis.calculated_values, "gain_actual", None)
+        if raw is None:
+            return "N/A"
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return str(raw)
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:g}"
 
     async def mark_kept(self, ir_id: str, is_kept: bool) -> bool:
         result = await self.session.execute(

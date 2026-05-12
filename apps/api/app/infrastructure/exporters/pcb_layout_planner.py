@@ -33,7 +33,7 @@ class PCBLayoutPlanner:
     BOARD_WIDTH = 120.0
     BOARD_HEIGHT = 80.0
     MARGIN = 15.0
-    COMP_SPACING = 15.0  # minimum spacing between component centres
+    COMP_SPACING = 17.0  # minimum spacing between component centres
     RELATED_MIN_SPACING = 3.0
     RELATED_MAX_SPACING = 5.0
 
@@ -193,6 +193,13 @@ class PCBLayoutPlanner:
                 max_mm=max(0.5, max_spacing),
             )
 
+        placements = self._separate_overlapping_centers(
+            placements,
+            fixed_ids=set(fixed_positions.keys()),
+        )
+
+        placements = self._center_placements_on_board(placements)
+
         return {cid: (self._snap(x), self._snap(y))
                 for cid, (x, y) in placements.items()}
 
@@ -237,6 +244,10 @@ class PCBLayoutPlanner:
             )
             self._last_route_report = report
             self._last_zones = zones
+            if not tracks:
+                tracks = self._plan_tracks_draft(circuit, pad_positions)
+                if isinstance(self._last_route_report, dict):
+                    self._last_route_report["fallback_draft_tracks"] = True
             return tracks
 
         tracks = self._plan_tracks_draft(circuit, pad_positions)
@@ -715,6 +726,70 @@ class PCBLayoutPlanner:
                 pos[cid][1] = max(self.MARGIN, min(self.BOARD_HEIGHT - self.MARGIN, pos[cid][1]))
 
         return {cid: (xy[0], xy[1]) for cid, xy in pos.items()}
+
+    def _separate_overlapping_centers(
+        self,
+        placements: Dict[str, Tuple[float, float]],
+        fixed_ids: Set[str],
+        min_mm: Optional[float] = None,
+    ) -> Dict[str, Tuple[float, float]]:
+        """Push apart component centres that ended up closer than min_mm (reduces footprint overlap)."""
+        sep = float(min_mm if min_mm is not None else max(self.COMP_SPACING, 12.0))
+        out: Dict[str, Tuple[float, float]] = {k: (float(v[0]), float(v[1])) for k, v in placements.items()}
+        ids = list(out.keys())
+        for _ in range(28):
+            moved = False
+            for i, ia in enumerate(ids):
+                for ib in ids[i + 1 :]:
+                    if ia in fixed_ids and ib in fixed_ids:
+                        continue
+                    xa, ya = out[ia]
+                    xb, yb = out[ib]
+                    dx, dy = xb - xa, yb - ya
+                    dist = math.hypot(dx, dy) or 0.001
+                    if dist >= sep:
+                        continue
+                    push = (sep - dist) / 2.0 + 0.05
+                    fx = push * dx / dist
+                    fy = push * dy / dist
+                    if ia not in fixed_ids:
+                        out[ia] = (xa - fx, ya - fy)
+                    if ib not in fixed_ids:
+                        out[ib] = (xb + fx, yb + fy)
+                    moved = True
+            if not moved:
+                break
+        for cid in out:
+            x, y = out[cid]
+            out[cid] = (
+                max(self.MARGIN, min(self.BOARD_WIDTH - self.MARGIN, x)),
+                max(self.MARGIN, min(self.BOARD_HEIGHT - self.MARGIN, y)),
+            )
+        return out
+
+    def _center_placements_on_board(
+        self,
+        placements: Dict[str, Tuple[float, float]],
+    ) -> Dict[str, Tuple[float, float]]:
+        """Translate placements so the bbox centroid matches the board centre."""
+        if not placements:
+            return placements
+        xs = [xy[0] for xy in placements.values()]
+        ys = [xy[1] for xy in placements.values()]
+        bbox_cx = (min(xs) + max(xs)) / 2.0
+        bbox_cy = (min(ys) + max(ys)) / 2.0
+        board_cx = self.BOARD_WIDTH / 2.0
+        board_cy = self.BOARD_HEIGHT / 2.0
+        dx = board_cx - bbox_cx
+        dy = board_cy - bbox_cy
+        shifted = {cid: (x + dx, y + dy) for cid, (x, y) in placements.items()}
+        for cid in shifted:
+            x, y = shifted[cid]
+            shifted[cid] = (
+                max(self.MARGIN, min(self.BOARD_WIDTH - self.MARGIN, x)),
+                max(self.MARGIN, min(self.BOARD_HEIGHT - self.MARGIN, y)),
+            )
+        return shifted
 
     def _compute_pad_positions(
         self,

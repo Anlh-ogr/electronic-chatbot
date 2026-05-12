@@ -106,7 +106,10 @@ class InMemoryCircuitRepository(CircuitRepositoryPort):
             return result
 
         # Fallback: hydrate from persisted snapshots in Postgres when memory cache misses.
-        logger.warning(f"Circuit {circuit_id} not found in memory repository, fallback to Postgres")
+        logger.debug(
+            "Circuit %s not found in memory repository, fallback to Postgres",
+            circuit_id,
+        )
         try:
             uuid.UUID(str(circuit_id))
         except Exception:

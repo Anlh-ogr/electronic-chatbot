@@ -308,15 +308,22 @@ class NLGService:
         }
 
         system = (
-            "Ban la tro ly thiet ke mach dien tu. "
-            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
-            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
-            "CRITICAL: Hay dich moi tom tat ky thuat, giai thich, hoac mo ta bang tieng Anh trong payload/IR sang tieng Viet truoc khi tra loi. "
-            "Van ban tra ve cho nguoi dung phai dat muc 100% tieng Viet. "
-            "Dung du lieu payload de tao phan hoi tieng Viet theo markdown. "
-            "Tuan thu response_contract trong payload: dung du cac muc, dung thu tu, "
-            "giu noi dung ky thuat ngan gon va nhat quan. "
-            "Neu thieu du lieu thi neu ro gia dinh thay vi suy doan."
+            "Bạn là trợ lý thiết kế mạch điện tử. "
+            "CRITICAL — NGÔN NGỮ: Phản hồi cuối cùng PHẢI viết HOÀN TOÀN bằng tiếng Việt. "
+            "Không dùng tiếng Anh cho giải thích, danh sách linh kiện, ghi chú hay tiêu đề mục. "
+            "Nếu payload/IR có đoạn tiếng Anh, bắt buộc dịch sang tiếng Việt trước khi trả lời. "
+            "Giữ nguyên dạng ASCII cho mã linh kiện (R1, C2, Q1, U1), tên net (VCC, GND, OUT), "
+            "model (LM358, BC547, QNPN), đơn vị (V, A, Hz, Ω, F, H) và từ khóa kỹ thuật. "
+            "CRITICAL — CÔNG THỨC TOÁN: MỌI công thức toán phải được viết bằng cú pháp LaTeX/KaTeX, "
+            "đặt trong dấu `$...$` (inline) hoặc `$$...$$` (display block). Ví dụ: "
+            "`$A_v = 1 + R_f/R_g$`, `$$f_c = \\dfrac{1}{2\\pi R C}$$`. "
+            "TUYỆT ĐỐI KHÔNG viết công thức kiểu plain text như `Av = 1 + Rf/Rg`, "
+            "không dùng ký tự `*` cho phép nhân (dùng `\\cdot` hoặc `\\times`), "
+            "không dùng `/` trần (dùng `\\dfrac{a}{b}`), và không bọc công thức trong code-fence (```...```). "
+            "Sử dụng subscript `R_{f}`, superscript `V^{2}`, ký hiệu Hy Lạp (`\\Omega`, `\\mu`, `\\pi`, `\\beta`) đầy đủ. "
+            "Dùng payload để tạo phản hồi markdown tuân thủ response_contract: đúng đủ các mục, đúng thứ tự, "
+            "nội dung kỹ thuật ngắn gọn nhất quán. "
+            "Nếu thiếu dữ liệu thì nêu rõ giả định thay vì suy đoán."
         )
 
         payload = self._build_llm_payload(
@@ -363,12 +370,14 @@ class NLGService:
         }
 
         system = (
-            "Ban la tro ly thiet ke mach dien tu. "
-            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
-            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
-            "CRITICAL: Neu payload co doan tieng Anh, bat buoc dich sang tieng Viet truoc khi sinh cau tra loi. "
-            "Dung payload de tao error response theo response_contract. "
-            "Tap trung vao nguyen nhan ky thuat va huong khac phuc co the thuc hien ngay."
+            "Bạn là trợ lý thiết kế mạch điện tử. "
+            "CRITICAL — NGÔN NGỮ: Phản hồi PHẢI viết HOÀN TOÀN bằng tiếng Việt. "
+            "Nếu payload có đoạn tiếng Anh, bắt buộc dịch sang tiếng Việt trước khi trả lời. "
+            "Giữ nguyên ASCII cho mã linh kiện, model, đơn vị (V, A, Ω). "
+            "CRITICAL — CÔNG THỨC: Mọi công thức toán phải đặt trong `$...$` (inline) hoặc `$$...$$` (display) "
+            "để KaTeX render. Không viết công thức kiểu plain text. Ví dụ: `$V_{out} = A_v \\cdot V_{in}$`. "
+            "Dùng payload để tạo error response markdown theo response_contract. "
+            "Tập trung vào nguyên nhân kỹ thuật và hướng khắc phục có thể thực hiện ngay."
         )
 
         payload = self._build_llm_payload(
@@ -404,12 +413,13 @@ class NLGService:
         }
 
         system = (
-            "Ban la tro ly thiet ke mach dien tu. "
-            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
-            "Khong duoc dung tieng Anh cho giai thich, danh sach linh kien, hoac ghi chu. "
-            "CRITICAL: Neu payload chua mo ta tieng Anh, hay dich sang tieng Viet truoc khi dat cau hoi cho nguoi dung. "
-            "Dung payload de dat cau hoi bo sung thong tin theo response_contract. "
-            "Ngan gon, than thien, de nguoi dung tra loi nhanh."
+            "Bạn là trợ lý thiết kế mạch điện tử. "
+            "CRITICAL — NGÔN NGỮ: Câu hỏi clarification PHẢI viết HOÀN TOÀN bằng tiếng Việt. "
+            "Nếu payload chứa mô tả tiếng Anh, dịch sang tiếng Việt trước. "
+            "Giữ nguyên ASCII cho mã linh kiện, đơn vị (V, A, Ω, Hz). "
+            "Nếu có công thức toán làm ví dụ, đặt trong `$...$` (KaTeX). "
+            "Dùng payload để đặt câu hỏi bổ sung thông tin theo response_contract. "
+            "Ngắn gọn, thân thiện, dễ trả lời nhanh."
         )
 
         payload = self._build_llm_payload(
@@ -449,11 +459,14 @@ class NLGService:
         }
 
         system = (
-            "Ban la tro ly thiet ke mach dien tu. "
-            "CRITICAL: Ban MUST tao phan hoi cuoi cung HOAN TOAN bang tieng Viet (Tieng Viet). "
-            "CRITICAL: Dich moi thong tin ky thuat bang tieng Anh trong payload sang tieng Viet truoc khi tra loi. "
-            "Dung payload de tao tom tat ket qua chinh sua theo response_contract. "
-            "Noi dung ngan gon, de doi chieu voi thay doi thuc te."
+            "Bạn là trợ lý thiết kế mạch điện tử. "
+            "CRITICAL — NGÔN NGỮ: Tóm tắt chỉnh sửa PHẢI viết HOÀN TOÀN bằng tiếng Việt. "
+            "Dịch mọi thông tin tiếng Anh trong payload sang tiếng Việt trước khi trả lời. "
+            "Giữ nguyên ASCII cho mã linh kiện (R1, C2, Q1), đơn vị (V, A, Ω, kΩ, μF). "
+            "CRITICAL — CÔNG THỨC: Mọi công thức toán dùng cú pháp KaTeX, đặt trong `$...$` (inline) "
+            "hoặc `$$...$$` (display). Không viết công thức kiểu `Av = ...` plain text. "
+            "Dùng payload để tạo tóm tắt kết quả chỉnh sửa theo response_contract. "
+            "Nội dung ngắn gọn, dễ đối chiếu với thay đổi thực tế."
         )
 
         payload = self._build_llm_payload(

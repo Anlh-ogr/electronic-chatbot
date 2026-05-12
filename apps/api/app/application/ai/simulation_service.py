@@ -38,6 +38,129 @@ def log_stage(stage_name: str, **kwargs):
 class SimulationError(RuntimeError):
     """Raised when a simulation run cannot be completed."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        ngspice_stderr: str = "",
+        ngspice_stdout: str = "",
+        ngspice_log_tail: str = "",
+        exit_code: Optional[int] = None,
+        executable: str = "",
+        attempt: str = "",
+        failure_phase: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.ngspice_stderr = ngspice_stderr or ""
+        self.ngspice_stdout = ngspice_stdout or ""
+        self.ngspice_log_tail = ngspice_log_tail or ""
+        self.exit_code = exit_code
+        self.executable = executable or ""
+        self.attempt = attempt or ""
+        self.failure_phase = (failure_phase or "").strip() or self._infer_failure_phase(message)
+
+    @staticmethod
+    def _infer_failure_phase(message: str) -> str:
+        m = str(message or "").lower()
+        if "netlist is empty" in m or "does not contain" in m or "no valid spice" in m:
+            return "precheck_netlist"
+        if "executable not found" in m:
+            return "subprocess_missing_binary"
+        if "timed out" in m:
+            return "subprocess_timeout"
+        if "ngspice failed" in m or "exit " in m:
+            return "subprocess_nonzero_exit"
+        if "waveform file" in m or "samples were parsed" in m or "wrdata" in m:
+            return "postprocess_waveform"
+        return "simulation_error"
+
+    @staticmethod
+    def _clip(text: str, max_chars: int = 12000) -> str:
+        if not text:
+            return ""
+        return text if len(text) <= max_chars else text[-max_chars:]
+
+    def detail_payload(self) -> Dict[str, Any]:
+        """Structured fields for HTTP / SSE responses (JSON-serializable).
+
+        Always includes ngspice_* keys so clients never rely on presence/absence
+        to detect simulation-stage failures (empty string means nothing captured).
+        """
+        stderr_c = self._clip(self.ngspice_stderr)
+        stdout_c = self._clip(self.ngspice_stdout)
+        log_c = self._clip(self.ngspice_log_tail)
+        ran_cli = self.failure_phase in {
+            "subprocess_nonzero_exit",
+            "postprocess_waveform",
+            "subprocess_timeout",
+        }
+        no_capture = not (stderr_c.strip() or stdout_c.strip() or log_c.strip())
+
+        out: Dict[str, Any] = {
+            "error": "simulation_failed",
+            "message": str(self),
+            "type": self.__class__.__name__,
+            "failure_phase": self.failure_phase,
+            "ngspice_stderr": stderr_c,
+            "ngspice_stdout": stdout_c,
+            "ngspice_log_tail": log_c,
+            "ngspice_executable": self.executable or "",
+            "spice_attempt": self.attempt or "",
+            "ngspice_exit_code": self.exit_code,
+        }
+
+        if ran_cli and no_capture and self.failure_phase == "subprocess_nonzero_exit":
+            out["diagnostic_note"] = (
+                "Ngspice reported failure but stderr, stdout, and stdout.log were all empty. "
+                "Try NGSPICE_EXECUTABLE pointing to the same binary you use in a terminal, "
+                "or run the saved .cir from the API logs locally with ngspice -b."
+            )
+        elif ran_cli and no_capture and self.failure_phase == "postprocess_waveform":
+            out["diagnostic_note"] = (
+                "Ngspice exited 0 but waveform output was missing or could not be parsed; "
+                "stdout.log tail is empty — check probe names vs netlist nodes and wrdata format."
+            )
+        elif self.failure_phase == "subprocess_timeout":
+            out["diagnostic_note"] = (
+                "Ngspice subprocess exceeded NGSPICE_TIMEOUT_SECONDS. "
+                "Raise NGSPICE_TIMEOUT_SECONDS or shorten the transient window (stop/step)."
+            )
+        elif self.failure_phase == "precheck_netlist":
+            out["diagnostic_note"] = (
+                "Failed before starting ngspice (missing/empty netlist or compile error). "
+                "Fix synthesis/export first; ngspice_stderr/log are not applicable."
+            )
+        elif self.failure_phase == "subprocess_missing_binary":
+            out["diagnostic_note"] = (
+                "Install ngspice or set NGSPICE_EXECUTABLE to the full path of ngspice.exe "
+                "(Windows services often have no PATH)."
+            )
+
+        return out
+
+
+def simulation_error_http_detail(exc: BaseException) -> Dict[str, Any]:
+    """Normalize simulation failures for FastAPI `HTTPException(detail=...)`."""
+    if isinstance(exc, SimulationError):
+        return exc.detail_payload()
+    return {
+        "error": "simulation_failed",
+        "type": exc.__class__.__name__,
+        "message": str(exc),
+        "failure_phase": "outside_ngspice_simulator",
+        "ngspice_stderr": "",
+        "ngspice_stdout": "",
+        "ngspice_log_tail": "",
+        "ngspice_executable": "",
+        "spice_attempt": "",
+        "ngspice_exit_code": None,
+        "diagnostic_note": (
+            "This exception was not raised as SimulationError (e.g. request validation, "
+            "JSON/schema error, IR compile, or unrelated server bug). "
+            "Expand `message` and server logs; ngspice fields are intentionally empty."
+        ),
+    }
+
 
 @dataclass
 class WaveformTrace:
@@ -91,7 +214,7 @@ class NgSpiceSimulationService:
     """Run transient simulations through ngspice and return waveform arrays."""
 
     def __init__(self, executable: Optional[str] = None, timeout_seconds: int = 60) -> None:
-        self._executable = executable or os.getenv("NGSPICE_EXECUTABLE") or "ngspice"
+        self._executable = self._resolve_ngspice_executable(executable)
         env_timeout = os.getenv("NGSPICE_TIMEOUT_SECONDS")
         self._timeout_seconds = int(env_timeout) if env_timeout else timeout_seconds
         if self._timeout_seconds < 10:
@@ -104,6 +227,26 @@ class NgSpiceSimulationService:
         self._max_output_points = int(env_max_output_points) if env_max_output_points else 1200
         if self._max_output_points < 300:
             self._max_output_points = 300
+
+    @staticmethod
+    def _resolve_ngspice_executable(explicit: Optional[str]) -> str:
+        """Pick ngspice binary: arg → env → PATH → common Windows install dirs."""
+        if explicit and str(explicit).strip():
+            return str(explicit).strip()
+        env = (os.getenv("NGSPICE_EXECUTABLE") or "").strip()
+        if env:
+            return env
+        found = shutil.which("ngspice")
+        if found:
+            return found
+        if os.name == "nt":
+            for candidate in (
+                r"C:\Program Files\Spice64\bin\ngspice.exe",
+                r"C:\Program Files (x86)\Spice64\bin\ngspice.exe",
+            ):
+                if os.path.isfile(candidate):
+                    return candidate
+        return "ngspice"
 
     def simulate_from_circuit_data(self, circuit_data: Dict[str, Any]) -> SimulationResult:
         """Run simulation directly from circuit_data schema.
@@ -127,6 +270,8 @@ class NgSpiceSimulationService:
             raise SimulationError("circuit_data does not contain spice_netlist/netlist/ngspice_netlist")
 
         probes = self._extract_nodes_to_monitor(circuit_data)
+        if not probes:
+            probes = self._infer_default_probes(circuit_data)
         step, stop, start = self._extract_transient_window(circuit_data)
         reltol = self._extract_reltol(circuit_data)
         source_params = circuit_data.get("source_params")
@@ -143,6 +288,20 @@ class NgSpiceSimulationService:
             start=start,
             reltol=reltol,
             expected_gain=expected_gain,
+            probe_io_hint=self._extract_signal_flow_probe_hint(circuit_data),
+        )
+
+    def _extract_signal_flow_probe_hint(self, circuit_data: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        sf = circuit_data.get("signal_flow")
+        if not isinstance(sf, dict):
+            return None
+        ri = sf.get("input_node") or sf.get("input_net")
+        ro = sf.get("output_node") or sf.get("output_net")
+        if not ri or not ro:
+            return None
+        return (
+            f"v({self._canonical_probe_node(ri)})",
+            f"v({self._canonical_probe_node(ro)})",
         )
 
     def simulate_transient(
@@ -154,12 +313,21 @@ class NgSpiceSimulationService:
         start: str = "0",
         reltol: str = "1e-3",
         expected_gain: Optional[float] = None,
+        probe_io_hint: Optional[Tuple[str, str]] = None,
     ) -> SimulationResult:
         if not netlist or not netlist.strip():
             raise SimulationError("Netlist is empty")
 
         cleaned_netlist = self._normalize_netlist(netlist)
         selected_probes = self._normalize_probes(probes)
+        # Remap probes that don't exactly match a netlist node to the closest
+        # actual node (e.g. probe `v(OUT)` against compiled deck whose output
+        # net is `out_sig` / `u1_out`). Without this, ngspice prints
+        # "Error: no such vector OUT" and the waveform file is never written.
+        selected_probes = self._remap_probes_to_netlist(cleaned_netlist, selected_probes)
+        # Keep the I/O hint in sync with the remapped probes so gain estimation
+        # can still locate the correct input/output trace by name.
+        probe_io_hint = self._remap_probe_io_hint(cleaned_netlist, probe_io_hint)
         step, stop, start = self._normalize_analysis_window(step, stop, start)
 
         started = time.perf_counter()
@@ -171,7 +339,7 @@ class NgSpiceSimulationService:
             ("200us", "500us", "0", True, reltol),
         ]
 
-        last_timeout_error: Optional[SimulationError] = None
+        last_error: Optional[SimulationError] = None
         process = None
         traces: List[WaveformTrace] = []
         effective_step, effective_stop = step, stop
@@ -188,22 +356,62 @@ class NgSpiceSimulationService:
                     reltol=att_reltol,
                 )
                 effective_step, effective_stop = att_step, att_stop
+
+                logger.warning(
+                    "SPICE ATTEMPT SUCCESS: step=%s stop=%s uic=%s traces=%d",
+                    att_step,
+                    att_stop,
+                    att_uic,
+                    len(traces),
+                )
+                last_error = None
                 break
+
             except SimulationError as exc:
-                if "timed out" in str(exc).lower():
-                    last_timeout_error = exc
-                    continue
-                raise
+                exc.attempt = (
+                    f"step={att_step} stop={att_stop} start={att_start} "
+                    f"uic={att_uic} reltol={att_reltol}"
+                )
+                last_error = exc
+                diag = (
+                    (exc.ngspice_stderr or "").strip()
+                    or (exc.ngspice_log_tail or "").strip()
+                    or (exc.ngspice_stdout or "").strip()
+                )
+                diag_snip = diag.replace("\r", "")[-600:] if diag else ""
+                logger.warning(
+                    "SPICE ATTEMPT FAIL: step=%s stop=%s uic=%s error=%s diag_tail=%s",
+                    att_step,
+                    att_stop,
+                    att_uic,
+                    str(exc)[:400],
+                    diag_snip.replace("\n", "|"),
+                )
+                continue
 
         if process is None:
-            raise last_timeout_error or SimulationError("Simulation timed out")
+            logger.warning(
+                "SPICE ALL ATTEMPTS EXHAUSTED: netlist_head=%s",
+                cleaned_netlist.splitlines()[0]
+                if cleaned_netlist
+                else "<empty>",
+            )
+            raise last_error or SimulationError(
+                "Simulation failed after all attempts",
+                executable=self._executable,
+            )
 
         elapsed = (time.perf_counter() - started) * 1000.0
         raw_points = len(traces[0].x) if traces else 0
         traces = self._downsample_traces(traces)
         points = len(traces[0].x) if traces else 0
         x_unit = self._choose_time_unit(traces[0].x[-1] if traces and traces[0].x else 0.0)
-        metrics = self._estimate_gain_metrics(traces=traces, probes=selected_probes, expected_gain=expected_gain)
+        metrics = self._estimate_gain_metrics(
+            traces=traces,
+            probes=selected_probes,
+            expected_gain=expected_gain,
+            probe_io_hint=probe_io_hint,
+        )
 
         # Structured NGSPICE log for CI / runtime observability
         try:
@@ -216,7 +424,15 @@ class NgSpiceSimulationService:
 
             dc_bias_v = None
             if traces:
-                output_trace = self._pick_output_trace({t.name.lower(): t for t in traces}, selected_probes)
+                trace_map_lc = {t.name.lower(): t for t in traces}
+                output_trace = None
+                if probe_io_hint:
+                    _, po = probe_io_hint[0].lower(), probe_io_hint[1].lower()
+                    output_trace = trace_map_lc.get(po)
+                if output_trace is None:
+                    output_trace = self._pick_output_trace(
+                        trace_map_lc, selected_probes, probe_io_hint=probe_io_hint
+                    )
                 if output_trace and output_trace.y:
                     dc_bias_v = sum(output_trace.y) / max(len(output_trace.y), 1)
 
@@ -296,17 +512,86 @@ class NgSpiceSimulationService:
         if isinstance(nodes, list) and nodes:
             normalized: List[str] = []
             for item in nodes:
-                text = str(item).strip().lower()
+                text = str(item).strip()
                 if not text:
                     continue
-                if text in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
+                lower = text.lower()
+                if lower in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
                     continue
-                if text.startswith("v(") or text.startswith("i("):
-                    normalized.append(text)
+                if lower.startswith("v(") or lower.startswith("i("):
+                    inner = text[2:-1] if text.endswith(")") else text[2:]
+                    normalized.append(f"v({self._canonical_probe_node(inner)})")
                 else:
-                    normalized.append(f"v({text})")
+                    normalized.append(f"v({self._canonical_probe_node(text)})")
             return list(dict.fromkeys(normalized))
         return None
+
+    def _infer_default_probes(self, circuit_data: Dict[str, Any]) -> List[str]:
+        """Infer a stable input/output probe pair from circuit metadata.
+
+        The compiler emits node names from the IR net names, so the fallback
+        should prefer those same names instead of generic v(in)/v(out).
+        """
+        candidates: List[str] = []
+
+        def _add_node(raw: Any) -> None:
+            text = str(raw or "").strip()
+            if not text:
+                return
+            lower = text.lower()
+            if lower in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
+                return
+            node = text[2:-1] if lower.startswith("v(") and text.endswith(")") else text
+            node = self._canonical_probe_node(node)
+            probe = f"v({node})"
+            if probe not in candidates:
+                candidates.append(probe)
+
+        ports = circuit_data.get("ports")
+        if isinstance(ports, list):
+            for port in ports:
+                if not isinstance(port, dict):
+                    continue
+                direction = str(port.get("direction") or port.get("type") or "").strip().lower()
+                if direction not in {"input", "output"}:
+                    continue
+                net_name = port.get("net_name") or port.get("net") or port.get("name")
+                _add_node(net_name)
+
+        if len(candidates) < 2:
+            for key in ("input_node", "input_net", "output_node", "output_net"):
+                _add_node(circuit_data.get(key))
+
+        if len(candidates) < 2:
+            nets = circuit_data.get("nets")
+            if isinstance(nets, list):
+                for net in nets:
+                    if not isinstance(net, dict):
+                        continue
+                    name = str(net.get("name") or net.get("net_name") or net.get("id") or "").strip().lower()
+                    if any(tag in name for tag in ("vin", "input", "net_in", "in")):
+                        _add_node(net.get("name") or net.get("net_name") or net.get("id"))
+                    elif any(tag in name for tag in ("vout", "output", "net_out", "out")):
+                        _add_node(net.get("name") or net.get("net_name") or net.get("id"))
+
+        if len(candidates) < 2:
+            for fallback in ("net_in", "net_out"):
+                _add_node(fallback)
+
+        if len(candidates) < 2:
+            for fallback in ("in", "out"):
+                _add_node(fallback)
+
+        return candidates[:2] if candidates else ["v(net_in)", "v(net_out)"]
+
+    @staticmethod
+    def _canonical_probe_node(name: Any) -> str:
+        text = str(name or "").strip()
+        if not text:
+            return "0"
+        if text.lower() in {"0", "gnd", "ground", "vss"}:
+            return "0"
+        return re.sub(r"[^A-Za-z0-9_:+-]", "_", text).upper()
 
     def _extract_transient_window(self, circuit_data: Dict[str, Any]) -> Tuple[str, str, str]:
         def _coerce(v: Any, default_text: str) -> str:
@@ -487,16 +772,37 @@ class NgSpiceSimulationService:
             )
         except FileNotFoundError as exc:
             raise SimulationError(
-                "NGSpice executable not found. Set NGSPICE_EXECUTABLE or add ngspice to PATH."
+                "NGSpice executable not found. Set NGSPICE_EXECUTABLE or add ngspice to PATH.",
+                executable=self._executable,
             ) from exc
         except subprocess.TimeoutExpired as exc:
-            raise SimulationError("Simulation timed out") from exc
+            raise SimulationError(
+                f"Simulation timed out after {self._timeout_seconds}s",
+                executable=self._executable,
+                attempt=f"timeout_seconds={self._timeout_seconds}",
+            ) from exc
 
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             stdout = (completed.stdout or "").strip()
-            debug_text = "\n".join([part for part in [stderr, stdout] if part])
-            raise SimulationError(f"NGSpice failed: {debug_text or 'unknown error'}")
+            log_tail = ""
+            log_path = netlist_path.parent / "stdout.log"
+            if log_path.exists():
+                try:
+                    log_tail = log_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    log_tail = ""
+            preview = "\n".join(
+                part for part in (stderr, stdout, log_tail[-4000:] if log_tail else "") if part
+            ).strip()
+            raise SimulationError(
+                f"NGSpice failed (exit {completed.returncode}): {preview or 'unknown error'}",
+                ngspice_stderr=stderr,
+                ngspice_stdout=stdout,
+                ngspice_log_tail=log_tail,
+                exit_code=completed.returncode,
+                executable=self._executable,
+            )
 
         return completed
 
@@ -528,6 +834,7 @@ class NgSpiceSimulationService:
             "option gmin=1e-12",
             "option rshunt=1e12",
             f"option reltol={reltol}",
+            "op",  # Compute operating point first to aid convergence
             f"tran {step} {stop} {start}" + (" uic" if use_uic else ""),
             f"wrdata {wr_file} {wr_vectors}",
             "quit",
@@ -625,20 +932,25 @@ class NgSpiceSimulationService:
         return f"{seconds:.9g}"
 
     def _parse_waveform_file(self, data_path: Path, probes: List[str]) -> List[WaveformTrace]:
+        workdir = data_path.parent
+
+        def _read_stdout_log(max_chars: int = 8000) -> str:
+            debug_log = workdir / "stdout.log"
+            if not debug_log.exists():
+                return ""
+            try:
+                return debug_log.read_text(encoding="utf-8", errors="ignore")[-max_chars:]
+            except Exception:
+                return ""
+
         if not data_path.exists():
-            debug_log = data_path.parent / "stdout.log"
-            debug_text = ""
-            if debug_log.exists():
-                try:
-                    debug_text = debug_log.read_text(encoding="utf-8", errors="ignore")[-1200:]
-                except Exception:
-                    debug_text = ""
-            if debug_text:
-                raise SimulationError(
-                    "Simulation finished but waveform file was not created. ngspice log tail:\n"
-                    + debug_text
-                )
-            raise SimulationError("Simulation finished but waveform file was not created")
+            debug_text = _read_stdout_log()
+            raise SimulationError(
+                "Simulation finished but waveform file was not created.",
+                ngspice_log_tail=debug_text,
+                executable=self._executable,
+                attempt="missing_wrdata_output",
+            )
 
         x_values: List[float] = []
         y_values: List[List[float]] = [[] for _ in probes]
@@ -668,7 +980,13 @@ class NgSpiceSimulationService:
                     y_values[idx].append(y_row[idx])
 
         if not x_values:
-            raise SimulationError("No numeric waveform samples were parsed")
+            log_tail = _read_stdout_log()
+            raise SimulationError(
+                "No numeric waveform samples were parsed (empty tran, wrdata format mismatch, or probe mismatch).",
+                ngspice_log_tail=log_tail,
+                executable=self._executable,
+                attempt=f"probes={probes}",
+            )
 
         traces: List[WaveformTrace] = []
         for idx, probe in enumerate(probes):
@@ -743,8 +1061,9 @@ class NgSpiceSimulationService:
         starts_like_element = bool(re.match(r"^[A-Za-z]\w*$", first_token)) and len(first.split()) >= 3
         starts_with_directive = first.startswith(".")
 
+        # Must be a SPICE comment line; a bare word line starting with "C" is parsed as a capacitor.
         if starts_like_element or starts_with_directive:
-            lines.insert(0, "Chatbot transient simulation")
+            lines.insert(0, "* ngspice transient deck (wrapper)")
 
         return "\n".join(lines)
 
@@ -754,31 +1073,336 @@ class NgSpiceSimulationService:
             return ["v(in)", "v(out)"]
         normalized: List[str] = []
         for probe in probes:
-            value = str(probe).strip().lower()
-            if value in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
+            value = str(probe).strip()
+            lower = value.lower()
+            if lower in {"0", "gnd", "ground", "vss", "v(0)", "v(gnd)", "v(ground)", "v(vss)"}:
                 continue
+            if lower.startswith("v(") or lower.startswith("i("):
+                inner = value[2:-1] if value.endswith(")") else value[2:]
+                value = f"v({NgSpiceSimulationService._canonical_probe_node(inner)})"
+            else:
+                value = f"v({NgSpiceSimulationService._canonical_probe_node(value)})"
             if value and value not in normalized:
                 normalized.append(value)
 
         # When only one endpoint is provided, synthesize the counterpart probe.
         if len(normalized) == 1:
             p0 = normalized[0]
-            if "vin" in p0 and "vout" not in p0:
-                normalized.append(p0.replace("vin", "vout"))
-            elif "vout" in p0 and "vin" not in p0:
-                normalized.append(p0.replace("vout", "vin"))
-            elif "net_in" in p0 and "net_out" not in p0:
-                normalized.append(p0.replace("net_in", "net_out"))
-            elif "net_out" in p0 and "net_in" not in p0:
-                normalized.append(p0.replace("net_out", "net_in"))
-            elif "input" in p0 and "output" not in p0:
-                normalized.append(p0.replace("input", "output"))
-            elif "output" in p0 and "input" not in p0:
-                normalized.append(p0.replace("output", "input"))
+            p0_upper = p0.upper()
+            if "VIN" in p0_upper and "VOUT" not in p0_upper:
+                normalized.append(p0_upper.replace("VIN", "VOUT"))
+            elif "VOUT" in p0_upper and "VIN" not in p0_upper:
+                normalized.append(p0_upper.replace("VOUT", "VIN"))
+            elif "NET_IN" in p0_upper and "NET_OUT" not in p0_upper:
+                normalized.append(p0_upper.replace("NET_IN", "NET_OUT"))
+            elif "NET_OUT" in p0_upper and "NET_IN" not in p0_upper:
+                normalized.append(p0_upper.replace("NET_OUT", "NET_IN"))
+            elif "INPUT" in p0_upper and "OUTPUT" not in p0_upper:
+                normalized.append(p0_upper.replace("INPUT", "OUTPUT"))
+            elif "OUTPUT" in p0_upper and "INPUT" not in p0_upper:
+                normalized.append(p0_upper.replace("OUTPUT", "INPUT"))
 
         if not normalized:
             normalized = ["v(in)", "v(out)"]
         return normalized
+
+    # Tokens that look like SPICE values (suffix-scaled numbers) — never nodes.
+    _SPICE_VALUE_RE = re.compile(
+        r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+        r"(?:t|g|meg|k|m|u|µ|n|p|f)?$",
+        re.IGNORECASE,
+    )
+    # SPICE source descriptors that must be skipped when collecting nodes.
+    _SPICE_SOURCE_KEYWORDS = {
+        "dc", "ac", "sin", "pulse", "exp", "pwl", "sffm", "trnoise", "trrandom",
+    }
+
+    @classmethod
+    def _is_value_token(cls, token: str) -> bool:
+        if not token:
+            return False
+        if "(" in token or ")" in token or "=" in token:
+            return True  # function-style values like SIN(...), R={...}
+        return bool(cls._SPICE_VALUE_RE.match(token))
+
+    @classmethod
+    def _extract_netlist_nodes(cls, netlist: str) -> List[str]:
+        """Return the set of node identifiers actually used in the netlist.
+
+        Conservative tokenizer: skip comments/directives/control blocks, then for
+        each element line keep the tokens between the ref designator and the
+        model/value tail. The result is a de-duplicated, order-preserved list
+        of node names as they appear in the deck.
+        """
+        if not netlist:
+            return []
+
+        nodes: List[str] = []
+        seen: set[str] = set()
+        in_control = False
+        in_subckt = False
+        for raw in netlist.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("*"):
+                continue
+            lower = line.lower()
+            if lower.startswith(".control"):
+                in_control = True
+                continue
+            if lower.startswith(".endc"):
+                in_control = False
+                continue
+            if in_control:
+                continue
+            if lower.startswith(".subckt"):
+                in_subckt = True
+                continue
+            if lower.startswith(".ends"):
+                in_subckt = False
+                continue
+            if in_subckt:
+                continue  # subckt body nodes are local, not part of top circuit
+            if line.startswith("."):
+                continue  # directive (.model/.tran/.include/.options)
+            if line.startswith("+"):
+                continue  # continuation of previous element
+
+            tokens = line.split()
+            if len(tokens) < 3:
+                continue
+            head = tokens[0]
+            prefix = head[0].upper() if head else ""
+
+            # Determine how many of the trailing tokens are nodes (vs model/value).
+            element_nodes: List[str]
+            if prefix in {"R", "L"}:
+                element_nodes = tokens[1:3]
+            elif prefix == "C":
+                element_nodes = tokens[1:3]
+            elif prefix == "D":
+                element_nodes = tokens[1:3]
+            elif prefix in {"V", "I", "E", "F", "G", "H"}:
+                element_nodes = tokens[1:3]
+                # Skip source descriptors (DC, AC, SIN(...), PULSE(...), ...).
+            elif prefix == "Q":
+                element_nodes = tokens[1:4]
+            elif prefix == "M":
+                element_nodes = tokens[1:5]
+            elif prefix == "J":
+                element_nodes = tokens[1:4]
+            elif prefix == "X":
+                # Subcircuit instance: nodes appear before the subckt name,
+                # which is the last non-numeric token without "=" assignments.
+                trailing_idx = len(tokens)
+                for idx in range(len(tokens) - 1, 0, -1):
+                    tok = tokens[idx]
+                    if "=" in tok:
+                        continue
+                    if cls._is_value_token(tok):
+                        continue
+                    trailing_idx = idx
+                    break
+                element_nodes = tokens[1:trailing_idx]
+            else:
+                continue
+
+            for node in element_nodes:
+                tok = node.strip()
+                if not tok:
+                    continue
+                if tok.lower() in cls._SPICE_SOURCE_KEYWORDS:
+                    continue
+                if cls._is_value_token(tok):
+                    continue
+                key = tok.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                nodes.append(tok)
+        return nodes
+
+    @classmethod
+    def _resolve_probe_node(cls, requested: str, available: List[str]) -> Optional[str]:
+        """Map a requested node name to an actual node in the netlist.
+
+        Resolution priority:
+          1. Exact case-insensitive match.
+          2. Suffix variants like `_sig` (often the external signal name).
+          3. Longest common substring (prefer `out_sig` over `u1_out` for "OUT").
+          4. Bare prefix/contains match (the requested name is a substring of
+             the actual node identifier).
+        """
+        if not requested or not available:
+            return None
+        target = requested.strip().lower()
+        if not target:
+            return None
+        avail_lower = {n.lower(): n for n in available}
+
+        # 1. exact
+        if target in avail_lower:
+            return avail_lower[target]
+
+        # 2. canonical signal suffix (helps OUT → out_sig, IN → in_sig)
+        for suffix in ("_sig", "_net", "_node"):
+            candidate = f"{target}{suffix}"
+            if candidate in avail_lower:
+                return avail_lower[candidate]
+            candidate2 = f"{suffix.lstrip('_')}_{target}"
+            if candidate2 in avail_lower:
+                return avail_lower[candidate2]
+
+        # 3. node containing the requested name as a whole word component.
+        # Prefer nodes that are NOT prefixed with a component ref (e.g. `u1_*`,
+        # `q1_*`, `r1_*`) so the external signal net wins over an internal pin.
+        whole_word_matches: List[str] = []
+        substring_matches: List[str] = []
+        for node_lower, node_actual in avail_lower.items():
+            parts = re.split(r"[^a-z0-9]+", node_lower)
+            if target in parts:
+                whole_word_matches.append(node_actual)
+            elif target in node_lower:
+                substring_matches.append(node_actual)
+
+        def _ranked(matches: List[str]) -> Optional[str]:
+            if not matches:
+                return None
+            # Prefer nodes not starting with a typical component ref prefix.
+            def _score(name: str) -> tuple:
+                low = name.lower()
+                comp_ref = bool(re.match(r"^[rcljvmqduxes]\d+[_.]", low))
+                # shorter names usually mean the canonical signal net
+                return (1 if comp_ref else 0, len(low), low)
+            return sorted(matches, key=_score)[0]
+
+        ranked = _ranked(whole_word_matches) or _ranked(substring_matches)
+        if ranked:
+            return ranked
+
+        # 4. give up
+        return None
+
+    @classmethod
+    def _remap_probes_to_netlist(cls, netlist: str, probes: List[str]) -> List[str]:
+        """Filter and remap probes so each `v(...)` references a real node.
+
+        Probes that cannot be resolved against the netlist are dropped silently
+        (logged at WARNING). If everything is dropped, we synthesize a
+        best-effort signal pair from the netlist node list so the simulation
+        still produces something instead of failing with "no such vector".
+        """
+        if not probes:
+            return probes
+        nodes = cls._extract_netlist_nodes(netlist)
+        if not nodes:
+            return probes
+
+        avail_lower = {n.lower() for n in nodes}
+        remapped: List[str] = []
+        seen: set[str] = set()
+        unresolved: List[str] = []
+
+        for probe in probes:
+            text = str(probe).strip()
+            if not text:
+                continue
+            lower = text.lower()
+            prefix = ""
+            inner = text
+            if lower.startswith("v(") and text.endswith(")"):
+                prefix, inner = "v", text[2:-1]
+            elif lower.startswith("i(") and text.endswith(")"):
+                prefix, inner = "i", text[2:-1]
+            else:
+                prefix, inner = "v", text
+
+            inner = inner.strip()
+            if inner.lower() in avail_lower:
+                resolved = next(n for n in nodes if n.lower() == inner.lower())
+            else:
+                resolved = cls._resolve_probe_node(inner, nodes) or ""
+                if not resolved:
+                    unresolved.append(text)
+                    continue
+
+            new_probe = f"{prefix}({resolved})"
+            if new_probe.lower() not in seen:
+                seen.add(new_probe.lower())
+                remapped.append(new_probe)
+
+        if unresolved:
+            logger.warning(
+                "SPICE PROBE REMAP: dropped probes=%s (no matching node) "
+                "available_nodes=%s",
+                unresolved,
+                nodes[:20],
+            )
+
+        if not remapped:
+            # Best-effort: find one input-like + one output-like node from the
+            # netlist so we always produce SOMETHING for the user.
+            input_like = next(
+                (n for n in nodes if re.search(r"(^|_)(in|input|vin|net_in|in_sig)(_|$)", n, re.IGNORECASE)),
+                None,
+            )
+            output_like = next(
+                (n for n in nodes if re.search(r"(^|_)(out|output|vout|net_out|out_sig)(_|$)", n, re.IGNORECASE)),
+                None,
+            )
+            for candidate in (input_like, output_like):
+                if candidate:
+                    probe = f"v({candidate})"
+                    if probe.lower() not in seen:
+                        seen.add(probe.lower())
+                        remapped.append(probe)
+            if not remapped:
+                # Last resort: probe the first two non-ground, non-power nodes.
+                power_re = re.compile(r"^(0|gnd|ground|vss|vcc|vdd|vee|v\+|v-)$", re.IGNORECASE)
+                signal_nodes = [n for n in nodes if not power_re.match(n)]
+                for n in signal_nodes[:2]:
+                    probe = f"v({n})"
+                    if probe.lower() not in seen:
+                        seen.add(probe.lower())
+                        remapped.append(probe)
+            logger.warning(
+                "SPICE PROBE REMAP: all requested probes unresolved, "
+                "fallback to %s",
+                remapped,
+            )
+        return remapped
+
+    @classmethod
+    def _remap_probe_io_hint(
+        cls, netlist: str, hint: Optional[Tuple[str, str]]
+    ) -> Optional[Tuple[str, str]]:
+        if not hint:
+            return None
+        nodes = cls._extract_netlist_nodes(netlist)
+        if not nodes:
+            return hint
+        avail_lower = {n.lower() for n in nodes}
+
+        def _resolve(token: str) -> str:
+            text = str(token).strip()
+            if not text:
+                return text
+            lower = text.lower()
+            prefix = ""
+            inner = text
+            if lower.startswith("v(") and text.endswith(")"):
+                prefix, inner = "v", text[2:-1]
+            elif lower.startswith("i(") and text.endswith(")"):
+                prefix, inner = "i", text[2:-1]
+            else:
+                prefix, inner = "v", text
+            inner = inner.strip()
+            if inner.lower() in avail_lower:
+                resolved = next(n for n in nodes if n.lower() == inner.lower())
+            else:
+                resolved = cls._resolve_probe_node(inner, nodes) or inner
+            return f"{prefix}({resolved})"
+
+        return (_resolve(hint[0]), _resolve(hint[1]))
 
     @staticmethod
     def _is_float(value: str) -> bool:
@@ -802,14 +1426,24 @@ class NgSpiceSimulationService:
         traces: List[WaveformTrace],
         probes: List[str],
         expected_gain: Optional[float],
+        *,
+        probe_io_hint: Optional[Tuple[str, str]] = None,
     ) -> Dict[str, Any]:
         """Estimate gain/phase behavior from simulated waveforms and compare to expected Av."""
         if not traces:
             return {"status": "no_traces"}
 
         trace_map = {t.name.lower(): t for t in traces}
-        input_trace = self._pick_input_trace(trace_map, probes)
-        output_trace = self._pick_output_trace(trace_map, probes)
+        input_trace: Optional[WaveformTrace] = None
+        output_trace: Optional[WaveformTrace] = None
+        if probe_io_hint:
+            pi, po = probe_io_hint[0].lower(), probe_io_hint[1].lower()
+            input_trace = trace_map.get(pi)
+            output_trace = trace_map.get(po)
+        if input_trace is None:
+            input_trace = self._pick_input_trace(trace_map, probes, probe_io_hint=probe_io_hint)
+        if output_trace is None:
+            output_trace = self._pick_output_trace(trace_map, probes, probe_io_hint=probe_io_hint)
 
         if not input_trace or not output_trace:
             return {
@@ -900,9 +1534,24 @@ class NgSpiceSimulationService:
             return 0.0
         return num / math.sqrt(den_a * den_b)
 
-    def _pick_input_trace(self, trace_map: Dict[str, WaveformTrace], probes: List[str]) -> Optional[WaveformTrace]:
+    def _pick_input_trace(
+        self,
+        trace_map: Dict[str, WaveformTrace],
+        probes: List[str],
+        *,
+        probe_io_hint: Optional[Tuple[str, str]] = None,
+    ) -> Optional[WaveformTrace]:
+        if probe_io_hint:
+            key = probe_io_hint[0].lower()
+            if key in trace_map:
+                return trace_map[key]
         preferred = [
-            "v(in)", "v(vin)", "v(net_in)", "v(input)",
+            "v(in)",
+            "v(vin)",
+            "v(net_in)",
+            "v(input)",
+            "v(in_sig)",
+            "v(net_in_sig)",
         ]
         for key in preferred:
             if key in trace_map:
@@ -910,17 +1559,32 @@ class NgSpiceSimulationService:
 
         for probe in probes:
             p = probe.lower()
-            if any(tag in p for tag in ("vin", "input", "net_in", "in)")) and p in trace_map:
+            if any(tag in p for tag in ("vin", "input", "net_in", "in_sig")) and p in trace_map:
                 return trace_map[p]
 
         for name, trace in trace_map.items():
-            if name.startswith("v(") and any(tag in name for tag in ("vin", "input", "net_in", "in)")):
+            if name.startswith("v(") and any(tag in name for tag in ("vin", "input", "net_in", "in_sig")):
                 return trace
         return None
 
-    def _pick_output_trace(self, trace_map: Dict[str, WaveformTrace], probes: List[str]) -> Optional[WaveformTrace]:
+    def _pick_output_trace(
+        self,
+        trace_map: Dict[str, WaveformTrace],
+        probes: List[str],
+        *,
+        probe_io_hint: Optional[Tuple[str, str]] = None,
+    ) -> Optional[WaveformTrace]:
+        if probe_io_hint:
+            key = probe_io_hint[1].lower()
+            if key in trace_map:
+                return trace_map[key]
         preferred = [
-            "v(out)", "v(vout)", "v(net_out)", "v(output)",
+            "v(out)",
+            "v(vout)",
+            "v(net_out)",
+            "v(output)",
+            "v(out_sig)",
+            "v(net_out_sig)",
         ]
         for key in preferred:
             if key in trace_map:
@@ -928,11 +1592,11 @@ class NgSpiceSimulationService:
 
         for probe in probes:
             p = probe.lower()
-            if any(tag in p for tag in ("vout", "output", "net_out", "out)")) and p in trace_map:
+            if any(tag in p for tag in ("vout", "output", "net_out", "out_sig")) and p in trace_map:
                 return trace_map[p]
 
         for name, trace in trace_map.items():
-            if name.startswith("v(") and any(tag in name for tag in ("vout", "output", "net_out", "out)")):
+            if name.startswith("v(") and any(tag in name for tag in ("vout", "output", "net_out", "out_sig")):
                 return trace
         return None
 
@@ -962,6 +1626,10 @@ class NgspiceCompilerService:
         "vsource": "voltage_source",
         "current_source": "current_source",
         "isource": "current_source",
+        "opamp": "opamp",
+        "opamp_ic": "opamp",
+        "op_amp": "opamp",
+        "operational_amplifier": "opamp",
     }
 
     _MODEL_CARDS: Dict[str, str] = {
@@ -969,6 +1637,29 @@ class NgspiceCompilerService:
         "QPNP": ".model QPNP PNP(BF=120 IS=1e-14 VAF=80)",
         "DDEFAULT": ".model DDEFAULT D(IS=1e-14 N=1.9)",
     }
+
+    # Ngspice subcircuits (not .model). Referenced by X-instance lines from _component_to_spice_line.
+    _SUBCKT_BLOCKS: Dict[str, str] = {
+        "OPAMP_DEFAULT": (
+            ".subckt OPAMP_DEFAULT VP VN VOUT VCC VEE\n"
+            "* Ideal differential amplifier (high gain VCVS ref VEE); suited for AC/transient teaching sims.\n"
+            "E1 VOUT VEE VP VN 1MEG\n"
+            ".ends OPAMP_DEFAULT"
+        ),
+    }
+
+    _SUPPLY_NET_NORMALIZED: frozenset = frozenset(
+        {"VCC", "VDD", "VBB", "VBAT", "VSUPPLY", "VEE", "VSS", "VPOWER", "V+"}
+    )
+
+    @staticmethod
+    def _is_explicit_signal_input_net(net_name_raw: str) -> bool:
+        low = str(net_name_raw or "").strip().lower()
+        if low in {"in", "net_in", "vin", "input", "signal_in", "i_in", "netin", "in_sig"}:
+            return True
+        if low.startswith(("net_in", "input_", "vin_")):
+            return True
+        return False
 
     def __init__(self, executable: Optional[str] = None, timeout_seconds: int = 90) -> None:
         self._executable = executable or os.getenv("NGSPICE_EXECUTABLE") or "ngspice"
@@ -980,23 +1671,110 @@ class NgspiceCompilerService:
     def generate_spice_deck(self, ir: CircuitIR) -> str:
         """Generate SPICE deck from CircuitIR with auto testbench injection."""
         pin_net_map = self._build_pin_net_map(ir)
+        
+        # log warning
+        logger.debug("SPICE COMPILER: circuit_id=%s, components=%d, nets=%d, pin_net_map_keys=%s",
+            getattr(ir.metadata, "circuit_id", "unknown"),
+            len(ir.components),
+            len(ir.nets),
+            list(pin_net_map.keys())[:10],
+        )
+        
         lines: List[str] = ["* Auto-generated by NgspiceCompilerService"]
         used_models: List[str] = []
 
-        for comp in ir.components:
-            line, model_key = self._component_to_spice_line(comp.ref_id, comp.type, comp.value, pin_net_map.get(comp.ref_id.strip().upper(), {}))
-            if line:
-                lines.append(line)
-            if model_key and model_key not in used_models:
-                used_models.append(model_key)
+        missing_models: List[str] = []
+        skipped_components: List[str] = []
 
+        for comp in ir.components:
+            ref_id = comp.ref_id.strip().upper()
+            
+            pin_map = pin_net_map.get(ref_id, {})
+            
+            spice_line, model_key = self._component_to_spice_line(comp.ref_id, comp.type, comp.value, pin_map)
+
+            if spice_line is None:
+                ctype = self._canonical_type(comp.type)
+                if ctype in {"ground", "connector"}:
+                    logger.debug(
+                        "SPICE skip schematic-only symbol ref=%s type=%s (no branch element)",
+                        comp.ref_id,
+                        comp.type,
+                    )
+                    continue
+                skipped_components.append(f"{comp.ref_id}({comp.type}) pin_map={pin_map}")
+                logger.warning(
+                    "SPICE SKIP COMPONENT: ref=%s type=%s value=%s pin_map=%s — không map được sang SPICE line",
+                    comp.ref_id,
+                    comp.type,
+                    comp.value,
+                    pin_map,
+                )
+                continue
+            lines.append(spice_line)
+            
+            if model_key:
+                if model_key not in used_models:
+                    used_models.append(model_key)
+                
+                if model_key not in self._MODEL_CARDS and model_key not in self._SUBCKT_BLOCKS:
+                    missing_models.append(model_key)
+
+        # model debug
+        if missing_models:
+            logger.warning(
+                "SPICE MISSING MODELS: %s",
+                sorted(set(missing_models)),
+            )
+
+        seen_subckt: set[str] = set()
         for model_key in used_models:
+            sub = self._SUBCKT_BLOCKS.get(model_key)
+            if sub:
+                if model_key not in seen_subckt:
+                    lines.append(sub)
+                    seen_subckt.add(model_key)
+                continue
             model_line = self._MODEL_CARDS.get(model_key)
             if model_line:
                 lines.append(model_line)
+        
+        # build testbench
+        tb_lines = self._build_testbench(ir, pin_net_map)
+        
+        if not tb_lines:
+            logger.warning(
+                "SPICE TESTBENCH EMPTY: circuit_id=%s",
+                getattr(ir.metadata, "circuit_id", "unknown"),
+            )
+        lines.extend(tb_lines)
 
-        lines.extend(self._build_testbench(ir, pin_net_map))
-        lines.append(".end")
+        # summary debug
+        if skipped_components:
+            logger.warning(
+                "SPICE COMPILER: %d/%d components bị skip: %s",
+                len(skipped_components),
+                len(ir.components),
+                skipped_components,
+            )
+        
+        # check if any element lines were generated
+        element_lines = [
+            line for line in lines
+            if line
+            and not line.startswith("*")
+            and not line.startswith(".")
+        ]
+        
+        if not element_lines:
+            logger.warning(
+                "SPICE COMPILER EMPTY: circuit_id=%s — không có element line nào được generate. pin_net_map=%s",
+                getattr(ir.metadata, "circuit_id", "unknown"),
+                pin_net_map,
+            )
+            raise SimulationError("No valid SPICE elements generated")
+
+        # _build_testbench already ends with a single `.end`; do not append another.
         return "\n".join(lines).strip() + "\n"
 
     async def run_simulation_stream(self, spice_deck: str) -> AsyncGenerator[str, None]:
@@ -1137,19 +1915,100 @@ class NgspiceCompilerService:
             shutil.rmtree(workdir, ignore_errors=True)
 
     def _build_pin_net_map(self, ir: CircuitIR) -> Dict[str, Dict[str, str]]:
-        mapping: Dict[str, Dict[str, str]] = {}
+        """
+        Build:
+            {
+                REF_ID -> {
+                    PIN_NAME -> NET_NAME
+                }
+            }
+
+        Read from ir.nets where each node is:
+            "R1:1"
+            "Q1:C"
+            "U1:OUT"
+        """
+
+        pin_net_map: Dict[str, Dict[str, str]] = {}
+
         for net in ir.nets:
-            normalized_net = self._normalize_net_name(net.net_name)
+            net_name = self._normalize_net_name(net.net_name)
+
+            logger.debug(
+                "SPICE NET DEBUG: net=%s nodes=%s",
+                net_name,
+                net.nodes,
+            )
+
             for node in net.nodes:
+
+                # malformed node
                 if ":" not in node:
+                    logger.warning(
+                        "SPICE PIN_NET: malformed node '%s' in net '%s' — missing ':'",
+                        node,
+                        net_name,
+                    )
                     continue
-                raw_ref, raw_pin = node.split(":", 1)
-                ref = raw_ref.strip().upper()
-                pin = raw_pin.strip().upper()
+
+                ref, pin = node.split(":", 1)
+
+                ref = ref.strip().upper()
+                pin = pin.strip().upper()
+
+                # invalid ref/pin
                 if not ref or not pin:
+                    logger.warning(
+                        "SPICE PIN_NET: invalid node '%s' in net '%s' — empty ref/pin",
+                        node,
+                        net_name,
+                    )
                     continue
-                mapping.setdefault(ref, {})[pin] = normalized_net
-        return mapping
+
+                if ref not in pin_net_map:
+                    pin_net_map[ref] = {}
+
+                # A physical pin can belong to exactly one SPICE net.  Overwriting
+                # here silently corrupts the generated netlist, so fail before
+                # producing any deck or invoking ngspice.
+                if pin in pin_net_map[ref]:
+                    old_net = pin_net_map[ref][pin]
+                    message = (
+                        f"Netlist conflict: pin {ref}.{pin} claimed by nets "
+                        f"{old_net} and {net_name}. Fix the CircuitIR before simulating."
+                    )
+                    logger.error(
+                        "SPICE PIN_NET CONFLICT: ref=%s pin=%s old_net=%s new_net=%s",
+                        ref,
+                        pin,
+                        old_net,
+                        net_name,
+                    )
+                    raise SimulationError(message, failure_phase="precheck_netlist")
+
+                pin_net_map[ref][pin] = net_name
+
+        # components without any nets
+        components_without_nets = [
+            comp.ref_id
+            for comp in ir.components
+            if comp.ref_id.strip().upper() not in pin_net_map
+        ]
+
+        if components_without_nets:
+            logger.warning(
+                "SPICE PIN_NET: %d component(s) without nets: %s",
+                len(components_without_nets),
+                components_without_nets,
+            )
+
+        logger.debug(
+            "SPICE pin_net_map built: refs=%d keys=%s",
+            len(pin_net_map),
+            list(pin_net_map.keys())[:20],
+        )
+
+        return pin_net_map
 
     def _component_to_spice_line(
         self,
@@ -1158,49 +2017,163 @@ class NgspiceCompilerService:
         value: Any,
         pin_map: Dict[str, str],
     ) -> Tuple[Optional[str], Optional[str]]:
+        
         ref = ref_id.strip().upper()
         ctype = self._canonical_type(component_type)
+        
         if not ref or ctype is None:
+            logger.warning(
+                "SPICE COMPONENT INVALID: ref=%s component_type=%s",
+                ref_id,
+                component_type,
+            )
             return None, None
 
+        # passives
         if ctype in {"resistor", "capacitor", "inductor"}:
             n1, n2 = self._pick_two_nodes(pin_map)
             if not n1 or not n2:
+                logger.warning(
+                    "SPICE PASSIVE PIN MISSING: ref=%s ctype=%s n1=%s n2=%s pin_map=%s",
+                    ref,
+                    ctype,
+                    n1,
+                    n2,
+                    pin_map,
+                )
                 return None, None
+            
             prefix = {"resistor": "R", "capacitor": "C", "inductor": "L"}[ctype]
             comp_name = ref if ref.startswith(prefix) else f"{prefix}{ref}"
-            return f"{comp_name} {n1} {n2} {self._normalize_value(value)}", None
-
+            
+            return (f"{comp_name} {n1} {n2} {self._normalize_value(value)}",None,)
+        
+        # bjts
         if ctype in {"npn", "pnp"}:
             collector = self._pick_node(pin_map, ["C", "2"])
             base = self._pick_node(pin_map, ["B", "1"])
             emitter = self._pick_node(pin_map, ["E", "3"])
+            
             if not collector or not base or not emitter:
+                logger.warning(
+                    "SPICE BJT PIN MISSING: ref=%s ctype=%s "
+                    "collector=%s base=%s emitter=%s pin_map=%s",
+                    ref,
+                    ctype,
+                    collector,
+                    base,
+                    emitter,
+                    pin_map,
+                )
                 return None, None
+            
             model = "QNPN" if ctype == "npn" else "QPNP"
             comp_name = ref if ref.startswith("Q") else f"Q{ref}"
-            return f"{comp_name} {collector} {base} {emitter} {model}", model
+            
+            return (f"{comp_name} {collector} {base} {emitter} {model}", model)
 
+        # diodes
         if ctype == "diode":
             anode = self._pick_node(pin_map, ["A", "1"])
             cathode = self._pick_node(pin_map, ["K", "2"])
+            
             if not anode or not cathode:
+                logger.warning(
+                    "SPICE DIODE PIN MISSING: ref=%s "
+                    "anode=%s cathode=%s pin_map=%s",
+                    ref,
+                    anode,
+                    cathode,
+                    pin_map,
+                )
                 return None, None
+            
             comp_name = ref if ref.startswith("D") else f"D{ref}"
-            return f"{comp_name} {anode} {cathode} DDEFAULT", "DDEFAULT"
+            
+            return (f"{comp_name} {anode} {cathode} DDEFAULT", "DDEFAULT")
 
+        # sources
         if ctype in {"voltage_source", "current_source"}:
             n_plus = self._pick_node(pin_map, ["+", "1", "P"])
             n_minus = self._pick_node(pin_map, ["-", "2", "N"])
+
+            # Single-pin power symbols are modeled as sources referenced to ground.
+            if not n_minus or n_minus == n_plus:
+                n_minus = "0"
+            
             if not n_plus or not n_minus:
+                logger.warning(
+                    "SPICE SOURCE PIN MISSING: ref=%s "
+                    "n_plus=%s n_minus=%s pin_map=%s",
+                    ref,
+                    ctype,
+                    n_plus,
+                    n_minus,
+                    pin_map,
+                )
                 return None, None
+            
             source_name = ref
+            
             if ctype == "voltage_source" and not source_name.startswith("V"):
                 source_name = f"V{source_name}"
+            
             if ctype == "current_source" and not source_name.startswith("I"):
                 source_name = f"I{source_name}"
-            return f"{source_name} {n_plus} {n_minus} {self._normalize_source_value(value)}", None
+            
+            return (f"{source_name} {n_plus} {n_minus} {self._normalize_source_value(value)}", None)
 
+        if ctype == "opamp":
+            vp = self._pick_node(pin_map, ["+", "IN+"])
+            vn = self._pick_node(pin_map, ["-", "IN-"])
+            vout = self._pick_node(pin_map, ["OUT", "OUTPUT"])
+            vcc = self._pick_node(pin_map, ["VS+", "V+"])
+            vee = self._pick_node(pin_map, ["VS-", "V-", "VEE"])
+            if not vp or not vn or not vout:
+                logger.warning(
+                    "SPICE OPAMP PIN MISSING: ref=%s vp=%s vn=%s vout=%s pin_map=%s",
+                    ref_id,
+                    vp,
+                    vn,
+                    vout,
+                    pin_map,
+                )
+                return None, None
+            if not vee:
+                vee = "0"
+            if not vcc:
+                vcc = None
+                for node in pin_map.values():
+                    u = str(node).upper()
+                    if "VCC" in u or "VDD" in u or "RAIL" in u or "SUPPLY" in u:
+                        vcc = node
+                        break
+                if not vcc:
+                    vcc = "VCC"
+                    logger.warning(
+                        "SPICE OPAMP: ref=%s missing VS+; using placeholder rail node %s",
+                        ref_id,
+                        vcc,
+                    )
+            xname = ref.upper()
+            if not xname.startswith("X"):
+                xname = f"X{xname}"
+            return (f"{xname} {vp} {vn} {vout} {vcc} {vee} OPAMP_DEFAULT", "OPAMP_DEFAULT")
+
+        if ctype in {"ground", "connector"}:
+            logger.debug(
+                "SPICE schematic-only ctype=%s ref=%s (nets carry connectivity)",
+                ctype,
+                ref,
+            )
+            return None, None
+
+        logger.warning(
+            "SPICE COMPONENT UNSUPPORTED: ref=%s component_type=%s pin_map=%s",
+            ref,
+            ctype,
+            pin_map,
+        )
         return None, None
 
     def _build_testbench(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> List[str]:
@@ -1226,30 +2199,62 @@ class NgspiceCompilerService:
                 vcc_net = self._normalize_net_name(net.net_name)
                 break
         
-        # Inject nguồn đúng node thực
+        # Inject rail DC source only if the IR does not already define V(rail)-to-0.
+        # Parallel ideal voltage sources on the same nodes make the MNA singular / fail.
         if vcc_net and vcc_net not in {"0", "gnd"}:
-            lines.append(f"VVCC {vcc_net} 0 DC {power_voltage}")
+            if not self._has_explicit_rail_voltage_to_ground(ir, pin_net_map, vcc_net):
+                lines.append(f"VVCC_TB {vcc_net} 0 DC {power_voltage}")
             
-        # Signal input
+        # Signal input stimulus (50mV amplitude for better BJT convergence)
         _supply_nets = {"VCC","VDD","VBB","VBAT","VSUPPLY","V+","VCC1","VCC2","VPOWER"}
         if analog_mode and input_node.upper() not in _supply_nets:
-            lines.append(f"VTB {input_node} 0 SINE(0 1 1k)")
+            lines.append(f"VTB {input_node} 0 SINE(0 50m 1k)")
 
-        lines.append(f".tran {tran_step} {tran_stop}")
+        # Add .control block with solver options and op analysis
         lines.append(".control")
-        lines.append("run")
+        lines.append("set wr_singlescale")
+        lines.append("set noaskquit")
+        lines.append("option method=gear")
+        lines.append("option maxord=2")
+        lines.append("option gmin=1e-12")
+        lines.append("option rshunt=1e12")
+        lines.append("op")  # Compute operating point first to aid convergence
+        lines.append(f"tran {tran_step} {tran_stop}")
         lines.append(f"wrdata output.tsv v({input_node}) v({output_node})")
-        lines.append("write output.raw")
         lines.append("quit")
         lines.append(".endc")
+        lines.append(".end")
         return lines
+
+    def _has_explicit_rail_voltage_to_ground(
+        self,
+        ir: CircuitIR,
+        pin_net_map: Dict[str, Dict[str, str]],
+        rail_net: str,
+    ) -> bool:
+        """True if a voltage_source component already ties rail_net between rail and node 0."""
+        rail = self._normalize_net_name(rail_net)
+        if not rail or rail == "0":
+            return False
+        for comp in ir.components:
+            if self._canonical_type(comp.type) != "voltage_source":
+                continue
+            ref = comp.ref_id.strip().upper()
+            pmap = pin_net_map.get(ref, {})
+            n_plus = self._pick_node(pmap, ["+", "1", "P"])
+            n_minus = self._pick_node(pmap, ["-", "2", "N"])
+            if not n_minus or n_minus == n_plus:
+                n_minus = "0"
+            if self._normalize_net_name(n_plus) == rail and self._normalize_net_name(n_minus) == "0":
+                return True
+        return False
 
     def _select_input_node(self, ir: CircuitIR, pin_net_map: Dict[str, Dict[str, str]]) -> str:
         meta = ir.metadata.model_dump() if hasattr(ir.metadata, "model_dump") else {}
         explicit = str(meta.get("input_node") or meta.get("input_net") or "").strip()
         net_names = {self._normalize_net_name(n.net_name) for n in ir.nets}
-        
-        # use explicit if it really a net in IR
+        supply = self._SUPPLY_NET_NORMALIZED
+
         if explicit:
             normalized_explicit = self._normalize_net_name(explicit)
             if normalized_explicit in net_names and normalized_explicit not in {"0", "gnd"}:
@@ -1257,8 +2262,9 @@ class NgspiceCompilerService:
 
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
-            low = str(net.net_name).strip().lower()
-            if any(tag in low for tag in ("net_in", "vin", "input", "in")) and name not in {"0", "gnd"}:
+            if name in {"0", "gnd"}:
+                continue
+            if self._is_explicit_signal_input_net(net.net_name) and name.upper() not in supply:
                 return name
 
         for comp in ir.components:
@@ -1268,13 +2274,19 @@ class NgspiceCompilerService:
                 nets = pin_net_map.get(ref, {})
                 for pin_key in ("1", "A", "P", "+"):
                     candidate = self._normalize_net_name(nets.get(pin_key, ""))
-                    if candidate and candidate not in {"0", "gnd", "VCC", "VDD", "VBAT"}:
+                    if candidate and candidate not in {"0", "gnd"} and candidate.upper() not in supply:
                         return candidate
-        
-        for net in ir.nets:
-            name = self._normalize_net_name(net.net_name)
-            if name not in {"0", "gnd"}:
-                return name
+
+        pin_map_in = pin_net_map.get("IN", {})
+        for pin_key in ("1", "A", "P", "+"):
+            candidate = self._normalize_net_name(pin_map_in.get(pin_key, ""))
+            if candidate and candidate not in {"0", "gnd"} and candidate.upper() not in supply:
+                return candidate
+
+        if "IN_SIG" in net_names:
+            return "IN_SIG"
+        if "IN" in net_names:
+            return "IN"
 
         return "in"
 
@@ -1293,8 +2305,21 @@ class NgspiceCompilerService:
         for net in ir.nets:
             name = self._normalize_net_name(net.net_name)
             low = str(net.net_name).strip().lower()
-            if any(tag in low for tag in ("out", "vout", "output")) and name not in _supply:
+            if low in {"out", "out_sig", "vout", "net_out", "output", "signal_out"} and name not in _supply:
                 return name
+            if low.startswith(("net_out", "output_", "vout_")) and name not in _supply:
+                return name
+
+        pin_map_out = pin_net_map.get("OUT", {})
+        for pin_key in ("1", "A", "P", "+"):
+            candidate = self._normalize_net_name(pin_map_out.get(pin_key, ""))
+            if candidate and candidate not in _supply:
+                return candidate
+
+        if "OUT_SIG" in net_names:
+            return "OUT_SIG"
+        if "OUT" in net_names:
+            return "OUT"
         
         # Net output load resistor (ROUT) pin 1
         for ref in ("ROUT", "RL", "RLOAD", "ROUTPUT"):
@@ -1331,26 +2356,16 @@ class NgspiceCompilerService:
             name = self._normalize_net_name(net.net_name)
             if name not in _supply | {input_node}:
                 return name
-        
-        # Find net connect pin "2"/"B"/"N" of output coupling cap (C2, COUT...)
-        for comp in ir.components:
-            ref = comp.ref_id.strip().upper()
-            if ref in {"capacitor","cap","c"} and any(ref.startswith(p) for p in ("C2","COUT","C_OUT","COUTPUT")):
-                nets = pin_net_map.get(ref, {})
-                for pk in ("2","B","N","-"):
-                    candidate = self._normalize_net_name(nets.get(pk,""))
-                    if candidate and candidate not in _supply:
-                        return candidate
-        
+
         # Find net collector (connect to Rc)
         for comp in ir.components:
             ref = comp.ref_id.strip().upper()
             if ref.startswith("RC") or ref == "RD":
                 nets = pin_net_map.get(ref, {})
-                for pk in ("2","B","N","-"):
-                    candidate = self._normalize_net_name(nets.get(pk,""))
-                    if candidate and candidate not in {"0","VCC","VDD"}:
-                        return candidate      
+                for pk in ("2", "B", "N", "-"):
+                    candidate = self._normalize_net_name(nets.get(pk, ""))
+                    if candidate and candidate not in _supply:
+                        return candidate
 
         return "out"
 
@@ -1358,9 +2373,22 @@ class NgspiceCompilerService:
         raw = str(component_type or "").strip().lower()
         if not raw:
             return None
+        if raw in {"power_supply", "power", "vcc", "vdd", "vsupply", "voltage_source", "vsource"}:
+            return "voltage_source"
+        if raw in {"ground", "gnd", "0", "vss"}:
+            return "ground"
+        if raw in {"port", "connector"}:
+            return "connector"
+        if raw in {"opamp_ic", "op_amp", "opamp", "operational_amplifier"}:
+            return "opamp"
         if raw in self._TYPE_ALIASES:
             return self._TYPE_ALIASES[raw]
-        for key, alias in self._TYPE_ALIASES.items():
+        # Longest keys first; never treat single-letter aliases as substrings (e.g. "c" in "opamp_ic").
+        for key, alias in sorted(self._TYPE_ALIASES.items(), key=lambda kv: len(kv[0]), reverse=True):
+            if len(key) <= 1:
+                if raw == key:
+                    return alias
+                continue
             if key in raw:
                 return alias
         return None
@@ -1419,11 +2447,16 @@ class NgspiceCompilerService:
 
     @staticmethod
     def _normalize_source_value(value: Any) -> str:
+        import re as _re
         text = str(value).strip()
         if not text:
             return "DC 0"
         if text.upper().startswith(("DC", "AC", "SIN", "PULSE", "EXP", "SFFM", "PWL")):
             return text
+        # Value must contain at least one digit to be a valid SPICE numeric expression.
+        # Pure net-name values like "VCC" or "VDD" are not valid SPICE values.
+        if not _re.search(r'\d', text):
+            return "DC 12"
         return f"DC {text}"
 
 

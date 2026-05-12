@@ -38,13 +38,16 @@ class KiCadSymbolLibrary:
         "resistor": {
             "lib_id": "Device:R",
             "ref_prefix": "R",
-            "pin_length": 1.27,
+            # Pins at ±5.08 mm (2 × 2.54 mm grid) so wire endpoints land
+            # on the standard 100-mil KiCad grid when placed at any grid point.
+            "pin_length": 2.54,
             "pins": [
-                (0, 3.81, 270),    # Pin 1: top
-                (0, -3.81, 90),    # Pin 2: bottom
+                (0, 5.08, 270),    # Pin 1: top connection point
+                (0, -5.08, 90),    # Pin 2: bottom connection point
             ],
             "graphics": [
-                # Rectangle resistor symbol (vertical orientation - REAL KiCad style)
+                # Rectangle body — body extends ±2.54 mm, leaving a 2.54 mm
+                # pin stub on each side to the connection point at ±5.08 mm.
                 '        (rectangle',
                 '          (start -1.016 -2.54)',
                 '          (end 1.016 2.54)',
@@ -57,10 +60,11 @@ class KiCadSymbolLibrary:
         "capacitor": {
             "lib_id": "Device:C",
             "ref_prefix": "C",
-            "pin_length": 2.794,
+            # Pins at ±5.08 mm — matches resistor convention and stays on 2.54 mm grid.
+            "pin_length": 2.54,
             "pins": [
-                (0, 3.81, 270),    # Pin 1: top (vertical orientation)
-                (0, -3.81, 90),    # Pin 2: bottom (vertical orientation)
+                (0, 5.08, 270),    # Pin 1: top connection point
+                (0, -5.08, 90),    # Pin 2: bottom connection point
             ],
             "graphics": [
                 # Two horizontal lines for capacitor - CORRECT orientation
@@ -82,50 +86,60 @@ class KiCadSymbolLibrary:
         },
         
         "bjt": {
-            "lib_id": "Transistor_BJT:BC547",
+            # Q_NPN_BCE layout: B far-left, C top-centre, E bottom-centre.
+            # Matches pin_resolver.py → B(-5.08,0), C(0,-5.08), E(0,+5.08).
+            "lib_id": "Device:Q_NPN_BCE",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
-                (-2.54, 0, 0),       # Pin B (base) - straight horizontal
-                (2.54, 2.54, 90),    # Pin C (collector) - pointing up
-                (2.54, -2.54, 270),  # Pin E (emitter) - pointing down
+                (-5.08, 0, 0),       # Pin B (base) — left
+                (0, -5.08, 90),      # Pin C (collector) — top
+                (0, 5.08, 270),      # Pin E (emitter) — bottom
             ],
             "graphics": [
-                # Collector line from bar to collector endpoint
+                # Vertical base bar
                 '        (polyline',
                 '          (pts',
-                '            (xy 0.635 0.635) (xy 2.54 2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                # Emitter line from bar to emitter endpoint
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 -0.635) (xy 2.54 -2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                # Vertical bar (base region)
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 1.905) (xy 0.635 -1.905)',
+                '            (xy -0.635 1.905) (xy -0.635 -1.905)',
                 '          )',
                 '          (stroke (width 0.508) (type default))',
                 '          (fill (type none))',
                 '        )',
-                # Emitter arrow
+                # Base wire (B pin → bar)
                 '        (polyline',
                 '          (pts',
-                '            (xy 1.27 -1.778) (xy 1.778 -1.27) (xy 2.286 -2.286) (xy 1.27 -1.778)',
+                '            (xy -5.08 0) (xy -0.635 0)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Collector path: diagonal from bar, then straight up to C pin
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 -0.635) (xy 0 -2.032) (xy 0 -5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Emitter path: diagonal from bar, then straight down to E pin
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 0.635) (xy 0 2.032) (xy 0 5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Emitter arrow (NPN: arrow pointing outward / downward)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.508 3.175) (xy 0 3.937) (xy 0.508 3.175) (xy -0.508 3.175)',
                 '          )',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type outline))',
                 '        )',
-                # Circle around transistor
+                # Circle around transistor body
                 '        (circle',
-                '          (center 1.27 0)',
+                '          (center -0.635 0)',
                 '          (radius 2.8194)',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type none))',
@@ -729,47 +743,62 @@ class KiCadSymbolLibrary:
             ],
         },
         
-        # ── BJT NPN (same as generic bjt) ───────────────────────────────
+        # ── BJT NPN — Q_NPN_BCE layout ──────────────────────────────────
+        # B far-left (-5.08,0), C top-centre (0,-5.08), E bottom-centre (0,+5.08).
+        # Matches pin_resolver.py exactly so wires land on the correct pins.
         "bjt_npn": {
-            "lib_id": "Transistor_BJT:BC547",
+            "lib_id": "Device:Q_NPN_BCE",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
-                (-2.54, 0, 0),       # Pin B (base) - straight horizontal
-                (2.54, 2.54, 90),    # Pin C (collector) - pointing up
-                (2.54, -2.54, 270),  # Pin E (emitter) - pointing down
+                (-5.08, 0, 0),       # Pin B (base) — left
+                (0, -5.08, 90),      # Pin C (collector) — top
+                (0, 5.08, 270),      # Pin E (emitter) — bottom
             ],
             "graphics": [
+                # Vertical base bar
                 '        (polyline',
                 '          (pts',
-                '            (xy 0.635 0.635) (xy 2.54 2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 -0.635) (xy 2.54 -2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 1.905) (xy 0.635 -1.905)',
+                '            (xy -0.635 1.905) (xy -0.635 -1.905)',
                 '          )',
                 '          (stroke (width 0.508) (type default))',
                 '          (fill (type none))',
                 '        )',
+                # Base wire
                 '        (polyline',
                 '          (pts',
-                '            (xy 1.27 -1.778) (xy 1.778 -1.27) (xy 2.286 -2.286) (xy 1.27 -1.778)',
+                '            (xy -5.08 0) (xy -0.635 0)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Collector path (diagonal → vertical up)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 -0.635) (xy 0 -2.032) (xy 0 -5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Emitter path (diagonal → vertical down)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 0.635) (xy 0 2.032) (xy 0 5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # NPN emitter arrow (outward/downward)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.508 3.175) (xy 0 3.937) (xy 0.508 3.175) (xy -0.508 3.175)',
                 '          )',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type outline))',
                 '        )',
+                # Circle
                 '        (circle',
-                '          (center 1.27 0)',
+                '          (center -0.635 0)',
                 '          (radius 2.8194)',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type none))',
@@ -777,52 +806,60 @@ class KiCadSymbolLibrary:
             ]
         },
         
-        # ── BJT PNP ─────────────────────────────────────────────────────
+        # ── BJT PNP — Q_PNP_BCE layout ──────────────────────────────────
         "bjt_pnp": {
-            "lib_id": "Transistor_BJT:BC557",
+            "lib_id": "Device:Q_PNP_BCE",
             "ref_prefix": "Q",
             "pin_length": 2.54,
             "pins": [
-                (-2.54, 0, 0),       # Pin B (base) - straight horizontal
-                (2.54, 2.54, 90),    # Pin C (collector) - pointing up
-                (2.54, -2.54, 270),  # Pin E (emitter) - pointing down
+                (-5.08, 0, 0),       # Pin B (base) — left
+                (0, 5.08, 270),      # Pin C (collector) — bottom  (PNP reversed)
+                (0, -5.08, 90),      # Pin E (emitter) — top       (PNP reversed)
             ],
             "graphics": [
-                # Collector line
+                # Vertical base bar
                 '        (polyline',
                 '          (pts',
-                '            (xy 0.635 0.635) (xy 2.54 2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                # Emitter line
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 -0.635) (xy 2.54 -2.54)',
-                '          )',
-                '          (stroke (width 0.254) (type default))',
-                '          (fill (type none))',
-                '        )',
-                # Vertical bar (base region)
-                '        (polyline',
-                '          (pts',
-                '            (xy 0.635 1.905) (xy 0.635 -1.905)',
+                '            (xy -0.635 1.905) (xy -0.635 -1.905)',
                 '          )',
                 '          (stroke (width 0.508) (type default))',
                 '          (fill (type none))',
                 '        )',
-                # Arrow at collector pointing IN (PNP direction)
+                # Base wire
                 '        (polyline',
                 '          (pts',
-                '            (xy 1.27 1.778) (xy 1.778 1.27) (xy 2.286 2.286) (xy 1.27 1.778)',
+                '            (xy -5.08 0) (xy -0.635 0)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Collector path (diagonal → vertical down for PNP)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 0.635) (xy 0 2.032) (xy 0 5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # Emitter path (diagonal → vertical up for PNP)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.635 -0.635) (xy 0 -2.032) (xy 0 -5.08)',
+                '          )',
+                '          (stroke (width 0.254) (type default))',
+                '          (fill (type none))',
+                '        )',
+                # PNP emitter arrow (inward/upward)
+                '        (polyline',
+                '          (pts',
+                '            (xy -0.508 -3.175) (xy 0 -3.937) (xy 0.508 -3.175) (xy -0.508 -3.175)',
                 '          )',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type outline))',
                 '        )',
-                # Circle around transistor
+                # Circle
                 '        (circle',
-                '          (center 1.27 0)',
+                '          (center -0.635 0)',
                 '          (radius 2.8194)',
                 '          (stroke (width 0.254) (type default))',
                 '          (fill (type none))',
@@ -878,8 +915,8 @@ class KiCadSymbolLibrary:
             "ref_prefix": "T",
             "pin_length": 2.54,
             "pins": [
-                (0, 3.81, 270),
-                (0, -3.81, 90),
+                (0, 5.08, 270),
+                (0, -5.08, 90),
             ],
             "graphics": [
                 '        (arc',
@@ -939,8 +976,8 @@ class KiCadSymbolLibrary:
             "lib_id": "Device:L",
             "ref_prefix": "L",
             "pins": [
-                (0, 3.81, 270),    # Pin 1: top
-                (0, -3.81, 90),    # Pin 2: bottom
+                (0, 5.08, 270),    # Pin 1: top  (±5.08 mm — 2.54 mm grid)
+                (0, -5.08, 90),    # Pin 2: bottom
             ],
             "graphics": [
                 # 4 arcs to form inductor coil shape

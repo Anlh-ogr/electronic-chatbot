@@ -320,11 +320,11 @@ class CircuitIRSerializer:
                 errors.append(f"component[{i}] thiếu 'type'")
             else:
                 try:
-                    ComponentType(comp["type"])
+                    ComponentType.normalize(comp["type"])
                 except ValueError:
                     errors.append(
                         f"component[{i}].type='{comp['type']}' không hợp lệ. "
-                        f"Phải là một trong: {[e.value for e in ComponentType]}"
+                        f"Phải là một trong (hoặc alias): {[e.value for e in ComponentType]}"
                     )
             # kiểm tra pins
             if "pins" not in comp:
