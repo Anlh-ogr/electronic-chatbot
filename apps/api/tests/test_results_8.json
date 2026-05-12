@@ -1,0 +1,176 @@
+[
+  {
+    "template": "resources/templates/bjt_ce_externally_biased_amplifier.json",
+    "export": {
+      "file_id": "550c0a1a-1c7e-42d6-9ec2-52ffb28bc921",
+      "url": "/api/chat/kicad-file/550c0a1a-1c7e-42d6-9ec2-52ffb28bc921.kicad_sch",
+      "size": 22469
+    },
+    "kicad_size": 22469,
+    "simulation_error": "{\"detail\":{\"error\":\"simulation_failed\",\"message\":\"Simulation finished but waveform file was not created. ngspice log tail:\\nuccessfully.\\n    Any of the following steps may fail.!\\n\\n\\nTransient solution failed -\\n\\nLast Node Voltages\\n------------------\\n\\nNode                                   Last Voltage        Previous Iter\\n----                                   ------------        -------------\\nnet_collector                                     0             0.498103 *\\nnet_base                                          0           0.00276724 *\\nnet_emitter                                       0            -0.500871 *\\nnet_vcc                                           0                    0\\nnet_gnd                                           0                    0\\nnet_in                                            0                    0\\nnet_out                                           0                    0\\nvstim#branch                                      0                    0\\nvtb#branch                                        0                    0\\nvcc#branch                                        0                   12 *\\n\\n\\n\\nNo. of Data Rows : 0\\ndoAnalyses: TRAN:  Timestep too small; initial timepoint: trouble with qnpn-instance q1\\n\\n\\ntran simulation(s) aborted\\nError: no such vector v(NET_IN)\\nngspice-45.2 done\\n\"}}"
+  },
+  {
+    "template": "resources/templates/mosfet_cs_externally_biased_bypass_amplifier.json",
+    "export": {
+      "file_id": "e06c2df0-710f-4156-b6b3-6e80e80d9bf7",
+      "url": "/api/chat/kicad-file/e06c2df0-710f-4156-b6b3-6e80e80d9bf7.kicad_sch",
+      "size": 25264
+    },
+    "kicad_size": 25264,
+    "simulation": {
+      "success": true,
+      "analysis": {
+        "type": "transient",
+        "step": "1e-05",
+        "stop": "0.01",
+        "start": "0",
+        "probes": [
+          "v(NET_IN)",
+          "v(NET_OUT)"
+        ],
+        "reltol": "1e-3",
+        "x_unit": "ms",
+        "raw_points": 1012,
+        "downsampled": false,
+        "max_output_points": 1200,
+        "gain_metrics": {
+          "status": "ok",
+          "input_probe": "v(NET_IN)",
+          "output_probe": "v(NET_OUT)",
+          "window_start_s": 0.00191729492,
+          "vin_pp": 0.1999711126,
+          "vout_pp": 0.002005514718,
+          "measured_av": 0.01002902215187255,
+          "measured_abs_av": 0.01002902215187255,
+          "phase_shift_deg": 0.0,
+          "inverting": false,
+          "correlation": 0.9998679226397497,
+          "expected_av": 10.0,
+          "expected_abs_av": 10.0,
+          "abs_error": 9.989970977848127,
+          "rel_error_pct": 99.89970977848127,
+          "phase_match": true,
+          "equation_match": false
+        }
+      }
+    }
+  },
+  {
+    "template": "resources/templates/opamp_non_inverting_single_supply_vref.json",
+    "export": {
+      "file_id": "45239c1e-f647-48e3-ae85-77be667bb920",
+      "url": "/api/chat/kicad-file/45239c1e-f647-48e3-ae85-77be667bb920.kicad_sch",
+      "size": 23373
+    },
+    "kicad_size": 23373,
+    "simulation": {
+      "success": true,
+      "analysis": {
+        "type": "transient",
+        "step": "1e-05",
+        "stop": "0.01",
+        "start": "0",
+        "probes": [
+          "v(NET_IN)",
+          "v(NET_OUT)"
+        ],
+        "reltol": "1e-3",
+        "x_unit": "ms",
+        "raw_points": 1008,
+        "downsampled": false,
+        "max_output_points": 1200,
+        "gain_metrics": {
+          "status": "ok",
+          "input_probe": "v(NET_IN)",
+          "output_probe": "v(NET_OUT)",
+          "window_start_s": 0.0019428,
+          "vin_pp": 0.001999690498,
+          "vout_pp": 1.9798919999999918e-05,
+          "measured_av": 0.009900992188442113,
+          "measured_abs_av": 0.009900992188442113,
+          "phase_shift_deg": 0.0,
+          "inverting": false,
+          "correlation": 0.9999999999999244,
+          "expected_av": 11.0,
+          "expected_abs_av": 11.0,
+          "abs_error": 10.990099007811558,
+          "rel_error_pct": 99.90999098010508,
+          "phase_match": true,
+          "equation_match": false
+        }
+      }
+    }
+  },
+  {
+    "template": "resources/templates/opamp_differential_single_supply_vref_ac_coupled.json",
+    "export": {
+      "file_id": "c8002b1b-9122-4d6f-bb10-fbddbbcf7583",
+      "url": "/api/chat/kicad-file/c8002b1b-9122-4d6f-bb10-fbddbbcf7583.kicad_sch",
+      "size": 29370
+    },
+    "kicad_size": 29370,
+    "simulation": {
+      "success": true,
+      "analysis": {
+        "type": "transient",
+        "step": "1e-05",
+        "stop": "0.01",
+        "start": "0",
+        "probes": [
+          "v(NET_VINP_AC)",
+          "v(NET_VINN_AC)"
+        ],
+        "reltol": "1e-3",
+        "x_unit": "ms",
+        "raw_points": 1008,
+        "downsampled": false,
+        "max_output_points": 1200,
+        "gain_metrics": {
+          "status": "missing_required_probes",
+          "required": [
+            "input",
+            "output"
+          ],
+          "available": [
+            "v(NET_VINP_AC)",
+            "v(NET_VINN_AC)"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "template": "resources/templates/class_ab_push_pull_amp_diode_bias_full.json",
+    "export": {
+      "file_id": "3acbbff7-fa82-448c-be84-7bafaf47c4e0",
+      "url": "/api/chat/kicad-file/3acbbff7-fa82-448c-be84-7bafaf47c4e0.kicad_sch",
+      "size": 40409
+    },
+    "kicad_size": 40409,
+    "simulation_error": "{\"detail\":{\"error\":\"simulation_failed\",\"message\":\"Simulation finished but waveform file was not created. ngspice log tail:\\n                         0           0.00276724 *\\nnet_emit_q1                                       0            -0.500871 *\\nnet_gnd                                           0             0.498103 *\\nnet_base_q2                                       0           0.00276724 *\\nnet_emit_q2                                       0            -0.500871 *\\nnet_bias_mid                                      0                    0\\nnet_cin_rin                                       0                    0\\nnet_base_node                                     0                    0\\nnet_emit_common                                   0                    0\\nnet_in                                            0                    0\\nnet_out                                           0                    0\\nvstim#branch                                      0                    0\\nvtb#branch                                        0                    0\\nvcc#branch                                        0                   24 *\\n\\n\\n\\nNo. of Data Rows : 0\\ndoAnalyses: TRAN:  Timestep too small; initial timepoint: trouble with qnpn-instance q1\\n\\n\\ntran simulation(s) aborted\\nError: no such vector v(NET_IN)\\nngspice-45.2 done\\n\"}}"
+  },
+  {
+    "template": "resources/templates/class_d_mosfet_pwm_output_stage_no_lc_filter.json",
+    "export": {
+      "file_id": "c2438fa9-b86a-45af-9dd2-2343d72affa4",
+      "url": "/api/chat/kicad-file/c2438fa9-b86a-45af-9dd2-2343d72affa4.kicad_sch",
+      "size": 36099
+    },
+    "kicad_size": 36099,
+    "simulation_error": "{\"detail\":{\"error\":\"simulation_failed\",\"message\":\"Simulation finished but waveform file was not created. ngspice log tail:\\n                                Last Voltage        Previous Iter\\n----                                   ------------        -------------\\nnet_u1_plus                                       0                    0\\nnet_tri_in                                        0                    0\\nnet_vcc                                           0                    0\\nnet_gate_m1                                       0                    0\\nnet_gnd                                           0                    0\\nnet_gate_m2                                       0                    0\\nnet_pwm_in                                        0                    0\\nnet_u1_out                                        0                    0\\nnet_emit_node                                     0                    0\\nvstim#branch                                      0                    0\\nvtb#branch                                        0                    0\\nvcc#branch                                        0                   24 *\\n\\n\\n\\nNo. of Data Rows : 0\\ndoAnalyses: TRAN:  Timestep too small; initial timepoint: cause unrecorded.\\n\\n\\ntran simulation(s) aborted\\nError: no such vector v(NET_PWM_IN)\\nngspice-45.2 done\\n\"}}"
+  },
+  {
+    "template": "resources/templates/special_darlington_pair_voltage_divider_bias_full.json",
+    "export": {
+      "file_id": "0bdb68be-2631-47cd-b0fb-0b24105cd2b9",
+      "url": "/api/chat/kicad-file/0bdb68be-2631-47cd-b0fb-0b24105cd2b9.kicad_sch",
+      "size": 28210
+    },
+    "kicad_size": 28210,
+    "simulation_error": "{\"detail\":{\"error\":\"simulation_failed\",\"message\":\"Simulation finished but waveform file was not created. ngspice log tail:\\nfailed -\\n\\nLast Node Voltages\\n------------------\\n\\nNode                                   Last Voltage        Previous Iter\\n----                                   ------------        -------------\\nnet_col_node                                      0             0.996207 *\\nnet_base_node                                     0           0.00276724 *\\nnet_darlington_mid                                0            -0.498103 *\\nnet_emit_node                                     0            -0.500871 *\\nnet_vcc                                           0                    0\\nnet_gnd                                           0                    0\\nnet_vin                                           0                    0\\nnet_vout                                          0                    0\\nvstim#branch                                      0                    0\\nvtb#branch                                        0                    0\\nvcc#branch                                        0                   12 *\\n\\n\\n\\nNo. of Data Rows : 0\\ndoAnalyses: TRAN:  Timestep too small; initial timepoint: trouble with qnpn-instance q1\\n\\n\\ntran simulation(s) aborted\\nError: no such vector v(NET_VIN)\\nngspice-45.2 done\\n\"}}"
+  },
+  {
+    "template": "resources/templates/three_stage_hybrid_composed.json",
+    "error": "template_not_found"
+  }
+]
