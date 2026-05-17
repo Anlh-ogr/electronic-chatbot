@@ -16,13 +16,174 @@ from __future__ import annotations
 # ====== Lý do sử dụng thư viện ======
 # typing: Type hints cho s-expression generation
 # datetime: Timestamps cho schematic metadata
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 from datetime import datetime
 
 # ====== Domain & Infrastructure layers ======
 from app.domains.circuits.entities import Circuit
 from app.domains.circuits.ir import CircuitIR
 from app.infrastructure.exporters.kicad_symbol_library import KiCadSymbolLibrary
+
+
+def append_embedded_library_symbol_definitions(
+    lines: list[str],
+    used_symbols: Dict[str, tuple[str, dict]],
+) -> None:
+    """Append `(symbol "{lib_id}" ...)` blocks used by KiCad 8 embedded lib_symbols.
+
+    `used_symbols`: map lib_id -> (comp_type_str, KiCadSymbolLibrary-style symbol_def dict).
+    """
+    for lib_id in sorted(used_symbols.keys()):
+
+        comp_type, symbol_def = used_symbols[lib_id]
+
+        lib_id = symbol_def["lib_id"]
+        ref_prefix = symbol_def["ref_prefix"]
+        pin_defs = symbol_def["pins"]
+        graphics_lines = symbol_def["graphics"]
+
+        symbol_name = lib_id.split(":")[-1]
+
+        if symbol_def.get("is_power"):
+
+            lines.append(f'    (symbol "{lib_id}"')
+            lines.append("      (power)")
+            lines.append("      (pin_numbers hide)")
+            lines.append("      (pin_names hide)")
+            lines.append("      (exclude_from_sim yes) (in_bom no) (on_board no)")
+
+            lines.append(
+                f'      (property "Reference" "{ref_prefix}" (at 0 2.54 0)'
+            )
+            lines.append(
+                "        (effects (font (size 1.27 1.27)) (hide yes))"
+            )
+            lines.append("      )")
+
+            rail_name = lib_id.split(":")[-1]
+
+            lines.append(
+                f'      (property "Value" "{rail_name}" (at 0 -2.54 0)'
+            )
+            lines.append(
+                "        (effects (font (size 1.27 1.27)))"
+            )
+            lines.append("      )")
+
+            lines.append(
+                '      (property "Footprint" "" (at 0 0 0)'
+            )
+            lines.append(
+                '        (effects (font (size 1.27 1.27)) (hide yes))'
+            )
+            lines.append("      )")
+
+            lines.append(
+                '      (property "Datasheet" "" (at 0 0 0)'
+            )
+            lines.append(
+                '        (effects (font (size 1.27 1.27)) (hide yes))'
+            )
+            lines.append("      )")
+
+            lines.append(f'      (symbol "{symbol_name}_0_1"')
+            lines.extend(graphics_lines)
+            lines.append("      )")
+
+            pin_type = symbol_def.get("pin_type", "power_in")
+            pin_length = symbol_def.get("pin_length", 0)
+
+            lines.append(f'      (symbol "{symbol_name}_1_1"')
+
+            for idx, (px, py, orientation) in enumerate(pin_defs):
+                lines.append(
+                    f"        (pin {pin_type} line "
+                    f"(at {px} {py} {orientation}) "
+                    f"(length {pin_length}) "
+                    f'(name "~" (effects (font (size 1.27 1.27)))) '
+                    f'(number "{idx + 1}" '
+                    f'(effects (font (size 1.27 1.27)))))'
+                )
+
+            lines.append("      )")
+
+            lines.append("    )")
+
+        else:
+
+            lines.append(f'    (symbol "{lib_id}"')
+
+            lines.append("      (pin_numbers hide)")
+            lines.append("      (pin_names hide)")
+            lines.append("      (exclude_from_sim yes) (in_bom no) (on_board no)")
+
+            lines.append(
+                f'      (property "Reference" "{ref_prefix}" '
+                f"(at 0 2.54 0) "
+                f'(effects (font (size 1.27 1.27))))'
+            )
+
+            lines.append(
+                f'      (property "Value" "{comp_type}" '
+                f"(at 0 -2.54 0) "
+                f'(effects (font (size 1.27 1.27))))'
+            )
+
+            lines.append(
+                '      (property "Footprint" "" '
+                "(at 0 0 0) "
+                "(effects (font (size 1.27 1.27)) (hide yes)))"
+            )
+
+            lines.append(
+                '      (property "Datasheet" "" '
+                "(at 0 0 0) "
+                "(effects (font (size 1.27 1.27)) (hide yes)))"
+            )
+
+            lines.append(
+                f'      (property "Description" "{comp_type}" '
+                f"(at 0 0 0) "
+                f'(effects (font (size 1.27 1.27)) (hide yes)))'
+            )
+
+            lines.append(
+                f'      (property "ki_keywords" "{comp_type}" '
+                f"(at 0 0 0) "
+                f'(effects (font (size 1.27 1.27)) (hide yes)))'
+            )
+
+            lines.append(
+                '      (property "ki_fp_filters" "*" '
+                "(at 0 0 0) "
+                "(effects (font (size 1.27 1.27)) (hide yes)))"
+            )
+
+            lines.append(f'      (symbol "{symbol_name}_0_1"')
+
+            lines.extend(graphics_lines)
+
+            lines.append("      )")
+
+            pin_type = symbol_def.get("pin_type", "passive")
+            pin_length = symbol_def.get("pin_length", 2.0)
+
+            lines.append(f'      (symbol "{symbol_name}_1_1"')
+
+            for idx, (px, py, orientation) in enumerate(pin_defs):
+
+                lines.append(
+                    f"        (pin {pin_type} line "
+                    f"(at {px} {py} {orientation}) "
+                    f"(length {pin_length}) "
+                    f'(name "~" (effects (font (size 1.27 1.27)))) '
+                    f'(number "{idx + 1}" '
+                    f'(effects (font (size 1.27 1.27)))))'
+                )
+
+            lines.append("      )")
+
+            lines.append("    )")
 
 
 # ====== Schematic Serializer ======
@@ -48,7 +209,15 @@ class KiCadSchSerializer:
         self._root_uuid: str = ""
         self._issued_uuids: set[str] = set()
         self._power_ref_counters: Dict[str, int] = {}
-    
+
+    @classmethod
+    def build_embedded_lib_symbols_block(cls, used_symbols: Dict[str, Tuple[str, dict]]) -> List[str]:
+        """Return full `(lib_symbols ...)` lines for schematic embedding (KiCad 8)."""
+        lines = ["  (lib_symbols"]
+        append_embedded_library_symbol_definitions(lines, used_symbols)
+        lines.append("  )")
+        return lines
+
     def serialize(
         self,
         ir: CircuitIR,
@@ -169,10 +338,9 @@ class KiCadSchSerializer:
     def _build_lib_symbols(self, circuit: Circuit) -> list[str]:
         """Build lib_symbols block with KiCad 8 compatible symbol definitions."""
 
-        lines = ['  (lib_symbols']
+        lines = ["  (lib_symbols"]
 
-        # Resolve symbol per component ID so VCC/VDD voltage sources can use VCC symbol.
-        used_symbols: Dict[str, tuple[str, Dict]] = {}
+        used_symbols: Dict[str, tuple[str, dict]] = {}
 
         for comp_id, component in circuit.components.items():
             comp_type = component.type.value
@@ -182,190 +350,14 @@ class KiCadSchSerializer:
                 len(component.pins),
             )
 
-            lib_id = symbol_def['lib_id']
+            lib_id = symbol_def["lib_id"]
 
             if lib_id not in used_symbols:
                 used_symbols[lib_id] = (comp_type, symbol_def)
 
-        for lib_id in sorted(used_symbols.keys()):
+        append_embedded_library_symbol_definitions(lines, used_symbols)
 
-            comp_type, symbol_def = used_symbols[lib_id]
-
-            lib_id = symbol_def['lib_id']
-            ref_prefix = symbol_def['ref_prefix']
-            pin_defs = symbol_def['pins']
-            graphics_lines = symbol_def['graphics']
-
-            # Device:R -> R
-            symbol_name = lib_id.split(':')[-1]
-
-            # ============================================================
-            # POWER SYMBOLS
-            # ============================================================
-            if symbol_def.get('is_power'):
-
-                lines.append(f'    (symbol "{lib_id}"')
-                lines.append('      (power)')
-                lines.append('      (pin_numbers hide)')
-                lines.append('      (pin_names hide)')
-                lines.append('      (exclude_from_sim yes) (in_bom no) (on_board no)')
-
-                # Reference
-                lines.append(
-                    f'      (property "Reference" "{ref_prefix}" (at 0 2.54 0)'
-                )
-                lines.append(
-                    '        (effects (font (size 1.27 1.27)) (hide yes))'
-                )
-                lines.append('      )')
-
-                # Value = rail name
-                rail_name = lib_id.split(':')[-1]
-
-                lines.append(
-                    f'      (property "Value" "{rail_name}" (at 0 -2.54 0)'
-                )
-                lines.append(
-                    '        (effects (font (size 1.27 1.27)))'
-                )
-                lines.append('      )')
-
-                # Footprint
-                lines.append(
-                    '      (property "Footprint" "" (at 0 0 0)'
-                )
-                lines.append(
-                    '        (effects (font (size 1.27 1.27)) (hide yes))'
-                )
-                lines.append('      )')
-
-                # Datasheet
-                lines.append(
-                    '      (property "Datasheet" "" (at 0 0 0)'
-                )
-                lines.append(
-                    '        (effects (font (size 1.27 1.27)) (hide yes))'
-                )
-                lines.append('      )')
-
-                # ========================================================
-                # Graphics sub-unit (KiCad 8 naming)
-                # ========================================================
-                lines.append(f'      (symbol "{symbol_name}_0_1"')
-                lines.extend(graphics_lines)
-                lines.append('      )')
-
-                # ========================================================
-                # Power pin sub-unit
-                # ========================================================
-                pin_type = symbol_def.get('pin_type', 'power_in')
-                pin_length = symbol_def.get('pin_length', 0)
-
-                lines.append(f'      (symbol "{symbol_name}_1_1"')
-
-                for idx, (px, py, orientation) in enumerate(pin_defs):
-                    lines.append(
-                        f'        (pin {pin_type} line '
-                        f'(at {px} {py} {orientation}) '
-                        f'(length {pin_length}) '
-                        f'(name "~" (effects (font (size 1.27 1.27)))) '
-                        f'(number "{idx + 1}" '
-                        f'(effects (font (size 1.27 1.27)))))'
-                    )
-
-                lines.append('      )')
-
-                # CLOSE (symbol "lib_id")
-                lines.append('    )')
-
-            # ============================================================
-            # REGULAR SYMBOLS
-            # ============================================================
-            else:
-
-                lines.append(f'    (symbol "{lib_id}"')
-
-                lines.append('      (pin_numbers hide)')
-                lines.append('      (pin_names hide)')
-                lines.append('      (exclude_from_sim yes) (in_bom no) (on_board no)')
-
-                lines.append(
-                    f'      (property "Reference" "{ref_prefix}" '
-                    f'(at 0 2.54 0) '
-                    f'(effects (font (size 1.27 1.27))))'
-                )
-
-                lines.append(
-                    f'      (property "Value" "{comp_type}" '
-                    f'(at 0 -2.54 0) '
-                    f'(effects (font (size 1.27 1.27))))'
-                )
-
-                lines.append(
-                    '      (property "Footprint" "" '
-                    '(at 0 0 0) '
-                    '(effects (font (size 1.27 1.27)) (hide yes)))'
-                )
-
-                lines.append(
-                    '      (property "Datasheet" "" '
-                    '(at 0 0 0) '
-                    '(effects (font (size 1.27 1.27)) (hide yes)))'
-                )
-
-                lines.append(
-                    f'      (property "Description" "{comp_type}" '
-                    f'(at 0 0 0) '
-                    f'(effects (font (size 1.27 1.27)) (hide yes)))'
-                )
-
-                lines.append(
-                    f'      (property "ki_keywords" "{comp_type}" '
-                    f'(at 0 0 0) '
-                    f'(effects (font (size 1.27 1.27)) (hide yes)))'
-                )
-
-                lines.append(
-                    '      (property "ki_fp_filters" "*" '
-                    '(at 0 0 0) '
-                    '(effects (font (size 1.27 1.27)) (hide yes)))'
-                )
-
-                # ========================================================
-                # Graphics sub-unit
-                # ========================================================
-                lines.append(f'      (symbol "{symbol_name}_0_1"')
-
-                lines.extend(graphics_lines)
-
-                lines.append('      )')
-
-                # ========================================================
-                # Pins sub-unit
-                # ========================================================
-                pin_type = symbol_def.get('pin_type', 'passive')
-                pin_length = symbol_def.get('pin_length', 2.0)
-
-                lines.append(f'      (symbol "{symbol_name}_1_1"')
-
-                for idx, (px, py, orientation) in enumerate(pin_defs):
-
-                    lines.append(
-                        f'        (pin {pin_type} line '
-                        f'(at {px} {py} {orientation}) '
-                        f'(length {pin_length}) '
-                        f'(name "~" (effects (font (size 1.27 1.27)))) '
-                        f'(number "{idx + 1}" '
-                        f'(effects (font (size 1.27 1.27)))))'
-                    )
-
-                # CLOSE _1_1
-                lines.append('      )')
-
-                # CLOSE (symbol "lib_id")
-                lines.append('    )')
-
-        lines.append('  )')
+        lines.append("  )")
 
         return lines
     

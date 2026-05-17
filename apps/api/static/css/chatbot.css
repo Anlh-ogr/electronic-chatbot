@@ -948,9 +948,75 @@ kicanvas-embed {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
 }
+
+/* KiCanvas UI chrome — light mode (canvas colors come from theme="kicad") */
+:root[data-theme="light"] kicanvas-embed {
+    color-scheme: light;
+    --bg: #f4f7fb;
+    --fg: #0f172a;
+    --tooltip-bg: #1e40af;
+    --tooltip-fg: #f8fafc;
+    --tooltip-border: 1px solid #cbd5e1;
+    --scrollbar-bg: #f1f5f9;
+    --scrollbar-fg: rgba(37, 99, 235, 0.35);
+    --scrollbar-active-fg: #2563eb;
+    --scrollbar-hover-bg: rgba(37, 99, 235, 0.55);
+    --activity-bar-bg: #e8eef5;
+    --activity-bar-fg: #0f172a;
+    --activity-bar-active-bg: #ffffff;
+    --activity-bar-active-fg: #0f172a;
+    --resizer-bg: #2563eb;
+    --resizer-active-bg: #3b82f6;
+    --panel-bg: #ffffff;
+    --panel-fg: #0f172a;
+    --panel-border: 2px solid #e2e8f0;
+    --panel-title-bg: #dbeafe;
+    --panel-title-fg: #0f172a;
+    --panel-title-border: 1px solid #bfdbfe;
+    --panel-title-button-fg: #1e40af;
+    --panel-title-button-hover-bg: #2563eb;
+    --panel-title-button-hover-fg: #ffffff;
+    --panel-subtitle-bg: #eff6ff;
+    --dropdown-bg: #ffffff;
+    --dropdown-fg: #0f172a;
+    --button-bg: #2563eb;
+    --button-fg: #ffffff;
+    --button-hover-bg: #1d4ed8;
+    --button-hover-fg: #ffffff;
+    --button-outline-bg: #f8fafc;
+    --button-outline-fg: #0f172a;
+    --button-outline-hover-fg: #2563eb;
+    --button-toolbar-bg: #f1f5f9;
+    --button-toolbar-fg: #0f172a;
+    --button-toolbar-hover-fg: #2563eb;
+    --input-bg: #ffffff;
+    --input-fg: #0f172a;
+    --input-border: 1px solid #cbd5e1;
+    --input-accent: #2563eb;
+    --input-placeholder: #94a3b8;
+}
+
 #schematicArea,
 #pcbArea {
     min-height: 400px;
+}
+
+:root[data-theme="light"] #tab-schematic,
+:root[data-theme="light"] #tab-pcb {
+    background: var(--bg-main);
+}
+
+:root[data-theme="light"] #schematicArea,
+:root[data-theme="light"] #pcbArea {
+    background: #f4f7fb;
+}
+
+:root[data-theme="light"] #schematicArea.has-content,
+:root[data-theme="light"] #pcbArea.has-content {
+    padding: 12px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    border-radius: var(--radius-md);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 #schematicArea.has-content,
 #pcbArea.has-content {
@@ -2061,6 +2127,71 @@ kicanvas-embed {
 }
 
 /* ============================================
+   Theme Switch Transition — soft global cross-fade
+   between light and dark palettes when the user
+   clicks the toggle. Added via JS during the swap.
+   ============================================ */
+html.theme-transitioning,
+html.theme-transitioning body,
+html.theme-transitioning #app,
+html.theme-transitioning .app-header,
+html.theme-transitioning .chat-panel,
+html.theme-transitioning .detail-panel,
+html.theme-transitioning .tab-bar,
+html.theme-transitioning .tab,
+html.theme-transitioning .chat-input-area,
+html.theme-transitioning .input-wrapper,
+html.theme-transitioning .message-text,
+html.theme-transitioning .message-meta,
+html.theme-transitioning .btn-toolbar,
+html.theme-transitioning .btn-icon,
+html.theme-transitioning .btn-send,
+html.theme-transitioning .modal-content,
+html.theme-transitioning .params-card,
+html.theme-transitioning .params-card-value,
+html.theme-transitioning .bom-table-wrap,
+html.theme-transitioning .bom-table thead th,
+html.theme-transitioning .bom-table tbody td,
+html.theme-transitioning .schematic-toolbar,
+html.theme-transitioning .welcome-overlay,
+html.theme-transitioning .welcome-info-card,
+html.theme-transitioning .welcome-info-divider,
+html.theme-transitioning .welcome-cta,
+html.theme-transitioning .md-section,
+html.theme-transitioning .md-kv,
+html.theme-transitioning .md-alert,
+html.theme-transitioning .analysis-section,
+html.theme-transitioning .pcb-progress {
+    transition:
+        background-color 0.55s ease,
+        background 0.55s ease,
+        color 0.4s ease,
+        border-color 0.4s ease,
+        box-shadow 0.4s ease !important;
+}
+
+/* Full-screen veil tinted with the OLD theme's bg; fades in briefly while
+   the CSS variables swap underneath, then fades out — the effect reads as a
+   smooth "darken" (light→dark) or "brighten" (dark→light) wash. */
+.theme-transition-veil {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10001;
+    opacity: 0;
+    background: var(--bg-main);
+    transition: opacity 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.theme-transition-veil.is-active {
+    opacity: 0.55;
+}
+@media (prefers-reduced-motion: reduce) {
+    html.theme-transitioning,
+    html.theme-transitioning * { transition: none !important; }
+    .theme-transition-veil { display: none !important; }
+}
+
+/* ============================================
    Theme Toggle Button (header + welcome overlay)
    ============================================ */
 .theme-toggle {
@@ -2084,15 +2215,28 @@ kicanvas-embed {
         transform 0.18s ease;
 }
 .theme-toggle:hover {
-    transform: translateY(-1px);
-    background: rgba(78, 168, 255, 0.12);
-    border-color: rgba(78, 168, 255, 0.5);
+    transform: translateY(-1px) scale(1.08) rotate(-10deg);
+    background: rgba(78, 168, 255, 0.14);
+    border-color: rgba(78, 168, 255, 0.55);
     color: var(--accent-blue);
-    box-shadow: 0 0 18px rgba(78, 168, 255, 0.28);
+    box-shadow:
+        0 0 22px rgba(78, 168, 255, 0.32),
+        inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.theme-toggle:active {
+    transform: translateY(0) scale(0.94) rotate(-4deg);
+    transition-duration: 80ms;
 }
 .theme-toggle:focus-visible {
     outline: 2px solid rgba(78, 168, 255, 0.55);
     outline-offset: 3px;
+}
+/* Light-theme hover: switch glow to brand blue */
+:root[data-theme="light"] .theme-toggle:hover {
+    background: rgba(37, 99, 235, 0.12);
+    border-color: rgba(37, 99, 235, 0.5);
+    color: var(--primary);
+    box-shadow: 0 0 22px rgba(37, 99, 235, 0.30);
 }
 .theme-toggle i {
     position: absolute;

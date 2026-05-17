@@ -66,7 +66,11 @@ raw_database_url = (
 engine = create_async_engine(
     _normalize_async_database_url(raw_database_url),
     future=True,
-    echo=False
+    echo=False,
+    # Avoid "connection is closed" from stale Neon/pooled connections; flush before checkout.
+    pool_pre_ping=True,
+    # Recycle before typical server-side idle timeouts (e.g. Neon).
+    pool_recycle=280,
 )
 
 

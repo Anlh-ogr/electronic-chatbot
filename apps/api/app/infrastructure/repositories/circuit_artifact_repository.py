@@ -52,6 +52,8 @@ class CircuitArtifactRepository:
         file_path: str,
         download_url: Optional[str],
         file_size_bytes: Optional[int] = None,
+        *,
+        defer_commit: bool = False,
     ) -> str:
         existing = await self._execute(
             text(
@@ -116,7 +118,8 @@ class CircuitArtifactRepository:
                 "file_size_bytes": file_size_bytes,
             },
         )
-        await self._commit()
+        if not defer_commit:
+            await self._commit()
         log_stage(
             "DB",
             operation="save_artifact",

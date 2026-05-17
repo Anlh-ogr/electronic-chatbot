@@ -79,9 +79,140 @@ function getActiveTheme() {
     return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
 }
 
-function applyTheme(theme) {
+/** KiCanvas theme ids (built-ins + elpis-light patch in static/kicanvas/kicanvas.js). */
+const KICANVAS_THEME_BY_APP = {
+    light: 'elpis-light', // white PCB + light schematic (KiCad palette)
+    dark: 'witchhazel',
+};
+
+function getKiCanvasThemeName() {
+    return getActiveTheme() === 'light'
+        ? KICANVAS_THEME_BY_APP.light
+        : KICANVAS_THEME_BY_APP.dark;
+}
+
+function configureKiCanvasEmbed(kicanvas) {
+    kicanvas.setAttribute('controls', 'full');
+    kicanvas.setAttribute('theme', getKiCanvasThemeName());
+    kicanvas.classList.add('elpis-kicanvas-embed');
+    kicanvas.style.width = '100%';
+    kicanvas.style.height = '100%';
+    kicanvas.style.minHeight = '450px';
+    kicanvas.style.display = 'block';
+    kicanvas.style.border = 'none';
+    kicanvas.style.borderRadius = '8px';
+}
+
+function applyKiCanvasThemeToViewer(viewerEl, themeName) {
+    if (!viewerEl) return;
+    if (viewerEl.getAttribute('theme') !== themeName) {
+        viewerEl.setAttribute('theme', themeName);
+    }
+    if (viewerEl.viewer?.loaded && typeof viewerEl.update_theme === 'function') {
+        viewerEl.update_theme();
+        viewerEl.viewer.paint?.();
+        viewerEl.viewer.draw?.();
+    }
+}
+
+function applyKiCanvasThemeToEmbed(embedEl, themeName) {
+    if (!embedEl) return;
+    if (embedEl.getAttribute('theme') !== themeName) {
+        embedEl.setAttribute('theme', themeName);
+    }
+    const root = embedEl.shadowRoot;
+    if (!root) return;
+    root.querySelectorAll('kc-board-app, kc-schematic-app').forEach((app) => {
+        if (app.getAttribute('theme') !== themeName) {
+            app.setAttribute('theme', themeName);
+        }
+    });
+    root.querySelectorAll('kc-board-viewer, kc-schematic-viewer').forEach((viewer) => {
+        applyKiCanvasThemeToViewer(viewer, themeName);
+    });
+}
+
+function syncKiCanvasEmbedsTheme() {
+    const themeName = getKiCanvasThemeName();
+    document.querySelectorAll('kicanvas-embed').forEach((embed) => {
+        applyKiCanvasThemeToEmbed(embed, themeName);
+    });
+}
+
+function scheduleKiCanvasThemeApply(embedEl) {
+    const themeName = getKiCanvasThemeName();
+    const applyWhenReady = () => applyKiCanvasThemeToEmbed(embedEl, themeName);
+    applyWhenReady();
+    requestAnimationFrame(applyWhenReady);
+    setTimeout(applyWhenReady, 120);
+    setTimeout(applyWhenReady, 400);
+}
+
+function reloadKiCanvasEmbedsForThemeChange() {
+    syncKiCanvasEmbedsTheme();
+    if (window._lastPcbContent) {
+        window._pcbRendered = false;
+        if (currentTab === 'pcb') {
+            renderPCBKiCanvas();
+        }
+    }
+}
+
+// Background colors used by the transition veil. We can't rely on
+// `getComputedStyle(root, '--bg-main')` directly because the variable swaps
+// to the new theme as soon as we set `data-theme` — so the veil would tint
+// to the NEW bg instead of the OLD. These constants snapshot the canonical
+// surface color for each theme.
+const THEME_BG_SNAPSHOTS = {
+    dark:  '#0b0b0b',
+    light: '#f4f7fb',
+};
+
+// Run the theme-swap wash overlay: fade a veil tinted with the OLD theme's
+// background up to 55% opacity, swap CSS variables, then fade the veil out.
+// Net visual effect: light→dark = gradually darkens; dark→light = gradually
+// brightens. Total duration ≈ 650ms.
+function _runThemeTransitionVeil(prev, next) {
+    const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion) return;
+
+    let veil = document.querySelector('.theme-transition-veil');
+    if (!veil) {
+        veil = document.createElement('div');
+        veil.className = 'theme-transition-veil';
+        document.body.appendChild(veil);
+    }
+    // Tint the veil with the OLD background so the "wash" reads as a fade
+    // from current → target.
+    veil.style.background = THEME_BG_SNAPSHOTS[prev] || THEME_BG_SNAPSHOTS.dark;
+    // Force reflow before adding the active class so the opacity transition
+    // actually animates from 0 to its target.
+    void veil.offsetWidth;
+    veil.classList.add('is-active');
+
+    setTimeout(() => {
+        if (!veil) return;
+        veil.classList.remove('is-active');
+        setTimeout(() => {
+            if (veil && veil.parentNode) veil.parentNode.removeChild(veil);
+        }, 600);
+    }, 280);
+}
+
+function applyTheme(theme, options = {}) {
     const next = theme === 'light' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
+    const root = document.documentElement;
+    const previous = root.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    const isSwap = options.animate !== false && previous !== next;
+
+    if (isSwap) {
+        // Enable smooth color transitions on every themed surface for the
+        // duration of the swap (CSS rule scoped to `html.theme-transitioning`).
+        root.classList.add('theme-transitioning');
+        _runThemeTransitionVeil(previous, next);
+    }
+
+    root.setAttribute('data-theme', next);
     try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (_) { /* noop */ }
 
     document.querySelectorAll('.theme-toggle').forEach((btn) => {
@@ -92,6 +223,16 @@ function applyTheme(theme) {
 
     if (window.ElpisCircuitAnimation && typeof window.ElpisCircuitAnimation.setTheme === 'function') {
         try { window.ElpisCircuitAnimation.setTheme(next); } catch (_) { /* noop */ }
+    }
+
+    reloadKiCanvasEmbedsForThemeChange();
+
+    if (isSwap) {
+        // Drop the transition class once the slowest property (background)
+        // has settled — keeps default snappy behaviour for other state changes.
+        setTimeout(() => {
+            root.classList.remove('theme-transitioning');
+        }, 700);
     }
 }
 
@@ -2417,16 +2558,8 @@ async function exportAndRenderKiCanvas(templateData, container, placeholder, cir
         console.log('KiCanvas source file URL:', fileUrl);
         console.log('KiCanvas fetched content length:', kicadContent.length);
 
-        // Create KiCanvas embed with INLINE source
         const kicanvas = document.createElement('kicanvas-embed');
-        kicanvas.setAttribute('controls', 'full');
-        kicanvas.style.width = '100%';
-        kicanvas.style.height = '100%';
-        kicanvas.style.minHeight = '450px';
-        kicanvas.style.display = 'block';
-        kicanvas.style.border = 'none';
-        kicanvas.style.borderRadius = '8px';
-        kicanvas.style.backgroundColor = '#ffffff';
+        configureKiCanvasEmbed(kicanvas);
 
         // Use inline <kicanvas-source> with content directly embedded
         const source = document.createElement('kicanvas-source');
@@ -2442,6 +2575,7 @@ async function exportAndRenderKiCanvas(templateData, container, placeholder, cir
         });
 
         container.appendChild(kicanvas);
+        scheduleKiCanvasThemeApply(kicanvas);
 
         // Auto-switch to schematic tab
         switchTab('schematic');
@@ -3042,16 +3176,8 @@ async function renderPCBKiCanvas() {
     // Wait for KiCanvas custom element
     await customElements.whenDefined('kicanvas-embed');
 
-    // Create KiCanvas embed for PCB
     const kicanvas = document.createElement('kicanvas-embed');
-    kicanvas.setAttribute('controls', 'full');
-    kicanvas.style.width = '100%';
-    kicanvas.style.height = '100%';
-    kicanvas.style.minHeight = '450px';
-    kicanvas.style.display = 'block';
-    kicanvas.style.border = 'none';
-    kicanvas.style.borderRadius = '8px';
-    kicanvas.style.backgroundColor = '#ffffff';
+    configureKiCanvasEmbed(kicanvas);
 
     // Use inline <kicanvas-source> with PCB content
     const source = document.createElement('kicanvas-source');
@@ -3060,7 +3186,9 @@ async function renderPCBKiCanvas() {
     kicanvas.appendChild(source);
 
     container.appendChild(kicanvas);
+    container.classList.add('has-content');
     window._pcbRendered = true;
+    scheduleKiCanvasThemeApply(kicanvas);
 
     console.log('KiCanvas PCB rendered, size:', window._lastPcbContent.length);
 }

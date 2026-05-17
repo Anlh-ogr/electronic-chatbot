@@ -1164,6 +1164,7 @@ class ChatbotService:
                     session_id=chat_id,
                     message_id=message_id,
                     ir=ir,
+                    defer_commit=True,
                 )
 
                 ir_id = await ir_repo.save_ir(
@@ -1171,6 +1172,7 @@ class ChatbotService:
                     circuit_id=circuit_id,
                     session_id=chat_id,
                     message_id=message_id,
+                    defer_commit=True,
                 )
 
                 sch_path = self._resolve_compiled_artifact_path(response.download_url)
@@ -1182,6 +1184,7 @@ class ChatbotService:
                         file_path=str(sch_path),
                         download_url=response.download_url,
                         file_size_bytes=sch_path.stat().st_size,
+                        defer_commit=True,
                     )
 
                 spice_path = self._resolve_compiled_artifact_path(response.spice_deck_url)
@@ -1193,9 +1196,11 @@ class ChatbotService:
                         file_path=str(spice_path),
                         download_url=response.spice_deck_url,
                         file_size_bytes=spice_path.stat().st_size,
+                        defer_commit=True,
                     )
 
-                await ir_repo.update_status(ir_id, "compiled")
+                await ir_repo.update_status(ir_id, "compiled", defer_commit=True)
+                await session.commit()
                 response.ir_id = ir_id
                 log_stage(
                     "DB",

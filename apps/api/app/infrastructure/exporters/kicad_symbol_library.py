@@ -1098,6 +1098,14 @@ class KiCadSymbolLibrary:
                 return "vcc"
             return "voltage_source"
 
+        if comp_type == "power_supply":
+            if any(token in comp_id_norm for token in ("gnd", "ground", "vss", "vee", "0")):
+                return "ground"
+            return "vcc"
+
+        if comp_type in {"opamp_ic", "op_amp"}:
+            return "opamp"
+
         return comp_type
     
     @classmethod

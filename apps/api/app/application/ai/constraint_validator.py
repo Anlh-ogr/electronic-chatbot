@@ -154,7 +154,7 @@ class ConstraintValidator:
     # ------------------------------------------------------------------ #
 
     def _check_param_ranges(self, circuit: Dict[str, Any], report: ValidationReport) -> None:
-        """Kiểm tra giá trị linh kiện trong phạm vi hợp lý."""
+        """Kiểm tra giá trị linh kiện trong phạm vi hợp lý. """
         for comp in circuit.get("components", []):
             comp_type = comp.get("type", "").upper()
             comp_id = comp.get("id", "")
@@ -170,7 +170,7 @@ class ConstraintValidator:
                     val = val.get("value", val)
                 if not isinstance(val, (int, float)):
                     continue
-
+                    
                 report.checked_rules += 1
                 if val < lo or val > hi:
                     report.violations.append(Violation(

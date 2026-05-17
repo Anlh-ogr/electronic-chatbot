@@ -33,3 +33,7 @@ htmlcov/
 # Hide snapshot
 apps/api/app/application/snapshots
 apps/api/app/domains/snapshots
+
+# Hide artifacts
+apps/api/app/application/artifacts
+apps/api/artifacts

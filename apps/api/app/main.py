@@ -122,6 +122,12 @@ async def favicon() -> Response:
     return Response(status_code=204)
 
 
+@app.get("/.well-known/appspecific/com.chrome.devtools.json")
+async def chrome_devtools_well_known() -> Response:
+    """Chrome DevTools probes this URL when open; not used by this app."""
+    return Response(status_code=204)
+
+
 # ===== Sửa đổi tạm thời để tránh lỗi 500 khi truy cập /static/viewer/$$:0:$$ =====
 from fastapi.responses import HTMLResponse
 

@@ -25,7 +25,7 @@ typing: sử dụng các type hint như Dict, List, Optional để dữ liệu r
 logger = logging.getLogger(__name__)
 
 
-# ── Chuỗi E chuẩn ──
+# ── Chuỗi E chuẩn ── 
 E_SERIES = {
     "E6": [1.0, 1.5, 2.2, 3.3, 4.7, 6.8],
     "E12": [1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2],

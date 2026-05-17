@@ -84,6 +84,73 @@ def _serialize_export_response(payload: Any) -> Dict[str, Any]:
     return {"value": serialized}
 
 
+async def _ensure_circuits_parent_row_for_job(
+    session: Any,
+    circuit_id: str,
+) -> None:
+    """Insert into `circuits` if missing so `industrial_routing_jobs.circuit_id` FK succeeds.
+
+    Chat-compile flow normally calls CircuitIRRepository.ensure_circuit_exists, but some
+    circuit_ids only exist in `circuit_irs` (legacy/orphan) or never got a parent row.
+    """
+    cid = (circuit_id or "").strip()
+    if not cid:
+        return
+
+    existing = await session.execute(
+        text("SELECT 1 FROM circuits WHERE circuit_id = :cid LIMIT 1"),
+        {"cid": cid},
+    )
+    if existing.scalar():
+        return
+
+    name_row = await session.execute(
+        text(
+            """
+            SELECT circuit_name FROM circuit_irs
+            WHERE circuit_id = :cid
+            ORDER BY created_at DESC NULLS LAST
+            LIMIT 1
+            """
+        ),
+        {"cid": cid},
+    )
+    raw = name_row.scalar()
+    name = (str(raw).strip() if raw else "") or "Unnamed Circuit"
+    if len(name) > 255:
+        name = name[:255]
+
+    await session.execute(
+        text(
+            """
+            INSERT INTO circuits (
+                circuit_id,
+                session_id,
+                message_id,
+                name,
+                description,
+                created_at,
+                updated_at
+            ) VALUES (
+                :circuit_id,
+                NULL,
+                NULL,
+                :name,
+                :description,
+                now(),
+                now()
+            )
+            ON CONFLICT (circuit_id) DO NOTHING
+            """
+        ),
+        {
+            "circuit_id": cid,
+            "name": name,
+            "description": "Auto-created parent row for industrial PCB export job",
+        },
+    )
+
+
 class IndustrialRoutingJobQueue:
     """Postgres-backed persistent queue for industrial PCB routing jobs."""
 
@@ -150,6 +217,7 @@ class IndustrialRoutingJobQueue:
         request_payload = self._request_to_payload(request)
 
         async with async_session() as session:
+            await _ensure_circuits_parent_row_for_job(session, circuit_id)
             await session.execute(
                 text(
                     """

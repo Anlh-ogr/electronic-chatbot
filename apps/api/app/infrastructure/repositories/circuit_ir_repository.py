@@ -31,6 +31,8 @@ class CircuitIRRepository:
         session_id: Optional[str] = None,
         message_id: Optional[str] = None,
         ir: Optional[CircuitIR] = None,
+        *,
+        defer_commit: bool = False,
     ) -> str:
         """Ensure parent row in circuits table exists before inserting into circuit_irs.
         
@@ -80,7 +82,8 @@ class CircuitIRRepository:
                 "description": "Auto-generated circuit from IR persistence",
             },
         )
-        await self.session.commit()
+        if not defer_commit:
+            await self.session.commit()
         logger.info(
             "Circuit row inserted successfully: circuit_id=%s, name=%s",
             circuit_id,
@@ -94,6 +97,8 @@ class CircuitIRRepository:
         circuit_id: str,
         session_id: Optional[str],
         message_id: Optional[str],
+        *,
+        defer_commit: bool = False,
     ) -> str:
         ir_id = str(uuid.uuid4())
         payload = ir.model_dump(mode="json")
@@ -153,7 +158,8 @@ class CircuitIRRepository:
                 "status": "validated" if ir.is_valid_request else "failed",
             },
         )
-        await self.session.commit()
+        if not defer_commit:
+            await self.session.commit()
         log_stage(
             "DB",
             operation="save_ir",
@@ -288,7 +294,7 @@ class CircuitIRRepository:
             output.append(record)
         return output
 
-    async def update_status(self, ir_id: str, status: str) -> bool:
+    async def update_status(self, ir_id: str, status: str, *, defer_commit: bool = False) -> bool:
         result = await self.session.execute(
             text(
                 """
@@ -302,5 +308,6 @@ class CircuitIRRepository:
                 "status": status,
             },
         )
-        await self.session.commit()
+        if not defer_commit:
+            await self.session.commit()
         return (result.rowcount or 0) > 0

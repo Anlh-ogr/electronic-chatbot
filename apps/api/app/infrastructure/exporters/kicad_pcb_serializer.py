@@ -88,6 +88,12 @@ class KiCadPCBSerializer:
     # ====== KiCad PCB Format Configuration ======
     KICAD_PCB_VERSION = "20240108"
     GENERATOR_VERSION = "8.0"
+
+    # A4 paper dimensions in millimetres — used to center the board (and all
+    # components / tracks / zones) on the sheet so KiCanvas / KiCad open the
+    # design with the artwork visually in the middle of the page.
+    A4_PAPER_WIDTH_MM = 297.0
+    A4_PAPER_HEIGHT_MM = 210.0
     
     def __init__(self):
         """Initialize PCB serializer."""
@@ -116,6 +122,18 @@ class KiCadPCBSerializer:
             KiCad .kicad_pcb file content as string
         """
         circuit = ir.circuit
+
+        # ── Center the artwork on the A4 sheet ──────────────────────────────
+        # The layout planner produces placements in the [0, board_width] ×
+        # [0, board_height] frame. If we emit those coordinates verbatim the
+        # A4 page that KiCanvas/KiCad shows has the board pinned to its
+        # upper-left corner. Compute an offset that recenters the entire
+        # design (footprints, tracks, zones, board outline) on the page.
+        offset_x, offset_y = self._compute_centering_offset(board_size)
+        if offset_x or offset_y:
+            placements = self._shift_placements(placements, offset_x, offset_y)
+            tracks = self._shift_tracks(tracks, offset_x, offset_y)
+            zones = self._shift_zones(zones, offset_x, offset_y)
 
         # Pre-compute pad→net map once for the whole board so each
         # _build_footprint call can do an O(1) lookup.
@@ -161,7 +179,7 @@ class KiCadPCBSerializer:
             )
 
         if board_size is not None:
-            lines.extend(self._build_board_outline(board_size))
+            lines.extend(self._build_board_outline(board_size, origin=(offset_x, offset_y)))
             lines.append("")
         
         # Tracks (PCB traces)
@@ -170,13 +188,102 @@ class KiCadPCBSerializer:
             lines.append("")
         
         # Zones (copper pours) - optional, can add GND plane
-        lines.extend(self._build_zones(zones or [], board_size))
+        lines.extend(self._build_zones(zones or [], board_size, origin=(offset_x, offset_y)))
         lines.append("")
         
         # Footer
         lines.append(")")
         
         return "\n".join(lines)
+
+    # ── Centering helpers ───────────────────────────────────────────────────
+    def _compute_centering_offset(
+        self, board_size: Optional[Tuple[float, float]]
+    ) -> Tuple[float, float]:
+        """Return (offset_x, offset_y) that centers `board_size` on A4 paper.
+
+        Returns (0, 0) when no board size is provided or when the board is
+        larger than the page (no usable margin).
+        """
+        if not board_size:
+            return 0.0, 0.0
+        try:
+            bw, bh = float(board_size[0]), float(board_size[1])
+        except (TypeError, ValueError, IndexError):
+            return 0.0, 0.0
+        ox = max(0.0, (self.A4_PAPER_WIDTH_MM - bw) / 2.0)
+        oy = max(0.0, (self.A4_PAPER_HEIGHT_MM - bh) / 2.0)
+        return ox, oy
+
+    @staticmethod
+    def _shift_placements(
+        placements: Dict[str, Tuple[float, float]],
+        offset_x: float,
+        offset_y: float,
+    ) -> Dict[str, Tuple[float, float]]:
+        return {
+            cid: (float(p[0]) + offset_x, float(p[1]) + offset_y)
+            for cid, p in (placements or {}).items()
+        }
+
+    @staticmethod
+    def _shift_tracks(
+        tracks: Optional[List[Dict]], offset_x: float, offset_y: float
+    ) -> List[Dict]:
+        if not tracks:
+            return []
+
+        def _shift_via_list(entries: Any) -> List[Any]:
+            shifted: List[Any] = []
+            for entry in entries or []:
+                if isinstance(entry, dict) and "x" in entry and "y" in entry:
+                    shifted.append({
+                        **entry,
+                        "x": float(entry["x"]) + offset_x,
+                        "y": float(entry["y"]) + offset_y,
+                    })
+                elif isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    shifted.append((float(entry[0]) + offset_x, float(entry[1]) + offset_y))
+                else:
+                    shifted.append(entry)
+            return shifted
+
+        out: List[Dict] = []
+        for track in tracks:
+            nt = dict(track)
+            if nt.get("via"):
+                nt["x"] = float(nt.get("x", 0)) + offset_x
+                nt["y"] = float(nt.get("y", 0)) + offset_y
+            else:
+                if "start" in nt and nt["start"] is not None:
+                    sx, sy = nt["start"]
+                    nt["start"] = (float(sx) + offset_x, float(sy) + offset_y)
+                if "end" in nt and nt["end"] is not None:
+                    ex, ey = nt["end"]
+                    nt["end"] = (float(ex) + offset_x, float(ey) + offset_y)
+                if "vias" in nt:
+                    nt["vias"] = _shift_via_list(nt.get("vias"))
+                if "via_positions" in nt:
+                    nt["via_positions"] = _shift_via_list(nt.get("via_positions"))
+            out.append(nt)
+        return out
+
+    @staticmethod
+    def _shift_zones(
+        zones: Optional[List[Dict[str, Any]]], offset_x: float, offset_y: float
+    ) -> List[Dict[str, Any]]:
+        if not zones:
+            return []
+        out: List[Dict[str, Any]] = []
+        for zone in zones:
+            nz = dict(zone)
+            poly = nz.get("polygon")
+            if poly:
+                nz["polygon"] = [
+                    (float(pt[0]) + offset_x, float(pt[1]) + offset_y) for pt in poly
+                ]
+            out.append(nz)
+        return out
     
     def _build_header(self) -> List[str]:
         """Build PCB file header."""
@@ -605,13 +712,17 @@ class KiCadPCBSerializer:
         self,
         zones: List[Dict[str, Any]],
         board_size: Optional[Tuple[float, float]],
+        origin: Tuple[float, float] = (0.0, 0.0),
     ) -> List[str]:
         """Build zone definitions (e.g., ground plane).
-        
+
+        `origin` shifts the default-zone rectangle so the auto-generated GND
+        pour matches the centered board outline.
+
         Returns:
             Lines of zone definitions.
         """
-        outline = self._zone_outline(board_size)
+        outline = self._zone_outline(board_size, origin=origin)
         lines: List[str] = []
         zone_specs = list(zones) if zones else self._default_ground_zones(outline)
 
@@ -674,17 +785,38 @@ class KiCadPCBSerializer:
             }]
         return []
 
-    def _build_board_outline(self, board_size: Tuple[float, float]) -> List[str]:
+    def _build_board_outline(
+        self,
+        board_size: Tuple[float, float],
+        origin: Tuple[float, float] = (0.0, 0.0),
+    ) -> List[str]:
+        """Draw the Edge.Cuts rectangle at `origin` for a `board_size` board.
+
+        `origin` lets callers center the board on the page; defaults to (0, 0)
+        for backward compatibility.
+        """
         width, height = board_size
+        ox, oy = origin
         return [
-            f'  (gr_rect (start 0 0) (end {width} {height}) (layer "Edge.Cuts") (stroke (width 0.1) (type solid)) (fill none))'
+            f'  (gr_rect (start {ox} {oy}) (end {ox + width} {oy + height}) '
+            f'(layer "Edge.Cuts") (stroke (width 0.1) (type solid)) (fill none))'
         ]
 
-    def _zone_outline(self, board_size: Optional[Tuple[float, float]]) -> List[Tuple[float, float]]:
+    def _zone_outline(
+        self,
+        board_size: Optional[Tuple[float, float]],
+        origin: Tuple[float, float] = (0.0, 0.0),
+    ) -> List[Tuple[float, float]]:
         if not board_size:
             return []
         width, height = board_size
-        return [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
+        ox, oy = origin
+        return [
+            (ox, oy),
+            (ox + width, oy),
+            (ox + width, oy + height),
+            (ox, oy + height),
+        ]
 
     def _extract_vias(self, track: Dict[str, Any]) -> List[Tuple[float, float]]:
         vias: List[Tuple[float, float]] = []
