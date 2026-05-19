@@ -223,7 +223,7 @@ class ChatbotService:
             in {"1", "true", "yes", "on"}
         )
         self._feedback_memory_path = _API_ROOT / "resources" / "runtime" / "design_feedback_memory.json"
-        self._context_db_enabled = False
+        self._context_db_enabled = True
         self._chat_repo: Optional[ChatHistoryRepository] = None
         self._summary_repo: Optional[SummaryMemoryRepository] = None
         self._knowledge_repo: Optional[KnowledgeRepository] = None

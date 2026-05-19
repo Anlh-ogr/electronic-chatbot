@@ -25,8 +25,7 @@ English:
 from sqlalchemy import Column, String, DateTime, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
-from datetime import datetime
-
+from app.core.timezone import now_app
 from app.db.database import Base
 
 
@@ -48,8 +47,8 @@ class CircuitModel(Base):
     message_id = Column(String(36), nullable=True, index=True)
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=now_app, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=now_app, onupdate=now_app, nullable=False)
     
     # Relationships
     snapshots = relationship("SnapshotModel", back_populates="circuit", cascade="all, delete-orphan")
@@ -63,7 +62,7 @@ class SnapshotModel(Base):
     circuit_id = Column(String(36), ForeignKey("circuits.circuit_id", ondelete="CASCADE"), nullable=False, index=True)
     message_id = Column(String(36), nullable=True, index=True)
     circuit_data = Column(JSONB, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=now_app, nullable=False)
     
     # Relationships
     circuit = relationship("CircuitModel", back_populates="snapshots")

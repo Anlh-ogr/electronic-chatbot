@@ -20,6 +20,7 @@ English:
 # sqlalchemy.ext.asyncio: Async database connections
 # config: Load DATABASE_URL từ environment
 from app.core.config import settings
+from app.core.timezone import APP_TIMEZONE_NAME
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from collections.abc import AsyncGenerator
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -71,6 +72,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     # Recycle before typical server-side idle timeouts (e.g. Neon).
     pool_recycle=280,
+    connect_args={"server_settings": {"timezone": APP_TIMEZONE_NAME}},
 )
 
 

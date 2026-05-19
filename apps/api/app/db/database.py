@@ -15,7 +15,7 @@ English:
 - Optimization: pool_pre_ping to check connections, max_overflow for spikes
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -23,6 +23,8 @@ from typing import Generator
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+
+from app.core.timezone import APP_TIMEZONE_NAME
 
 
 # Load .env.local from apps/api root so SessionLocal uses the same env as app runtime.
@@ -53,7 +55,16 @@ SYNC_DATABASE_URL = _normalize_sync_database_url(DATABASE_URL)
 engine = create_engine(
     SYNC_DATABASE_URL,
     poolclass=NullPool,
+    connect_args={"options": f"-c timezone={APP_TIMEZONE_NAME}"},
 )
+
+
+@event.listens_for(engine, "connect")
+def _set_sync_pg_timezone(dbapi_connection, _connection_record) -> None:
+    """Align Postgres session timezone with app (Neon SQL editor / now())."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute(f"SET TIME ZONE '{APP_TIMEZONE_NAME}'")
+    cursor.close()
 
 # Session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

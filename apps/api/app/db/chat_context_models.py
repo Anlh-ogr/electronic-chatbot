@@ -26,6 +26,8 @@ from __future__ import annotations
 # datetime: Timestamp management
 # JSONB: PostgreSQL native JSON storage
 from datetime import datetime
+
+from app.core.timezone import now_app
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -63,8 +65,8 @@ class SessionModel(Base):
     id = Column("session_id", String(36), primary_key=True)
     client_ip = Column(String(64), nullable=True)
     user_agent = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    last_active = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
+    last_active = Column(DateTime(timezone=True), nullable=False, default=now_app)
 
     chats = relationship("ChatModel", back_populates="session", cascade="all, delete-orphan")
 
@@ -80,8 +82,8 @@ class ChatModel(Base):
         index=True,
     )
     title = Column(String(255), nullable=False, default="New Chat")
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=now_app, onupdate=now_app)
 
     session = relationship("SessionModel", back_populates="chats")
     messages = relationship("MessageModel", back_populates="chat", cascade="all, delete-orphan")
@@ -96,7 +98,7 @@ class MessageModel(Base):
     role = Column(String(32), nullable=False)
     content = Column(Text, nullable=False)
     status = Column(String(32), nullable=False, default="created")
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
     prompt_tokens = Column(Integer, nullable=False, default=0)
     completion_tokens = Column(Integer, nullable=False, default=0)
     total_cost = Column(Float, nullable=False, default=0.0)
@@ -121,7 +123,7 @@ class ChatSummaryModel(Base):
     summary_text = Column(Text, nullable=False)
     token_estimate = Column(Integer, nullable=False, default=0)
     source_message_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
 
     chat = relationship("ChatModel", back_populates="summaries")
 
@@ -172,8 +174,8 @@ class DocumentModel(Base):
     title = Column(String(255), nullable=True)
     metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
     checksum = Column(String(128), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=now_app, onupdate=now_app)
 
     chunks = relationship("DocumentChunkModel", back_populates="document", cascade="all, delete-orphan")
 
@@ -190,7 +192,7 @@ class DocumentChunkModel(Base):
     token_count = Column(Integer, nullable=False, default=0)
     embedding = Column(Vector(1536), nullable=False)
     metadata_json = Column("metadata", JSONB, nullable=False, default=dict)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=now_app)
 
     document = relationship("DocumentModel", back_populates="chunks")
 

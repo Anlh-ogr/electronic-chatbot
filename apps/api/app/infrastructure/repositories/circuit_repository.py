@@ -22,6 +22,8 @@ English:
 # sqlalchemy: Database queries + filtering
 # uuid: Generate unique circuit IDs
 from typing import Optional, List, Dict, Any
+
+from app.core.timezone import to_api_timestamp
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, text
 import uuid
@@ -470,8 +472,8 @@ class PostgresCircuitRepository:
                 "id": m.circuit_id,
                 "name": m.name,
                 "description": m.description,
-                "created_at": m.created_at.isoformat(),
-                "updated_at": m.updated_at.isoformat(),
+                "created_at": to_api_timestamp(m.created_at),
+                "updated_at": to_api_timestamp(m.updated_at),
                 "created_by": "system"
             }
             for m in models

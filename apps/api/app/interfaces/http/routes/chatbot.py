@@ -35,6 +35,7 @@ import logging
 import os
 from pathlib import Path
 
+from app.core.timezone import to_api_timestamp
 from app.db.database import SessionLocal
 from app.infrastructure.repositories.chat_context_repository import (
     ChatHistoryRepository,
@@ -452,7 +453,7 @@ async def edit_user_message(
             role=str(updated.role),
             status=str(updated.status),
             content=updated.content,
-            created_at=updated.created_at.isoformat(),
+            created_at=to_api_timestamp(updated.created_at),
         )
     finally:
         db.close()
@@ -538,7 +539,7 @@ async def debug_history(
                     role=m.role,
                     content=m.content,
                     status=m.status,
-                    created_at=m.created_at.isoformat(),
+                    created_at=to_api_timestamp(m.created_at),
                 )
                 for m in messages
             ],
@@ -549,7 +550,7 @@ async def debug_history(
                     source_message_count=s.source_message_count,
                     token_estimate=s.token_estimate,
                     summary_text=s.summary_text,
-                    updated_at=s.updated_at.isoformat(),
+                    updated_at=to_api_timestamp(s.updated_at),
                 )
                 for s in summaries
             ],

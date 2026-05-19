@@ -26,6 +26,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from app.core.timezone import to_api_timestamp
 from app.db.database import SessionLocal #sync session
 
 
@@ -1553,7 +1554,7 @@ async def list_kept_irs(
                 "circuit_name": item.get("circuit_name"),
                 "topology_type": item.get("topology_type"),
                 "stage_count": item.get("stage_count"),
-                "created_at": item.get("created_at").isoformat() if item.get("created_at") else None,
+                "created_at": to_api_timestamp(item.get("created_at")),
             }
         )
     return output

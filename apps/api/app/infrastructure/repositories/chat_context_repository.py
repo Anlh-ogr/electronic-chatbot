@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+
+from app.core.timezone import now_app
 from typing import Any, Callable, Dict, List, Optional
 import time
 import uuid
@@ -135,7 +137,7 @@ class ChatHistoryRepository(RetryableRepository):
 
         def _op() -> str:
             _ = user_id  # kept for backward compatibility with existing service signature
-            now = datetime.utcnow()
+            now = now_app()
 
             session_model = (
                 self.session.query(SessionModel)
@@ -195,7 +197,7 @@ class ChatHistoryRepository(RetryableRepository):
         mid = message_id or str(uuid.uuid4())
 
         def _op() -> str:
-            now = datetime.utcnow()
+            now = now_app()
             chat = self._chat_row(chat_id)
             if chat is None:
                 raise ValueError(f"Chat '{chat_id}' not found")
@@ -253,7 +255,7 @@ class ChatHistoryRepository(RetryableRepository):
             model.content = new_content
             model.status = status
 
-            now = datetime.utcnow()
+            now = now_app()
             self._touch_chat(str(model.chat_id), now)
 
             chat = self._chat_row(str(model.chat_id))
@@ -341,7 +343,7 @@ class SummaryMemoryRepository(RetryableRepository):
                 .first()
             )
             if session_model is None:
-                self.session.add(SessionModel(id=session_id, last_active=datetime.utcnow()))
+                self.session.add(SessionModel(id=session_id, last_active=now_app()))
 
             query = self.session.query(MemoryFactModel).filter(
                 MemoryFactModel.session_id == session_id,
@@ -417,7 +419,7 @@ class KnowledgeRepository(RetryableRepository):
                 existing.title = title
                 existing.metadata_json = metadata
                 existing.checksum = checksum
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = now_app()
                 self.session.commit()
                 return existing.id
 

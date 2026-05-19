@@ -36,7 +36,9 @@ def _to_iso(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value.isoformat()
+        from app.core.timezone import to_api_timestamp
+
+        return to_api_timestamp(value)
     return str(value)
 
 
