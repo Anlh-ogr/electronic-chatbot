@@ -490,7 +490,7 @@ class NLUService:
         # Nhận diện cấu trúc/topology của mạch từ text → gán topo + loại mạch
         # Prefer multi-stage when user explicitly asks stage count/chain/coupling between stages.
         stage_chain_patterns = [
-            r"\b(ce|cb|cc|cs|cd|cg)\s*[-–/ ]\s*(ce|cb|cc|cs|cd|cg)\b",
+            r"\b(ce|cb|cc|cs|cd|cg)\s*[--/ ]\s*(ce|cb|cc|cs|cd|cg)\b",
             r"\b(ce|cb|cc|cs|cd|cg)\b.{0,24}\b(ce|cb|cc|cs|cd|cg)\b",
             r"\bcscd\b|\bcecc\b|\bcecb\b|\bcscg\b",
         ]
@@ -908,7 +908,7 @@ class NLUService:
         intent.confidence = min(intent.confidence, 0.90)
 
             
-    #  LLM-enhanced parser
+    #  llm extract: nhan input -> goi llm extract intent -> circuit intent
     def _llm_extract(self, user_text: str, mode: Optional["LLMMode"] = None) -> Optional[CircuitIntent]:
         if not self._router:
             return None
@@ -921,7 +921,9 @@ class NLUService:
         return self._build_intent_from_llm(user_text, payload)
 
     def _build_extraction_prompt(self) -> str:
-        # Keep prompt focused on transformation only; backend handles clarification flow.
+        # tao prompt cho llm (request user text -> json)
+        # prompt: tap trung vao: read user input & transform Json, khong yeu cau LLM hoi lai, logic miss info do BE xu ly
+        # CRT: create, MOD: modify, VAL: validate, EXP: explain
         return (
             "Convert user request (Vietnamese or English) into one JSON object following schema nlu.v1. "
             "Return JSON only. No markdown.\n"
@@ -942,6 +944,7 @@ class NLUService:
             "- Use enums exactly as listed."
         )
 
+    # gui prompt + user text + call model
     def _call_llm_extraction(
         self,
         system_prompt: str,
@@ -984,6 +987,7 @@ class NLUService:
             intent.requested_actions = self._detect_requested_actions(user_text.lower())
         return intent
 
+    # trich xuat thong tin 
     def _fill_basic_fields(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
         intent.intent_type = intent_code_to_name(payload.it)
         intent.circuit_type = topology_code_to_name(payload.tp)
@@ -1021,6 +1025,7 @@ class NLUService:
         intent.hard_constraints = dict(payload.hcst)
         intent.soft_preferences = list(payload.sp)
 
+    # chinh sua thao tac: add/remove/change component, change value
     def _parse_llm_edit_operations(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
         for raw_op in payload.eo:
             intent.edit_operations.append(
@@ -1031,6 +1036,7 @@ class NLUService:
                 )
             )
 
+    # trich xuat thong tin giai thich
     def _parse_explain_fields(self, intent: CircuitIntent, payload: NLUIntentOutputV1) -> None:
         intent.requested_actions = [intent_code_to_name(action) for action in payload.ra]
         intent.explain_detail_level = "detailed" if payload.ed == ExplainDetailCode.D else "basic"
