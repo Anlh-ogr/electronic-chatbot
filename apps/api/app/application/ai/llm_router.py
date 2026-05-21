@@ -22,7 +22,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union, Tuple
 from app.application.ai.circuit_ir_schema import CircuitIR
 from pydantic import BaseModel, ValidationError
 
@@ -213,6 +213,8 @@ class LLMRouter:
         )
 
     # ── Public API ──
+    
+    # chon model - gui request llm - validate Json - retry schema - fallback model (model not working)
     def chat_json(self,role: LLMRole,*,mode: Optional[LLMMode] = None,system: str = "",user_content: PromptContent = "",temperature: Optional[float] = None,max_tokens: Optional[int] = None,response_model: Optional[Type[BaseModel]] = None,max_schema_retries: Optional[int] = None,) -> Optional[Dict[str, Any]]:
         config = self._get_config(role, mode)
         if not config:
