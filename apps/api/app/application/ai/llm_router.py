@@ -55,6 +55,7 @@ def _cap_vertex_output_tokens(value: Optional[int]) -> int:
         requested = _VERTEX_OUTPUT_TOKEN_CAP
     return requested
 
+# LLM role: quan ly vai tro cua model (vd: general, reasoning, extraction)
 class LLMRole(str, Enum):
     GENERAL = "general"
     ROUTER = "general"
@@ -274,7 +275,7 @@ class LLMRouter:
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def generate_circuit_ir(self,requirements: str,*,mode: Optional[LLMMode] = None,max_schema_retries: Optional[int] = None,max_completeness_retries: int = 2,) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
+    def pipgenerate_circuit_ir(self,requirements: str,*,mode: Optional[LLMMode] = None,max_schema_retries: Optional[int] = None,max_completeness_retries: int = 2,) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
         """Generate CircuitIR JSON via Gemini and parse directly to CircuitIR.
 
         Implements a two-level retry strategy:
