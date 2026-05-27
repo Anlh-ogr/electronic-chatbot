@@ -189,9 +189,9 @@ class ChatbotService:
         self._nlg = NLGService()
         # block resources (metadata, templates) được load trong AICore
         self._ai_core = AICore(
-            metadata_dir=_EMPTY,
-            block_library_dir=_EMPTY,
-            templates_dir=_EMPTY,
+            metadata_dir=_METADATA_DIR,
+            block_library_dir=_BLOCK_LIBRARY_DIR,
+            templates_dir=_TEMPLATES_DIR,
         )
         
         
@@ -412,6 +412,115 @@ class ChatbotService:
             logger.error("generate_circuit_ir failed: %s", exc, exc_info=True)
             return None
 
+    def _run_unified_ir_pipeline(
+        self,
+        intent: CircuitIntent,
+        mode: LLMMode,
+        *,
+        flow: str = "create",
+        extra_prompt: str = "",
+        prebuilt_ir=None,
+        max_self_corrections: int = 2,
+    ):
+        """LLM → CircuitIR → Graphviz/CoordinateSolver → SCH+PCB+SPICE (all intents)."""
+        from app.application.circuits.circuit_compile_pipeline import (
+            UnifiedPipelineResult,
+            build_llm_requirements,
+            compile_ir_to_artifacts,
+            solve_component_values,
+        )
+
+        edit_lines: List[str] = []
+        if flow == "modify" and intent.edit_operations:
+            for op in intent.edit_operations:
+                edit_lines.append(
+                    f"- {op.action} target={op.target} params={op.params}"
+                )
+
+        req_text = build_llm_requirements(
+            intent,
+            flow=flow,
+            extra_prompt=extra_prompt,
+            edit_operation_lines=edit_lines or None,
+        )
+        compiled = self.compile_circuit_artifacts(
+            user_text=req_text,
+            mode=mode.value,
+            max_self_corrections=max_self_corrections,
+            prebuilt_ir=prebuilt_ir,
+        )
+        try:
+            from app.application.ai.circuit_ir_schema import CircuitIR
+            # compile_circuit_artifacts may attach extra convenience fields to the
+            # returned circuit_data (e.g. placement). Prefer the validated IR
+            # object from the compiler loop when available.
+            validated_ir = compiled.get("_validated_ir")
+            if isinstance(validated_ir, CircuitIR):
+                ir = validated_ir
+            else:
+                ir = CircuitIR.model_validate(compiled.get("circuit_data") or {})
+        except Exception as exc:
+            return UnifiedPipelineResult(
+                success=False,
+                error=f"Invalid CircuitIR after compile: {exc}",
+                flow=flow,
+            )
+
+        solved = solve_component_values(intent)
+        if not solved and isinstance(compiled.get("circuit_data"), dict):
+            analysis = (compiled["circuit_data"].get("analysis") or {})
+            calc = analysis.get("calculated_values") or {}
+            for key in ("Rf_ohm", "Rg_ohm"):
+                val = calc.get(key)
+                if isinstance(val, (int, float)):
+                    solved[key.replace("_ohm", "").upper()] = float(val)
+
+        from app.application.circuits.app_ir_adapter import llm_ir_to_validator_circuit_data
+
+        validator_data = compiled.get("validator_circuit_data")
+        if not isinstance(validator_data, dict):
+            validator_data = llm_ir_to_validator_circuit_data(compiled.get("circuit_data") or {})
+
+        return UnifiedPipelineResult(
+            success=True,
+            ir=ir,
+            circuit_data=compiled.get("circuit_data") or {},
+            compiled=compiled,
+            solved_values=solved,
+            validator_circuit_data=validator_data,
+            flow=flow,
+        )
+
+    @staticmethod
+    def _unified_to_legacy_pipeline_result(unified) -> Any:
+        """Adapt unified pipeline output for legacy validate/retry call sites."""
+        from types import SimpleNamespace
+
+        solved_ns = None
+        if unified.solved_values:
+            solved_ns = SimpleNamespace(
+                values=unified.solved_values,
+                actual_gain=unified.solved_values.get("actual_gain"),
+                stage_analysis=None,
+            )
+        circuit_ns = SimpleNamespace(
+            circuit_data=unified.circuit_data,
+            gain_formula="",
+        )
+        plan_ns = SimpleNamespace(matched_template_id="LLM-IR-UNIFIED")
+        return SimpleNamespace(
+            success=bool(unified.success),
+            error=str(unified.error or ""),
+            stage_reached="unified_pipeline",
+            solved=solved_ns,
+            circuit=circuit_ns,
+            plan=plan_ns,
+            to_dict=lambda: {
+                "pipeline": "llm_ir_graphviz_coordinate_solver",
+                "flow": unified.flow,
+            },
+        )
+
     def compile_circuit_artifacts(
         self,
         user_text: str,
@@ -419,9 +528,9 @@ class ChatbotService:
         max_self_corrections: int = 2,
         prebuilt_ir=None,
     ) -> Dict[str, Any]:
-        """End-to-end circuit compile flow: LLM IR -> validate -> KiCad SCH -> SPICE deck."""
+        """LLM → CircuitIR → placement (Graphviz/CoordinateSolver) → SCH + PCB + SPICE."""
         from app.application.ai.circuit_ir_schema import CircuitIR
-        from app.application.circuits.use_cases.export_kicad_sch import KiCad8SchematicCompiler
+        from app.application.circuits.circuit_compile_pipeline import compile_ir_to_artifacts
 
         req_text = (user_text or "").strip()
         if not req_text:
@@ -429,8 +538,6 @@ class ChatbotService:
 
         selected_mode = self._resolve_chat_mode(mode)
         validator = CircuitIRValidator()
-        sch_compiler = KiCad8SchematicCompiler()
-        spice_compiler = NgspiceCompilerService()
 
         output_dir = _API_ROOT / "artifacts" / "compiled"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -496,47 +603,20 @@ class ChatbotService:
         if validated_ir is None:
             raise RuntimeError(f"Khong the tao CircuitIR hop le sau {max_self_corrections + 1} lan: {last_error}")
 
-        artifact_id = uuid.uuid4().hex  # keep hex for filename
-        circuit_id = str(uuid.uuid4())  # uuid format for DB lookup
-
-        sch_result = sch_compiler.compile_to_sch(validated_ir)
-        sch_content = sch_result["schematic"] if isinstance(sch_result, dict) else sch_result
-        placement_data = sch_result.get("placement", {}) if isinstance(sch_result, dict) else {}
-        sch_export_meta = sch_result.get("metadata", {}) if isinstance(sch_result, dict) else {}
-        
-        spice_deck = spice_compiler.generate_spice_deck(validated_ir)
-
-        sch_file_name = f"{artifact_id}.kicad_sch"
-        sch_file_path = output_dir / sch_file_name
-        sch_file_path.write_text(sch_content, encoding="utf-8")
-
-        spice_file_name = f"{artifact_id}.cir"
-        spice_file_path = output_dir / spice_file_name
-        spice_file_path.write_text(spice_deck, encoding="utf-8")
-
-        circuit_data = validated_ir.model_dump(mode="json")
-        # Add placement data to circuit_data for logging
-        if placement_data:
-            circuit_data["placement"] = placement_data
-        
-        sch_bytes = len(sch_content.encode("utf-8")) if isinstance(sch_content, str) else None
-        return {
-            "message": "Circuit compiled successfully",
-            "mode": selected_mode.value,
-            "circuit_data": circuit_data,
-            "circuit_id": circuit_id,
-            "download_url": f"/api/chat/compiled/{sch_file_name}",
-            "spice_deck_ready": True,
-            "spice_deck": spice_deck,
-            "spice_deck_url": f"/api/chat/compiled/{spice_file_name}",
-            "self_correction_retries": retries_used,
-            "artifact_id": artifact_id,
-            "metadata": {
-                "wires": sch_export_meta.get("wires"),
-                "junctions": sch_export_meta.get("junctions"),
-                "file_size_bytes": sch_bytes,
-            },
-        }
+        circuit_id = str(uuid.uuid4())
+        compiled = compile_ir_to_artifacts(
+            validated_ir,
+            circuit_id=circuit_id,
+            output_dir=output_dir,
+            export_pcb=True,
+        )
+        # Internal: allow callers to reuse the exact validated CircuitIR object
+        # without re-validating the (possibly augmented) JSON payload.
+        compiled["_validated_ir"] = validated_ir
+        compiled["message"] = "Circuit compiled successfully"
+        compiled["mode"] = selected_mode.value
+        compiled["self_correction_retries"] = retries_used
+        return compiled
 
     @staticmethod
     def _build_ir_retry_prompt(requirements: str, error_message: str, pin_only: bool) -> str:
@@ -859,10 +939,15 @@ class ChatbotService:
         """LLM-driven circuit design flow: NLU → generate_circuit_ir() → compile → respond."""
 
         # ─── Step 1: Ask for clarification if insufficient parameters ───
-        if intent.circuit_type == "unknown" or intent.confidence < 0.3:
+        topology_unknown = (
+            not intent.circuit_type
+            or intent.circuit_type == "unknown"
+            or str(intent.circuit_type).startswith("unknown")
+        )
+        if topology_unknown or intent.confidence < 0.3:
             response.needs_clarification = True
             missing = []
-            if intent.circuit_type == "unknown":
+            if topology_unknown:
                 missing.append("topology")
             if intent.gain_target is None:
                 missing.append("gain")
@@ -876,16 +961,17 @@ class ChatbotService:
             )
             response.success = False
             response.suggestions = [
-                "Thiết kế mạch CE gain 50 dùng 12V",
-                "Mạch khuếch đại common emitter gain 20",
-                "OpAmp inverting gain 10",
-                "Mạch class AB push-pull 12V",
+                "Mạch BJT common emitter (CE) gain 50, VCC 12V",
+                "Mạch BJT common collector (CC) buffer, VCC 12V",
+                "Mạch BJT common base (CB) gain 20, VCC 12V",
+                "Op-amp đảo gain 10, VCC 15V",
+                "Op-amp không đảo gain 5, VCC 12V",
+                "Op-amp vi sai gain 10, VCC 15V",
             ]
             response.processing_time_ms = (time.time() - start) * 1000
             return response
 
-        # ─── Step 2: LLM generates complete CircuitIR ───
-        # The LLM is the SOLE engine for circuit generation (no ai_core rule-based fallback)
+        # ─── Step 2: LLM → CircuitIR (unified pipeline; placement via Graphviz/CoordinateSolver) ───
         # Pre-compute component values via ParameterSolver so the LLM starts
         # from a known-good biasing/gain solution instead of inventing values.
         # Solver covers all six supported topologies (CE/CB/CC + inverting/
@@ -1104,7 +1190,8 @@ class ChatbotService:
             return
 
         response.download_url = compiled.get("download_url")
-        response.sch_url = response.download_url
+        response.sch_url = compiled.get("sch_url") or response.download_url
+        response.pcb_url = compiled.get("pcb_url")
         response.spice_deck_ready = bool(compiled.get("spice_deck_ready", False))
         response.spice_deck_url = compiled.get("spice_deck_url")
         response.spice_url = response.spice_deck_url
@@ -1122,6 +1209,27 @@ class ChatbotService:
         if isinstance(retries, int):
             response.self_correction_retries = retries
 
+    def _attach_unified_compile_to_response(self, response: ChatResponse, unified) -> None:
+        """Attach SCH/PCB/SPICE URLs from unified pipeline without re-invoking LLM."""
+        if not unified or not getattr(unified, "success", False):
+            return
+        compiled = unified.compiled if isinstance(unified.compiled, dict) else {}
+        if not compiled:
+            return
+        response.download_url = compiled.get("download_url") or response.download_url
+        response.sch_url = compiled.get("sch_url") or response.download_url
+        response.pcb_url = compiled.get("pcb_url")
+        response.spice_deck_ready = bool(compiled.get("spice_deck_ready", False))
+        response.spice_deck_url = compiled.get("spice_deck_url")
+        response.spice_deck = compiled.get("spice_deck")
+        response.artifact_id = compiled.get("artifact_id")
+        response.circuit_id = compiled.get("circuit_id") or response.circuit_id
+        payload = compiled.get("circuit_data")
+        if isinstance(payload, dict):
+            response.compiled_ir_payload = payload
+        retries = compiled.get("self_correction_retries")
+        if isinstance(retries, int):
+            response.self_correction_retries = retries
 
     async def _persist_compiled_ir_and_artifacts(
         self,
@@ -1263,15 +1371,24 @@ class ChatbotService:
         # Nếu chưa có mạch base (circuit_type rõ) → tạo trước, rồi modify
         if intent.circuit_type and intent.circuit_type != "unknown":
             generation_intent = self._inject_feedback_hints(intent)
-            spec = self._intent_to_spec(generation_intent)
-            pipeline_result = self._ai_core.handle_spec(spec)
+            unified_result = self._run_unified_ir_pipeline(
+                generation_intent,
+                mode,
+                flow="modify",
+                max_self_corrections=2,
+            )
+            unified = unified_result
+            pipeline_result = self._unified_to_legacy_pipeline_result(unified_result)
+            self._attach_unified_compile_to_response(response, unified_result)
 
             if pipeline_result.success and pipeline_result.circuit:
                 circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data)
                 solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
 
-                # Apply edit operations
-                edit_log = self._apply_edits(circuit_data, intent.edit_operations)
+                edit_log = [
+                    f"{op.action} {op.target} {op.params}"
+                    for op in (intent.edit_operations or [])
+                ]
 
                 gain_for_validation = self._resolve_gain_for_validation(
                     solved_values=solved,
@@ -1285,7 +1402,11 @@ class ChatbotService:
                 )
 
                 # Validate
-                val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                val_report = self._validator.validate(
+                    unified_result.validator_circuit_data or circuit_data,
+                    intent.to_dict(),
+                    solved_for_validation,
+                )
                 response.validation = val_report.to_dict()
 
                 if not val_report.passed:
@@ -1314,13 +1435,15 @@ class ChatbotService:
                         intent=intent,
                         failed_codes=failed_codes,
                         max_attempts=2,
+                        mode=mode,
                     )
 
                     if retry_bundle:
                         pipeline_result = retry_bundle["pipeline_result"]
+                        unified = retry_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
                         solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
-                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
 
                         gain_for_validation = self._resolve_gain_for_validation(
                             solved_values=solved,
@@ -1342,12 +1465,14 @@ class ChatbotService:
                     alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
                         intent=intent,
                         failed_codes=failed_codes,
+                        mode=mode,
                     )
                     if alternative_bundle:
                         pipeline_result = alternative_bundle["pipeline_result"]
+                        unified = alternative_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
                         solved = dict(pipeline_result.solved.values) if pipeline_result.solved else solved
-                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
 
                         gain_for_validation = self._resolve_gain_for_validation(
                             solved_values=solved,
@@ -1415,12 +1540,14 @@ class ChatbotService:
                         intent=intent,
                         physics_payload=physics_payload,
                         max_attempts=3,
+                        mode=mode,
                     )
                     if retry_bundle:
                         pipeline_result = retry_bundle["pipeline_result"]
+                        unified = retry_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         circuit_data = copy.deepcopy(pipeline_result.circuit.circuit_data) if pipeline_result.circuit else circuit_data
                         solved = dict(pipeline_result.solved.values) if pipeline_result.solved else {}
-                        edit_log = self._apply_edits(circuit_data, intent.edit_operations)
 
                         gain_for_validation = self._resolve_gain_for_validation(
                             solved_values=solved,
@@ -1432,7 +1559,11 @@ class ChatbotService:
                             gain_actual=gain_for_validation,
                             stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
                         )
-                        val_report = self._validator.validate(circuit_data, intent.to_dict(), solved_for_validation)
+                        val_report = self._validator.validate(
+                            unified.validator_circuit_data or circuit_data,
+                            intent.to_dict(),
+                            solved_for_validation,
+                        )
                         response.validation = val_report.to_dict()
                         response.pipeline = pipeline_result.to_dict()
                         response.template_id = pipeline_result.plan.matched_template_id if pipeline_result.plan else response.template_id
@@ -1549,8 +1680,14 @@ class ChatbotService:
         assumption_notes = self._apply_reasonable_defaults(intent)
         if intent.circuit_type and intent.circuit_type != "unknown":
             generation_intent = self._inject_feedback_hints(intent)
-            spec = self._intent_to_spec(generation_intent)
-            pipeline_result = self._ai_core.handle_spec(spec)
+            unified = self._run_unified_ir_pipeline(
+                generation_intent,
+                mode,
+                flow="validate",
+                max_self_corrections=2,
+            )
+            pipeline_result = self._unified_to_legacy_pipeline_result(unified)
+            self._attach_unified_compile_to_response(response, unified)
 
             if pipeline_result.success and pipeline_result.circuit:
                 solved = pipeline_result.solved.values if pipeline_result.solved else {}
@@ -1565,7 +1702,9 @@ class ChatbotService:
                     stage_analysis=(pipeline_result.solved.stage_analysis if pipeline_result.solved else None),
                 )
                 val_report = self._validator.validate(
-                    pipeline_result.circuit.circuit_data, intent.to_dict(), solved_for_validation,
+                    unified.validator_circuit_data or pipeline_result.circuit.circuit_data,
+                    intent.to_dict(),
+                    solved_for_validation,
                 )
 
                 if not val_report.passed and self._has_hard_constraint_errors(val_report):
@@ -1574,9 +1713,12 @@ class ChatbotService:
                         intent=intent,
                         failed_codes=failed_codes,
                         max_attempts=2,
+                        mode=mode,
                     )
                     if retry_bundle:
                         pipeline_result = retry_bundle["pipeline_result"]
+                        unified = retry_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         solved = pipeline_result.solved.values if pipeline_result.solved else {}
                         val_report = retry_bundle["validation_report"]
                         response.pipeline = pipeline_result.to_dict()
@@ -1586,9 +1728,12 @@ class ChatbotService:
                     alternative_bundle = self._attempt_alternative_design_for_unreasonable_constraints(
                         intent=intent,
                         failed_codes=failed_codes,
+                        mode=mode,
                     )
                     if alternative_bundle:
                         pipeline_result = alternative_bundle["pipeline_result"]
+                        unified = alternative_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         solved = pipeline_result.solved.values if pipeline_result.solved else solved
                         val_report = alternative_bundle["validation_report"]
                         response.pipeline = pipeline_result.to_dict()
@@ -1645,9 +1790,12 @@ class ChatbotService:
                         intent=intent,
                         physics_payload=physics_payload,
                         max_attempts=3,
+                        mode=mode,
                     )
                     if retry_bundle:
                         pipeline_result = retry_bundle["pipeline_result"]
+                        unified = retry_bundle.get("unified") or unified
+                        self._attach_unified_compile_to_response(response, unified)
                         solved = pipeline_result.solved.values if pipeline_result.solved else {}
                         val_report = retry_bundle["validation_report"]
                         physics_payload = retry_bundle["physics_validation"]
@@ -2144,6 +2292,7 @@ class ChatbotService:
         *,
         intent: CircuitIntent,
         failed_codes: List[str],
+        mode: Optional[LLMMode] = None,
     ) -> Optional[Dict[str, Any]]:
         """Try generating a feasible alternative by relaxing conflicting hard constraints."""
         relaxed = copy.deepcopy(intent)
@@ -2246,9 +2395,15 @@ class ChatbotService:
 
         best_effort_bundle: Optional[Dict[str, Any]] = None
 
+        selected_mode = mode or LLMMode.THINK
         for candidate, notes in attempts:
-            spec = self._intent_to_spec(candidate)
-            retry_result = self._ai_core.handle_spec(spec)
+            unified = self._run_unified_ir_pipeline(
+                candidate,
+                selected_mode,
+                flow="retry",
+                max_self_corrections=1,
+            )
+            retry_result = self._unified_to_legacy_pipeline_result(unified)
             if not retry_result.success or not retry_result.circuit:
                 continue
 
@@ -2264,7 +2419,7 @@ class ChatbotService:
                 stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
             )
             retry_report = self._validator.validate(
-                retry_result.circuit.circuit_data,
+                unified.validator_circuit_data or retry_result.circuit.circuit_data,
                 candidate.to_dict(),
                 retry_metrics,
             )
@@ -2283,6 +2438,7 @@ class ChatbotService:
                 "physics_validation": retry_physics,
                 "relax_notes": [f"De xuat thay the: {note}" for note in notes],
                 "intent": candidate,
+                "unified": unified,
             }
             if retry_physics.get("passed", False):
                 return bundle
@@ -3508,19 +3664,45 @@ class ChatbotService:
             if ctype != "RESISTOR":
                 continue
 
-            cid = str(comp.get("id") or "").strip().upper()
+            cid = str(comp.get("id") or comp.get("ref") or comp.get("ref_id") or "").strip().upper()
             if not cid:
                 continue
             params = comp.get("parameters", {})
             if not isinstance(params, dict):
-                continue
-
+                params = {}
             raw = params.get("resistance")
             if isinstance(raw, dict):
                 raw = raw.get("value")
+            if raw in (None, "") and comp.get("value"):
+                raw = comp.get("value") or comp.get("standardized_value")
             if isinstance(raw, (int, float)) and float(raw) > 0:
                 values[cid] = float(raw)
+                continue
+            if isinstance(raw, str) and raw.strip():
+                parsed = ChatbotService._parse_resistance_value(raw)
+                if parsed is not None and parsed > 0:
+                    values[cid] = float(parsed)
         return values
+
+    @staticmethod
+    def _parse_resistance_value(text: str) -> Optional[float]:
+        import re
+
+        s = str(text or "").strip().lower().replace("ω", "").replace("ohm", "").replace(" ", "")
+        if not s:
+            return None
+        mult = 1.0
+        if s.endswith("k"):
+            mult = 1e3
+            s = s[:-1]
+        elif s.endswith("m"):
+            mult = 1e6
+            s = s[:-1]
+        try:
+            return float(s) * mult
+        except ValueError:
+            m = re.search(r"([+-]?\d+(?:\.\d+)?)", s)
+            return float(m.group(1)) * mult if m else None
 
     @staticmethod
     def _infer_opamp_feedback_pair(resistor_map: Dict[str, float]) -> Tuple[Optional[float], Optional[float]]:
@@ -3765,12 +3947,21 @@ class ChatbotService:
         intent: CircuitIntent,
         failed_codes: List[str],
         max_attempts: int = 2,
+        mode: Optional[LLMMode] = None,
     ) -> Optional[Dict[str, Any]]:
         candidates = self._build_regeneration_candidates(intent, failed_codes)
+        selected_mode = mode or LLMMode.THINK
 
         for candidate in candidates[:max_attempts]:
-            spec = self._intent_to_spec(candidate)
-            retry_result = self._ai_core.handle_spec(spec)
+            hint = f"Fix hard constraints: {', '.join(failed_codes)}"
+            unified = self._run_unified_ir_pipeline(
+                candidate,
+                selected_mode,
+                flow="retry",
+                extra_prompt=hint,
+                max_self_corrections=1,
+            )
+            retry_result = self._unified_to_legacy_pipeline_result(unified)
             if not retry_result.success or not retry_result.circuit:
                 continue
 
@@ -3786,7 +3977,7 @@ class ChatbotService:
                 stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
             )
             retry_report = self._validator.validate(
-                retry_result.circuit.circuit_data,
+                unified.validator_circuit_data or retry_result.circuit.circuit_data,
                 candidate.to_dict(),
                 retry_metrics,
             )
@@ -3796,6 +3987,7 @@ class ChatbotService:
                     "pipeline_result": retry_result,
                     "validation_report": retry_report,
                     "intent": candidate,
+                    "unified": unified,
                 }
 
         return None
@@ -3805,6 +3997,7 @@ class ChatbotService:
         intent: CircuitIntent,
         physics_payload: Dict[str, Any],
         max_attempts: int = 2,
+        mode: Optional[LLMMode] = None,
     ) -> Optional[Dict[str, Any]]:
         suggestions = [
             str(item).strip()
@@ -3857,9 +4050,15 @@ class ChatbotService:
             )
             candidates.append(tertiary)
 
+        selected_mode = mode or LLMMode.THINK
         for candidate in candidates[: max(1, max_attempts)]:
-            spec = self._intent_to_spec(candidate)
-            retry_result = self._ai_core.handle_spec(spec)
+            unified = self._run_unified_ir_pipeline(
+                candidate,
+                selected_mode,
+                flow="retry",
+                max_self_corrections=1,
+            )
+            retry_result = self._unified_to_legacy_pipeline_result(unified)
             if not retry_result.success or not retry_result.circuit:
                 continue
 
@@ -3875,7 +4074,7 @@ class ChatbotService:
                 stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
             )
             retry_report = self._validator.validate(
-                retry_result.circuit.circuit_data,
+                unified.validator_circuit_data or retry_result.circuit.circuit_data,
                 candidate.to_dict(),
                 retry_metrics,
             )
@@ -3894,6 +4093,7 @@ class ChatbotService:
                     "validation_report": retry_report,
                     "physics_validation": retry_physics,
                     "intent": candidate,
+                    "unified": unified,
                 }
 
         return None
@@ -3927,8 +4127,13 @@ class ChatbotService:
         if hint_parts:
             candidate.raw_text = f"{candidate.raw_text}. Rang buoc mo phong bat buoc: {'; '.join(dict.fromkeys(hint_parts))}."
 
-        spec = self._intent_to_spec(candidate)
-        retry_result = self._ai_core.handle_spec(spec)
+        unified = self._run_unified_ir_pipeline(
+            candidate,
+            LLMMode.THINK,
+            flow="retry",
+            max_self_corrections=1,
+        )
+        retry_result = self._unified_to_legacy_pipeline_result(unified)
         if not retry_result.success or not retry_result.circuit:
             return None
 
@@ -3944,7 +4149,7 @@ class ChatbotService:
             stage_analysis=(retry_result.solved.stage_analysis if retry_result.solved else None),
         )
         retry_report = self._validator.validate(
-            retry_result.circuit.circuit_data,
+            unified.validator_circuit_data or retry_result.circuit.circuit_data,
             candidate.to_dict(),
             retry_metrics,
         )

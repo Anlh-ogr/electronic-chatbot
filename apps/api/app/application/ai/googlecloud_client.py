@@ -1,20 +1,12 @@
 # .\\thesis\\electronic-chatbot\\apps\\api\\app\\application\\ai\\googlecloud_client.py
-"""Client cho Vertex AI Gemini.
+"""Client cho Vertex AI Gemini (vertexai SDK only).
 
-Module này cung cấp client gọi Gemini thông qua Vertex AI SDK
-(`google-cloud-aiplatform`) và hỗ trợ 2 chế độ phản hồi:
-- chat_json(): trả về dict JSON
-- chat_text(): trả về text thuần
-
-Xác thực sử dụng Application Default Credentials (ADC):
-- Máy cá nhân: chạy `gcloud auth application-default login`
-- Server/Cloud: gán Service Account có quyền `roles/aiplatform.user`
+Chỉ dùng region: us-central1, asia-southeast1.
+Xác thực: Application Default Credentials (ADC).
 """
 
 from __future__ import annotations
 
-
-# vertexai: SDK chính để gọi Gemini qua Vertex AI
 import json
 import logging
 import os
@@ -37,9 +29,9 @@ from app.application.ai.schema_utils import prepare_vertex_schema
 
 logger = logging.getLogger(__name__)
 
-
 DEFAULT_PROJECT_ID = "project-2bdf5ad0-a50b-4dd6-95d"
 DEFAULT_LOCATION = "asia-southeast1"
+ALLOWED_VERTEX_LOCATIONS = frozenset({"us-central1", "asia-southeast1"})
 
 _VERTEX_INIT_LOCK = Lock()
 _VERTEX_INIT_CONTEXT: Optional[tuple[str, str]] = None
@@ -51,6 +43,23 @@ def _env(names: List[str], default: str = "") -> str:
         if value:
             return value
     return default
+
+
+def _resolve_vertex_location(location: str) -> str:
+    loc = (location or "").strip().lower() or DEFAULT_LOCATION
+    if loc == "global":
+        raise GoogleCloudClientError(
+            "location='global' is not supported with vertexai SDK. "
+            "Use us-central1 or asia-southeast1."
+        )
+    if loc not in ALLOWED_VERTEX_LOCATIONS:
+        logger.warning(
+            "Vertex location %r not allowlisted; falling back to %s",
+            loc,
+            DEFAULT_LOCATION,
+        )
+        return DEFAULT_LOCATION
+    return loc
 
 
 def _ensure_vertex_initialized(project_id: str, location: str) -> None:
@@ -72,21 +81,20 @@ def _ensure_vertex_initialized(project_id: str, location: str) -> None:
         )
 
 
-
 class GoogleCloudClientError(RuntimeError):
     """Lỗi khi gọi Gemini qua Vertex AI."""
+
     pass
 
 
 @dataclass(frozen=True)
 class GoogleCloudMessage:
-    # Message trong conversation.
-    role: str       # "user" | "model"
+    role: str
     content: str
 
 
 class GoogleCloudClient:
-    """Client gọi Gemini qua Vertex AI SDK."""
+    """Client gọi Gemini qua Vertex AI GenerativeModel SDK."""
 
     def __init__(
         self,
@@ -96,7 +104,6 @@ class GoogleCloudClient:
         project_id: str = "",
         location: str = "",
     ) -> None:
-        # Giữ tham số api_key để tương thích ngược với call-site cũ.
         self._api_key = api_key
         self._model = model
         self._timeout = timeout_sec
@@ -104,7 +111,7 @@ class GoogleCloudClient:
             ["Google_Cloud_Project_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT"],
             default=DEFAULT_PROJECT_ID,
         )
-        self._location = location.strip() or _env(
+        raw_location = location.strip() or _env(
             [
                 "Google_Cloud_Location",
                 "GOOGLE_CLOUD_LOCATION",
@@ -113,6 +120,7 @@ class GoogleCloudClient:
             ],
             default=DEFAULT_LOCATION,
         )
+        self._location = _resolve_vertex_location(raw_location)
 
         _ensure_vertex_initialized(self._project_id, self._location)
         self._model_client = GenerativeModel(self._model)
@@ -132,7 +140,6 @@ class GoogleCloudClient:
         max_tokens: int = 1024,
         response_schema: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Gọi Gemini và parse kết quả thành JSON object."""
         prompt = self._build_prompt(
             messages=messages,
             system_instruction=system_instruction,
@@ -155,7 +162,6 @@ class GoogleCloudClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> str:
-        """Gọi Gemini và trả về text thuần."""
         prompt = self._build_prompt(
             messages=messages,
             system_instruction=system_instruction,
@@ -173,7 +179,6 @@ class GoogleCloudClient:
         temperature: float = 0.7,
         max_tokens: int = 2048,
     ) -> str:
-        """Tương thích kiểu gọi prompt trực tiếp (single-turn)."""
         content = prompt.strip() or " "
         return self._generate_text(
             prompt=content,
@@ -262,11 +267,8 @@ class GoogleCloudClient:
             if response_mime_type:
                 generation_config_data["response_mime_type"] = response_mime_type
             if response_schema is not None:
-                # Native schema binding on Vertex response generation.
                 generation_config_data["response_schema"] = response_schema
 
-            # Keep compatibility with preview runtime by importing preview_models.
-            # The schema object is emitted as plain dict JSON Schema from pydantic.
             _ = preview_models
 
             generation_config = GenerationConfig(**generation_config_data)
@@ -303,23 +305,19 @@ class GoogleCloudClient:
         return "\n".join(parts).strip()
 
     def _parse_json_content(self, text: str) -> Dict[str, Any]:
-        """Parse text thành JSON object, có xử lý markdown code fences."""
         content = text.strip()
 
-        # Strip markdown code fences
         if content.startswith("```"):
             lines = content.split("\n")
-            # Remove first line (```json) and last line (```)
             if lines[-1].strip() == "```":
                 lines = lines[1:-1]
             else:
                 lines = lines[1:]
             content = "\n".join(lines).strip()
-        
-        # clear unicode math characters before json parsing
-        content = content.replace('π', '3.14159').replace('∞', '999999')
-        content = re.sub(r'(?<!["\w])\bmath\.pi\b', '3.14159', content)
-        
+
+        content = content.replace("π", "3.14159").replace("∞", "999999")
+        content = re.sub(r'(?<!["\w])\bmath\.pi\b', "3.14159", content)
+
         try:
             obj = json.loads(content)
         except json.JSONDecodeError as e:

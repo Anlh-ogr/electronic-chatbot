@@ -180,6 +180,7 @@ CIRCUIT_TYPE_KEYWORDS = {
     ],
     "non_inverting": [
         r"non[\s_-]*inverting", r"non_inverting", r"không\s*đảo",
+        r"op[\s-]*amp\s*không\s*đảo", r"opamp\s*không\s*đảo",
         r"noninv", r"opamp\s*không\s*đảo", r"mạch\s*không\s*đảo", r"gain\s*dương",
         # MỚI
         r"thuận\s*pha", r"đồng\s*pha", r"khuếch\s*đại\s*thuận\s*pha",
@@ -188,7 +189,7 @@ CIRCUIT_TYPE_KEYWORDS = {
     ],
     "inverting": [
         r"inverting(?!\s*non)", r"đảo\s*pha",
-        r"inv\s*amp", r"opamp\s*đảo", r"mạch\s*đảo",
+        r"inv\s*amp", r"op[\s-]*amp\s*đảo", r"opamp\s*đảo", r"mạch\s*đảo",
         r"khuếch\s*đại\s*đảo", r"gain\s*âm",
         # MỚI
         r"nghịch\s*pha", r"khuếch\s*đại\s*nghịch\s*pha",
@@ -432,7 +433,7 @@ class NLUService:
 
         # Mặc định vẫn có create nếu không có action nào hoặc có topology/parameter thiết kế.
         has_design_signal = bool(
-            self._detect_topology(text) != "unknown - this topology cannot be detected"
+            self._detect_topology(text) != "unknown"
             or self._extract_number(text, [
                 r"gain\s*[=:]?\s*([0-9]+(?:\.[0-9]+)?)",
                 r"dùng\s*(?:nguồn\s*)?([0-9]+(?:\.[0-9]+)?)\s*v",
@@ -469,7 +470,7 @@ class NLUService:
                 if re.search(pat, text, re.IGNORECASE):
                     return topo
 
-        return "unknown - this topology cannot be detected"
+        return "unknown"
 
     def _extract_number(self, text: str, patterns: List[str]) -> Optional[float]:
         # Extract giá trị đầu tiên match từ danh sách patterns.
@@ -688,20 +689,8 @@ class NLUService:
         ]): intent.device_preference = "opamp"
 
     def _apply_device_topology_fallback(self, intent: CircuitIntent) -> None:
-        """Infer a default topology when user indicates device family but not explicit topology."""
-        unknown_topology = not intent.circuit_type or intent.circuit_type.startswith("unknown")
-        if not unknown_topology:
-            return
-
-        default_by_device = {
-            "opamp": "non_inverting",
-            "bjt": "common_emitter",
-            "mosfet": "common_source",
-        }
-        fallback = default_by_device.get(intent.device_preference)
-        if fallback:
-            intent.topology = fallback
-            intent.circuit_type = fallback
+        """Không gán topology mặc định theo device — user phải nêu rõ CE/CC/CB hoặc op-amp."""
+        return
 
     def _parse_extra_requirements(self, text: str, intent: CircuitIntent) -> None:
         # Trích xuất các yêu cầu bổ sung như low_noise, high_bandwidth, rail_to_rail, ac_coupled từ text.

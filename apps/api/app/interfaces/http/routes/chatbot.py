@@ -1348,7 +1348,9 @@ def _convert_template_ir_to_app_ir(ir_dict: Dict[str, Any]) -> Dict[str, Any]:
             return "non_inverting"
         if first_active_kind == "mosfet":
             return "common_source"
-        return "common_emitter"
+        if first_active_kind == "bjt":
+            return "common_emitter"
+        return "unknown"
 
     stage_topology = _infer_stage_topology()
     architecture = {

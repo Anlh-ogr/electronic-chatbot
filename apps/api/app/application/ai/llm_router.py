@@ -93,14 +93,8 @@ class RoleConfig:
 
 def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
     project_id = (_env("Google_Cloud_Project_ID"))
-    location = (
-        _env("Google_Cloud_Default_Location")
-        or "us-central1"
-    )
-    preview_location = (
-        _env("Google_Cloud_Preview_Location")
-        or "global"
-    )
+    location = _env("Google_Cloud_Default_Location") or "asia-southeast1"
+    us_location = _env("Google_Cloud_US_Location") or "us-central1"
     google_key = (_env("Google_Cloud_API_Key"))
 
     def _first_env(names: List[str], default: str) -> str:
@@ -112,13 +106,17 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
 
     def _mode_location(mode_name: str) -> str:
         SAFE_DEFAULTS = {
-            "Fast":  "asia-southeast1",
-            "Think": "us-central1",
-            "Pro":   "us-central1",   # gemini-2.5-pro không có asia-southeast1
-            "Ultra": "asia-northeast1",
+            "Fast": "asia-southeast1",
+            "Think": "asia-southeast1",
+            "Pro": us_location,
+            "Ultra": us_location,
+            "Fast_Fallback": "asia-southeast1",
+            "Think_Fallback": us_location,
+            "Pro_Fallback": "asia-southeast1",
+            "Ultra_Fallback": us_location,
         }
         return _first_env(
-            [f"Google_Cloud_{mode_name}_Locationx", f"Google_Cloud_{mode_name}_Location"],
+            [f"Google_Cloud_{mode_name}_Location"],
             SAFE_DEFAULTS.get(mode_name, location),
         )
 
@@ -144,36 +142,96 @@ def _build_mode_configs() -> Dict[LLMMode, Dict[LLMRole, "RoleConfig"]]:
                 logger.warning("Invalid float env %s=%s, using default %s", name, value, default)
         return default
 
-    def _google(model_envs: List[str], default: str, timeout: float, max_tokens: int, temperature: float = 0.0, model_location: str = location) -> ModelConfig:
+    def _google(
+        model_envs: List[str],
+        default: str,
+        timeout: float,
+        max_tokens: int,
+        temperature: float = 0.0,
+        model_location: str = location,
+    ) -> ModelConfig:
         return ModelConfig(
             provider=LLMProvider.GEMINI,
             model_id=_first_env(model_envs, default),
             api_key=google_key,
             project_id=project_id,
             location=model_location,
-            timeout_sec=timeout, max_tokens=max_tokens, temperature=temperature,
+            timeout_sec=timeout,
+            max_tokens=max_tokens,
+            temperature=temperature,
         )
 
-    fast_timeout = _first_float_env(["Google_Cloud_Fast_Timeout_Sec"], 120.0)
-    think_timeout = _first_float_env(["Google_Cloud_Think_Timeout_Sec"], 150.0)
-    pro_timeout = _first_float_env(["Google_Cloud_Pro_Timeout_Sec"], 180.0)
-    ultra_timeout = _first_float_env(["Google_Cloud_Ultra_Timeout_Sec"], 300.0)
+    def _mode_google(mode_name: str, *, default_model: str, default_timeout: float) -> ModelConfig:
+        return _google(
+            [f"Google_Cloud_{mode_name}_Model"],
+            default_model,
+            _first_float_env([f"Google_Cloud_{mode_name}_Timeout_Sec"], default_timeout),
+            _first_int_env([f"Google_Cloud_{mode_name}_Max_Tokens"], _VERTEX_OUTPUT_TOKEN_CAP),
+            model_location=_mode_location(mode_name),
+        )
 
-    fast_tokens = _first_int_env(["Google_Cloud_Fast_Max_Tokens"], 65535)
-    think_tokens = _first_int_env(["Google_Cloud_Think_Max_Tokens"], 64000)
-    pro_tokens = _first_int_env(["Google_Cloud_Pro_Max_Tokens"], 65535)
-    ultra_tokens = _first_int_env(["Google_Cloud_Ultra_Max_Tokens"], 64000)
-    
-    
-    fast_model = _google(["Google_Cloud_Fast_Model"], "gemini-2.5-flash", fast_timeout, fast_tokens, model_location=_mode_location("Fast"))
-    think_model = _google(["Google_Cloud_Think_Model"], "gemini-2.5-flash", think_timeout, think_tokens, model_location=_mode_location("Think"))
-    pro_model = _google(["Google_Cloud_Pro_Model"], "gemini-2.5-pro", pro_timeout, pro_tokens, model_location=_mode_location("Pro"))
-    ultra_model = _google(["Google_Cloud_Ultra_Model"], "gemini-2.5-pro", ultra_timeout, ultra_tokens, model_location=_mode_location("Ultra"))
-    
-    fast: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=fast_model, fallbacks=[think_model, pro_model, ultra_model]),}
-    think: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=think_model, fallbacks=[pro_model, ultra_model, fast_model]),}
-    pro: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=pro_model, fallbacks=[ultra_model, think_model, fast_model]),}
-    ultra: Dict[LLMRole, RoleConfig] = {LLMRole.GENERAL: RoleConfig(primary=ultra_model, fallbacks=[pro_model, think_model, fast_model]),}
+    def _fallback_google(mode_name: str, *, default_model: str, default_timeout: float) -> ModelConfig:
+        prefix = f"{mode_name}_Fallback"
+        return _google(
+            [f"Google_Cloud_{prefix}_Model"],
+            default_model,
+            _first_float_env(
+                [f"Google_Cloud_{prefix}_Timeout_Sec", f"Google_Cloud_{mode_name}_Timeout_Sec"],
+                default_timeout,
+            ),
+            _first_int_env(
+                [f"Google_Cloud_{prefix}_Max_Tokens", f"Google_Cloud_{mode_name}_Max_Tokens"],
+                _VERTEX_OUTPUT_TOKEN_CAP,
+            ),
+            model_location=_mode_location(prefix),
+        )
+
+    fast_model = _mode_google("Fast", default_model="gemini-2.5-flash", default_timeout=120.0)
+    think_model = _mode_google("Think", default_model="gemini-2.5-flash", default_timeout=150.0)
+    pro_model = _mode_google("Pro", default_model="gemini-2.5-pro", default_timeout=240.0)
+    ultra_model = _mode_google("Ultra", default_model="gemini-2.5-pro", default_timeout=300.0)
+
+    fast_fallback = _fallback_google("Fast", default_model="gemini-2.5-flash", default_timeout=120.0)
+    think_fallback = _fallback_google("Think", default_model="gemini-2.5-pro", default_timeout=150.0)
+    pro_fallback = _fallback_google("Pro", default_model="gemini-2.5-flash", default_timeout=240.0)
+    ultra_fallback = _fallback_google("Ultra", default_model="gemini-2.5-pro", default_timeout=300.0)
+
+    def _fallback_chain(*candidates: ModelConfig) -> List[ModelConfig]:
+        """Giữ thứ tự env; bỏ trùng lặp liên tiếp (cho phép retry cùng model/region)."""
+        chain: List[ModelConfig] = []
+        seen: set[tuple[str, str]] = set()
+        for cfg in candidates:
+            key = (cfg.model_id, cfg.location)
+            if key in seen:
+                continue
+            seen.add(key)
+            chain.append(cfg)
+        return chain
+
+    fast: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(
+            primary=fast_model,
+            fallbacks=_fallback_chain(fast_fallback),
+        ),
+    }
+    think: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(
+            primary=think_model,
+            fallbacks=_fallback_chain(think_fallback),
+        ),
+    }
+    pro: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(
+            primary=pro_model,
+            fallbacks=_fallback_chain(pro_fallback),
+        ),
+    }
+    ultra: Dict[LLMRole, RoleConfig] = {
+        LLMRole.GENERAL: RoleConfig(
+            primary=ultra_model,
+            fallbacks=_fallback_chain(ultra_fallback),
+        ),
+    }
     
     return {
         LLMMode.FAST: fast,
@@ -275,7 +333,7 @@ class LLMRouter:
         logger.warning(f"[{role.value}] Tất cả model lỗi, returning None")
         return None
 
-    def pipgenerate_circuit_ir(self,requirements: str,*,mode: Optional[LLMMode] = None,max_schema_retries: Optional[int] = None,max_completeness_retries: int = 2,) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
+    def generate_circuit_ir(self, requirements: str, *, mode: Optional[LLMMode] = None, max_schema_retries: Optional[int] = None, max_completeness_retries: int = 2) -> Optional[Union["CircuitIR", Dict[str, Any]]]:
         """Generate CircuitIR JSON via Gemini and parse directly to CircuitIR.
 
         Implements a two-level retry strategy:
@@ -317,12 +375,11 @@ class LLMRouter:
             - Op-Amp: inverting, non_inverting, differential
 
             INFERENCE POLICY:
-            - If the user does not name a topology explicitly, infer the most likely supported topology from the remaining cues.
-            - Prefer BJT NPN common_emitter when the request mentions gain, VCC, or transistor-style amplification without an op-amp.
-            - Prefer op-amp non_inverting or inverting when the request mentions op-amp, virtual ground, feedback, or resistive feedback networks.
-            - Do NOT return is_valid_request=false just because the topology name is missing or unknown.
-            - Only return is_valid_request=false when the user request is not an amplifier request at all, or when the request is truly underspecified after inference.
-            - If you infer topology, populate the chosen topology fields directly and keep the request valid.
+            - Do NOT default to common_emitter when topology is unspecified.
+            - Infer topology only from explicit names or strong cues (e.g. "emitter follower" -> common_collector, "inverting op-amp" -> inverting).
+            - If topology is ambiguous after reading the request, set is_valid_request=false and ask which supported topology is intended.
+            - Supported BJT: common_emitter, common_collector, common_base. Supported op-amp: inverting, non_inverting, differential.
+            - Only return is_valid_request=false when the request is not an amplifier request, or when topology/device cannot be determined.
 
             RULES:
             1. Every circuit must include explicit power_supply and ground.
@@ -553,35 +610,8 @@ class LLMRouter:
 
     @staticmethod
     def _augment_requirements_with_defaults(requirements: str) -> str:
-        """Inject a deterministic default for underspecified amplifier requests.
-
-        Generic create/design/build requests that mention amplifier intent plus
-        gain and supply values are interpreted as a single-stage BJT common-emitter
-        amplifier unless the user explicitly names another topology or device.
-        """
-        req_text = (requirements or "").strip()
-        if not req_text:
-            return ""
-
-        lowered = req_text.lower()
-        create_like = any(token in lowered for token in ("create", "design", "build", "generate", "tạo", "thiết kế", "synthesize"))
-        amplifier_like = any(token in lowered for token in ("amplifier", "amplify", "khuếch đại", "khuếch đại"))
-        explicit_topology = any(token in lowered for token in (
-            "common emitter", "common_emitter", "ce", "common collector", "common_collector", "cc",
-            "common base", "common_base", "cb", "common source", "common_source", "cs",
-            "common drain", "common_drain", "cd", "inverting", "non-inverting", "non_inverting",
-            "differential", "class ab", "class_ab", "class d", "class_d", "darlington",
-        ))
-        explicit_device = any(token in lowered for token in ("op-amp", "opamp", "mosfet", "bjt", "darlington", "class d", "class_d"))
-
-        if create_like and amplifier_like and not explicit_topology and not explicit_device:
-            return (
-                req_text
-                + "\n\nDefault topology hint: interpret this as a single-stage BJT common-emitter amplifier with an NPN transistor. "
-                + "Preserve the requested gain target, supply voltage, and standard IN/OUT ports."
-            )
-
-        return req_text
+        """Giữ nguyên requirements — không inject default CE."""
+        return (requirements or "").strip()
 
     def is_available(self, role: LLMRole, mode: Optional[LLMMode] = None) -> bool:
         config = self._get_config(role, mode)
@@ -959,12 +989,16 @@ class LLMRouter:
             except Exception as e:
                 err_str = str(e)
                 
-                if "Unsupported region" in err_str:
+                if "Unsupported region" in err_str or "global" in err_str.lower():
                     logger.error(
-                        "[%s/%s] Region %s không được hỗ trợ — skip model",
-                        model.provider.value, model.model_id, model.location,
+                        "[%s/%s] Region %s không hỗ trợ vertexai — chỉ dùng "
+                        "us-central1 hoặc asia-southeast1: %s",
+                        model.provider.value,
+                        model.model_id,
+                        model.location,
+                        err_str[:200],
                     )
-                    return None  
+                    return None
                 
                 if "has no field named" in err_str and ("$defs" in err_str or "additionalProperties" in err_str):
                     logger.error(

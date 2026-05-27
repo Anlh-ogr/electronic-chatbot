@@ -145,8 +145,140 @@ class KiCadSchExporter(ExporterPort):
         self.quality_evaluator = LayoutQualityEvaluator()
         self._last_layout_quality_report: LayoutQualityReport | None = None
         self._last_connectivity_report: ConnectivityReport | None = None
+        self._last_placements: Dict[str, Tuple[float, float]] = {}
+        self._last_rotations: Dict[str, int] = {}
+        self._last_export_metadata: Dict[str, Any] = {}
         self._placement_done = False
         self._finalize_done = False
+
+    def get_last_placements(self) -> Dict[str, Tuple[float, float]]:
+        return dict(self._last_placements)
+
+    def get_last_export_metadata(self) -> Dict[str, Any]:
+        return dict(self._last_export_metadata)
+
+    def export_schematic_sync(
+        self,
+        circuit: Circuit,
+        *,
+        placement_mode: str = "auto",
+    ) -> str:
+        """Placement + orthogonal routing → .kicad_sch.
+
+        placement_mode:
+          - auto: pygraphviz (dot) when available, else coordinate_solver (AGR)
+          - pygraphviz: require Graphviz layout, fallback to AGR
+          - coordinate_solver: AGR solve_stage only
+        """
+        cid = getattr(circuit, "id", None)
+        if not cid or str(cid).strip() == "None":
+            raise ExportError(
+                format_type=ExportFormat.KICAD.value,
+                reason="Exporter requires valid circuit.id (got None or empty).",
+            )
+
+        try:
+            comp_count = len(getattr(circuit, "components", {}))
+            net_count = len(getattr(circuit, "nets", {}))
+            logger.info(
+                "[SCH DEBUG] Generating SCH for circuit_id=%s, components=%s, nets=%s",
+                cid,
+                comp_count,
+                net_count,
+            )
+            self._last_layout_quality_report = None
+            self._placement_done = False
+            self._finalize_done = False
+
+            if not getattr(circuit, "components", None) or not getattr(circuit, "nets", None):
+                raise ExportError(
+                    format_type=ExportFormat.KICAD.value,
+                    reason=f"Empty circuit: components={comp_count}, nets={net_count}",
+                )
+
+            mode = str(placement_mode or "auto").strip().lower()
+            placement_source = "coordinate_solver"
+            gv = None
+            if mode in {"auto", "pygraphviz"}:
+                gv = layout_schematic_with_pygraphviz(circuit)
+            if gv is not None:
+                placements, rotations = gv
+                placement_source = "pygraphviz"
+                logger.info("[SCH DEBUG] Placement source=pygraphviz (dot)")
+            else:
+                placements, rotations, _agr_pins = self._agr_place_components(circuit)
+                placement_source = "coordinate_solver"
+                logger.info("[SCH DEBUG] Placement source=coordinate_solver (AGR)")
+
+            placements = self._snap_placements(placements, GRID_MM)
+            placements = self._normalize_origin(placements, GRID_MM * 4.0)
+            placements = center_placements_mm(placements)
+            placements = self._snap_placements(placements, GRID_MM)
+
+            pin_positions = self._rebuild_pin_positions(circuit, placements, rotations, {})
+            wires, forced_junctions = self._route_wires(circuit, pin_positions)
+            wires = self._snap_wires(wires, GRID_MM)
+            wires = self._filter_short_wires(wires, GRID_MM)
+
+            circuit, placements, rotations, pin_positions, wires = self._ensure_power_flags(
+                circuit,
+                placements,
+                rotations,
+                pin_positions,
+                wires,
+            )
+            wires = self._snap_wires(wires, GRID_MM)
+            wires = self._filter_short_wires(wires, GRID_MM)
+
+            self._last_connectivity_report = run_connectivity_validation(
+                circuit,
+                placements,
+                rotations,
+                pin_positions,
+                wires,
+                emit_debug_log=logger.isEnabledFor(logging.DEBUG),
+            )
+
+            self._last_layout_quality_report = self._evaluate_layout_quality_agr(
+                circuit,
+                placements,
+                wires,
+            )
+
+            junctions = _find_junctions_from_wires(wires, forced=forced_junctions)
+            junction_count = len(junctions)
+            wire_count = len(wires)
+
+            self._last_placements = {
+                str(k).strip().upper(): (float(v[0]), float(v[1])) for k, v in placements.items()
+            }
+            self._last_rotations = dict(rotations)
+            self._last_export_metadata = {
+                "wires": wire_count,
+                "junctions": junction_count,
+                "placement_source": placement_source,
+            }
+
+            ir = CircuitIR(
+                circuit=circuit,
+                _meta={
+                    "version": "1.0",
+                    "schema_version": "1.0",
+                    "circuit_name": circuit.name or "unnamed",
+                    "timestamp": datetime.now().isoformat(),
+                    "generator": "elpis",
+                },
+                _intent_snapshot={},
+            )
+            return self.serializer.serialize(ir, placements, wires, junctions, rotations)
+
+        except ExportError:
+            raise
+        except Exception as exc:
+            raise ExportError(
+                format_type=ExportFormat.KICAD.value,
+                reason=f"KiCad export failed: {exc}",
+            ) from exc
     
     async def export(
         self,
@@ -180,97 +312,14 @@ class KiCadSchExporter(ExporterPort):
             )
         
         try:
-            # Debug: surface circuit shape early to detect upstream empty payloads
-            comp_count = len(getattr(circuit, "components", {}))
-            net_count = len(getattr(circuit, "nets", {}))
-            logger.info(f"[SCH DEBUG] Generating SCH for circuit_id={cid}, components={comp_count}, nets={net_count}")
-            self._last_layout_quality_report = None
-            self._placement_done = False
-            self._finalize_done = False
-
-            # Fail-fast: ensure circuit has components and nets
-            if not getattr(circuit, 'components', None) or not getattr(circuit, 'nets', None):
-                raise ExportError(format_type=format_type.value, reason=f"Empty circuit: components={len(getattr(circuit,'components',{}))}, nets={len(getattr(circuit,'nets',{}))}")
-
-            gv = layout_schematic_with_pygraphviz(circuit)
-            if gv is not None:
-                placements, rotations = gv
-                logger.info("[SCH DEBUG] Placement source=pygraphviz (dot)")
-            else:
-                placements, rotations, _agr_pins = self._agr_place_components(circuit)
-                logger.info("[SCH DEBUG] Placement source=AGR solver")
-
-            # Snap → normalise → centre → re-snap.
-            # center_placements_mm() shifts by an arbitrary (dx, dy) that takes
-            # placements off the 2.54 mm grid; the second snap brings them back.
-            placements = self._snap_placements(placements, GRID_MM)
-            placements = self._normalize_origin(placements, GRID_MM * 4.0)
-            placements = center_placements_mm(placements)
-            placements = self._snap_placements(placements, GRID_MM)
-
-            # Always build pin_positions from FINAL on-grid placements.
-            # Passing {} forces a full recompute; re-using a stale dict would
-            # cause _rebuild_pin_positions to skip every key (already present)
-            # and leave all coordinates tied to the pre-snap positions — making
-            # route_pair() snap wire endpoints to different grid cells than the
-            # pin positions, which orphans every pin in the netlist.
-            pin_positions = self._rebuild_pin_positions(circuit, placements, rotations, {})
-            wires, forced_junctions = self._route_wires(circuit, pin_positions)
-            wires = self._snap_wires(wires, GRID_MM)
-            wires = self._filter_short_wires(wires, GRID_MM)
-
-            circuit, placements, rotations, pin_positions, wires = self._ensure_power_flags(
-                circuit,
-                placements,
-                rotations,
-                pin_positions,
-                wires,
-            )
-            wires = self._snap_wires(wires, GRID_MM)
-            wires = self._filter_short_wires(wires, GRID_MM)
-
-            # ── Connectivity validation (Req 1–9) ──────────────────────
-            self._last_connectivity_report = run_connectivity_validation(
-                circuit,
-                placements,
-                rotations,
-                pin_positions,
-                wires,
-                emit_debug_log=logger.isEnabledFor(logging.DEBUG),
-            )
-
-            self._last_layout_quality_report = self._evaluate_layout_quality_agr(
-                circuit,
-                placements,
-                wires,
-            )
-
-            # Find junctions — include hub points from hub-and-spoke routing
-            junctions = _find_junctions_from_wires(wires, forced=forced_junctions)
-
-            # Serialize to KiCad format
-            ir = CircuitIR(
-                circuit=circuit,
-                _meta={
-                    "version": "1.0",
-                    "schema_version": "1.0",
-                    "circuit_name": circuit.name or "unnamed",
-                    "timestamp": datetime.now().isoformat(),
-                    "generator": "elpis",
-                },
-                _intent_snapshot={},
-            )
-            kicad_content = self.serializer.serialize(
-                ir, placements, wires, junctions, rotations
-            )
-            
-            return kicad_content
-            
-        except Exception as e:
+            return self.export_schematic_sync(circuit)
+        except ExportError:
+            raise
+        except Exception as exc:
             raise ExportError(
                 format_type=format_type.value,
-                reason=f"KiCad export failed: {str(e)}"
-            ) from e
+                reason=f"KiCad export failed: {exc}",
+            ) from exc
 
     def _agr_place_components(
         self,
