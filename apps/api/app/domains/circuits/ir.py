@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import MappingProxyType
+import logging
 from typing import Dict, List, Any, Optional
 from .entities import (
     ComponentType, Component, Net, Port, Constraint, Circuit, ParameterValue, PinRef, PortDirection, SignalFlow
@@ -47,6 +48,10 @@ In/Out:
     - trạng thái read-only : _intent_snapshot, _meta
 Tạo bản sao bất biến và public read-only view để tránh bị sửa đổi từ bên ngoài.
 """
+
+
+logger=logging.getLogger(__name__)
+
 @dataclass (frozen=True)
 class CircuitIR:
     circuit: Circuit
