@@ -660,15 +660,14 @@ class TopologyPlanner:
         pattern: float,
         priority: float,
     ) -> float:
-        return (
+        kailani_topology_score = (
             0.35 * family
             + 0.20 * supply
             + 0.20 * capability
             + 0.15 * pattern
             + 0.10 * priority
         )
-
-
+        return kailani_topology_score
 
     
     @staticmethod
