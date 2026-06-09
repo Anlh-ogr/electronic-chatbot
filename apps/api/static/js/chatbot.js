@@ -13,7 +13,133 @@ let currentCircuitId = null;
 let currentTab = 'schematic';
 let waveformChart = null;
 let lastWaveformPayload = null;
-const FRONTEND_BUILD = '20260509sim';
+/** Full last simulation API payload (analysis, gain_metrics, …). */
+let lastSimulationResult = null;
+/** Metadata from last simulation (frequency, source_params, …) for display resampling. */
+let lastWaveformSimMeta = null;
+/** Stashed request payload until SSE result arrives (frequency may not be in result body). */
+let pendingWaveformSimMeta = null;
+/** Current x-axis display range in seconds.  null = auto-fit. */
+let waveformTimeRange = { startS: null, endS: null };
+/** Last applied smoothness plan (points/cycle, total display points). */
+let lastWaveformSmoothPlan = null;
+const FRONTEND_BUILD = '20260608wf20ms';
+
+/**
+ * Độ mịn waveform — công thức bắt buộc:
+ *   Points = TimeRange × f × N
+ *   TimeRange: cửa sổ hiển thị (giây), f: Hz, N: độ phân giải (điểm/chu kỳ).
+ */
+const WF_SMOOTH = {
+    RESOLUTION: 128,
+    MIN_PPC: 32,
+    MIN_TOTAL: 64,
+    /** Giới hạn điểm vẽ Chart.js (tránh stack overflow khi spread Math.max). */
+    MAX_TOTAL: 16384,
+};
+
+function arrayMin(values) {
+    let m = Infinity;
+    for (const v of values) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n < m) m = n;
+    }
+    return Number.isFinite(m) ? m : NaN;
+}
+
+function arrayMax(values) {
+    let m = -Infinity;
+    for (const v of values) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n > m) m = n;
+    }
+    return Number.isFinite(m) ? m : NaN;
+}
+
+function traceTimeMaxS(trace) {
+    const xs = trace?.x;
+    if (!Array.isArray(xs) || !xs.length) return 0;
+    const last = Number(xs[xs.length - 1]);
+    if (Number.isFinite(last)) return last;
+    return arrayMax(xs);
+}
+
+/** Max transient window (seconds) — must match backend transient_window.MAX_TRAN_STOP_S */
+const MAX_TRAN_STOP_S = 0.02;
+/** Max display / custom range (ms) */
+const MAX_WAVEFORM_MS = 20;
+
+function parseSpiceTimeSeconds(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    const text = String(value).trim().toLowerCase();
+    const m = text.match(/^([+-]?\d*\.?\d+(?:e[+-]?\d+)?)\s*([a-z]*)$/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    const unit = m[2] || 's';
+    const scale = { s: 1, ms: 1e-3, us: 1e-6, ns: 1e-9, ps: 1e-12, fs: 1e-15 };
+    if (!(unit in scale) || !Number.isFinite(n)) return null;
+    return n * scale[unit];
+}
+
+function extractFrequencyHzFromCircuit(core) {
+    if (!core || typeof core !== 'object') return null;
+    const sp = core.source_params;
+    const candidates = [core.input_frequency_hz, core.frequency_hz, sp?.frequency, sp?.frequency_hz];
+    for (const raw of candidates) {
+        const f = Number(raw);
+        if (Number.isFinite(f) && f > 0) return f;
+    }
+    return null;
+}
+
+function formatSpiceTimeSeconds(seconds) {
+    if (!Number.isFinite(seconds)) return '0.02';
+    if (seconds < 0.001) return `${Math.round(seconds * 1e6)}us`;
+    if (seconds < 1) return `${Math.round(seconds * 1e3)}ms`;
+    return String(seconds);
+}
+
+function clampWaveformEndMs(endMs, startMs = 0) {
+    const start = Math.max(0, Number(startMs) || 0);
+    let end = Number(endMs);
+    if (!Number.isFinite(end)) return start + MAX_WAVEFORM_MS;
+    end = Math.min(MAX_WAVEFORM_MS, Math.max(start + 0.001, end));
+    return end;
+}
+
+/**
+ * Luôn ép mô phỏng 5 s và đồng bộ tran_* trên payload + circuit_data.
+ * Backend sẽ tính tran_step theo Points = TimeRange × f × N.
+ */
+function ensureSimulationWindow(core, payload) {
+    if (!payload || typeof payload !== 'object') return;
+    const stop = formatSpiceTimeSeconds(MAX_TRAN_STOP_S);
+    const start = '0';
+
+    payload.tran_stop = stop;
+    payload.tran_start = start;
+    payload.analysis_type = payload.analysis_type || 'transient';
+
+    const cd = payload.circuit_data || core;
+    if (cd && typeof cd === 'object') {
+        cd.tran_stop = stop;
+        cd.tran_start = start;
+        cd.analysis_type = cd.analysis_type || 'transient';
+        if (!payload.circuit_data) payload.circuit_data = cd;
+        if (cd.source_params && !payload.source_params) {
+            payload.source_params = cd.source_params;
+        }
+    }
+
+    payload.analysis = {
+        ...(payload.analysis || {}),
+        type: 'transient',
+        step: payload.tran_step || cd?.tran_step || payload.analysis?.step || '10us',
+        stop,
+        start,
+    };
+}
 let currentSessionId = null;
 let activePcbProgressCloser = null;
 
@@ -70,6 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initPanelResizer();
     initWelcomeOverlay();
     initThemeToggle();
+    initWaveformToolbar();
 });
 
 // ── Theme toggle (light/dark) ──
@@ -726,6 +853,10 @@ async function requestChatReply(text, options = {}) {
     const sessionIdOverride = String(options.sessionIdOverride || '').trim();
     const sessionIdForRequest = sessionIdOverride || currentSessionId || undefined;
 
+    // Clear stale analysis data immediately so the panel doesn't show
+    // results from the previous request while the new one is loading.
+    clearAnalysisPanel();
+
     const userMessageEl = includeUserMessage
         ? addMessage(messageText, 'user', { editable: true })
         : null;
@@ -991,6 +1122,11 @@ async function sendSimulationPayload(payload, userLabel = 'Run Simulation') {
     const btnRunSimEl = document.getElementById('btnRunSim');
     if (btnRunSimEl) btnRunSimEl.disabled = true;
 
+    pendingWaveformSimMeta = {
+        circuit_data: payload.circuit_data || null,
+        source_params: payload.source_params || payload.circuit_data?.source_params || null,
+    };
+
     try {
         const resp = await fetch(`${API_BASE}/api/chat/simulate/stream`, {
             method: 'POST',
@@ -1107,8 +1243,7 @@ async function runSimulationFromCurrentCircuit() {
         payload.circuit_data = core;
         payload.analysis_type = payload.analysis_type || String(core.analysis_type || 'transient');
         payload.tran_step = payload.tran_step || core.tran_step || '10us';
-        payload.tran_stop = payload.tran_stop || core.tran_stop || '15ms';
-        payload.tran_start = payload.tran_start ?? core.tran_start ?? '0';
+        ensureSimulationWindow(core, payload);
         if (Array.isArray(core.nodes_to_monitor) && core.nodes_to_monitor.length) {
             payload.nodes_to_monitor = core.nodes_to_monitor;
         } else if (Array.isArray(core.probe_nodes) && core.probe_nodes.length) {
@@ -1124,6 +1259,7 @@ async function runSimulationFromCurrentCircuit() {
         }
     }
 
+    ensureSimulationWindow(core, payload);
     await sendSimulationPayload(payload, '▶ Run Simulation');
 }
 
@@ -1164,15 +1300,41 @@ function handleSimulationSseBlock(block) {
     if (eventName === 'result') {
         addMessage(`✅ Mô phỏng hoàn tất: ${payload.points || 0} samples`, 'bot');
         processingTime.textContent = `⏱ ${Number(payload.execution_time_ms || 0).toFixed(0)}ms`;
+        lastSimulationResult = payload;
         lastWaveformPayload = payload.waveform || null;
-        updateWaveformDebug(payload.waveform, {
-            points: payload.points,
-            execution_time_ms: payload.execution_time_ms,
-            event: 'result',
-        });
-        switchTab('waveform');
-        // Render after tab is visible so Chart.js gets non-zero canvas size.
-        requestAnimationFrame(() => renderWaveform(payload.waveform));
+        lastWaveformSimMeta = extractWaveformSimMeta(payload);
+        lastWaveformSmoothPlan = null;
+        waveformTimeRange = { startS: null, endS: null };
+        initWaveformToolbar();
+        const toolbar = ensureWaveformToolbarElement();
+        if (toolbar) {
+            toolbar.querySelectorAll('.wf-preset-btn').forEach((b) => b.classList.remove('wf-preset-active'));
+            const autoBtn = toolbar.querySelector('[data-ms="auto"]');
+            if (autoBtn) autoBtn.classList.add('wf-preset-active');
+            const s = document.getElementById('wfRangeStart');
+            const e = document.getElementById('wfRangeEnd');
+            if (s) s.value = '0';
+            if (e) e.value = '';
+        }
+        try {
+            updateWaveformDebug(payload.waveform, {
+                points: payload.points,
+                execution_time_ms: payload.execution_time_ms,
+                event: 'result',
+            });
+            switchTab('waveform');
+            requestAnimationFrame(() => {
+                try {
+                    renderWaveform(payload.waveform);
+                } catch (renderErr) {
+                    console.error('[waveform render]', renderErr);
+                    addMessage(`⚠️ Mô phỏng xong nhưng không vẽ được waveform: ${renderErr.message}`, 'bot');
+                }
+            });
+        } catch (postErr) {
+            console.error('[waveform post-process]', postErr);
+            addMessage(`⚠️ Mô phỏng xong nhưng xử lý waveform lỗi: ${postErr.message}`, 'bot');
+        }
     }
 }
 
@@ -1186,16 +1348,20 @@ function buildSimulationPayload(rawText) {
         netlist = fenced[1].trim();
     }
 
-    return {
+    const payload = {
         netlist,
         probes: ['v(out)', 'v(in)'],
+        nodes_to_monitor: ['v(out)', 'v(in)'],
+        analysis_type: 'transient',
         analysis: {
             type: 'transient',
             step: '20us',
-            stop: '2ms',
+            stop: formatSpiceTimeSeconds(MAX_TRAN_STOP_S),
             start: '0',
         },
     };
+    ensureSimulationWindow(null, payload);
+    return payload;
 }
 
 function buildSimulationPayloadFromCircuit(circuitData) {
@@ -1213,24 +1379,25 @@ function buildSimulationPayloadFromCircuit(circuitData) {
             .map((n) => (n.startsWith('v(') || n.startsWith('i(') ? n : `v(${n})`));
 
         const normalizedProbes = Array.from(new Set(probes.length ? probes : ['v(net_in)', 'v(net_out)']));
-        return {
+        const payload = {
             circuit_data: core,
             netlist: providedNetlist,
             nodes_to_monitor: normalizedProbes,
             analysis_type: String(core.analysis_type || 'transient'),
             tran_step: core.tran_step || '100us',
-            tran_stop: core.tran_stop || '100ms',
-            tran_start: core.tran_start || '50ms',
+            tran_stop: core.tran_stop,
+            tran_start: core.tran_start || '0',
             source_params: core.source_params || undefined,
-            // Keep legacy fields for compatibility with non-circuit_data path.
             probes: normalizedProbes,
             analysis: {
                 type: 'transient',
                 step: core.tran_step || '100us',
-                stop: core.tran_stop || '100ms',
-                start: core.tran_start || '50ms',
+                stop: core.tran_stop,
+                start: core.tran_start || '0',
             },
         };
+        ensureSimulationWindow(core, payload);
+        return payload;
     }
 
     const components = Array.isArray(core?.components) ? core.components : [];
@@ -1238,7 +1405,14 @@ function buildSimulationPayloadFromCircuit(circuitData) {
     const ports = Array.isArray(core?.ports) ? core.ports : [];
 
     if (!components.length || !nets.length) {
-        return { netlist: '', probes: ['v(out)', 'v(in)'], analysis: { type: 'transient', step: '10us', stop: '10ms', start: '0' } };
+        const emptyPayload = {
+            netlist: '',
+            probes: ['v(out)', 'v(in)'],
+            analysis: { type: 'transient', step: '10us', stop: formatSpiceTimeSeconds(MAX_TRAN_STOP_S), start: '0' },
+            tran_stop: formatSpiceTimeSeconds(MAX_TRAN_STOP_S),
+        };
+        ensureSimulationWindow(core, emptyPayload);
+        return emptyPayload;
     }
 
     const pinToNode = new Map();
@@ -1566,11 +1740,16 @@ function buildSimulationPayloadFromCircuit(circuitData) {
         analysis.start = '50ms';
     }
 
-    return {
+    const payload = {
+        circuit_data: core,
         netlist,
         probes,
+        nodes_to_monitor: probes,
         analysis,
+        analysis_type: 'transient',
     };
+    ensureSimulationWindow(core, payload);
+    return payload;
 }
 
 function initPanelResizer() {
@@ -2292,6 +2471,21 @@ function updateParamsPanel(params, pipeline, extras = {}) {
     el.innerHTML = html;
 }
 
+/**
+ * Reset the analysis panel to its "loading" placeholder.
+ * Call this at the start of every new chat request so old data
+ * never lingers while a new response is being streamed.
+ */
+function clearAnalysisPanel() {
+    const el = document.getElementById('analysisContent');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="placeholder-content">
+            <i class="fas fa-spinner fa-spin fa-2x" style="color:var(--accent-blue,#3b82f6);"></i>
+            <p style="margin-top:10px;">Đang phân tích yêu cầu…</p>
+        </div>`;
+}
+
 function updateAnalysisPanel(intent, pipeline, analysis) {
     const el = document.getElementById('analysisContent');
     if (!el) return;
@@ -2340,6 +2534,23 @@ function updateAnalysisPanel(intent, pipeline, analysis) {
         { label: 'VCC',           value: (intent.vcc !== null && intent.vcc !== undefined) ? `${intent.vcc} V` : 'N/A' },
         { label: 'Source',        value: intent.source || 'rule_based' },
     ];
+
+    const topoProfile = intent.topology_profile || {};
+    if (topoProfile.display_name || topoProfile.topology_id) {
+        intentFields.splice(1, 0, {
+            label: 'Topology',
+            value: topoProfile.display_name || topoProfile.topology_id,
+        });
+    }
+    if (topoProfile.gain_formula) {
+        intentFields.push({ label: 'Gain Formula', value: topoProfile.gain_formula });
+    }
+    if (topoProfile.phase_inverted !== undefined) {
+        intentFields.push({
+            label: 'Phase',
+            value: topoProfile.phase_inverted ? 'inverted (~180°)' : 'non-inverted (~0°)',
+        });
+    }
 
     html += '<div class="md-kv-grid">';
     for (const f of intentFields) {
@@ -3262,28 +3473,450 @@ function switchTab(tab) {
     }
 }
 
+function extractWaveformSimMeta(payload) {
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const core = p.circuit_data
+        || pendingWaveformSimMeta?.circuit_data
+        || lastCircuitData?.circuit_data
+        || {};
+    const meta = core.meta || {};
+    const sp = p.source_params || pendingWaveformSimMeta?.source_params || core.source_params || {};
+    const freq = Number(
+        sp.frequency
+        ?? meta.input_frequency_hz
+        ?? meta.frequency_hz
+        ?? p.analysis?.gain_metrics?.frequency_hz,
+    );
+    return {
+        frequency_hz: Number.isFinite(freq) && freq > 0 ? freq : null,
+        input_frequency_hz: meta.input_frequency_hz ?? null,
+        source_params: sp,
+        analysis: p.analysis || null,
+    };
+}
+
+/** Ước lượng tần số (Hz) từ zero-crossing trên trace AC. */
+function estimateFrequencyFromTrace(trace, tMin, tMax) {
+    const xs = Array.isArray(trace?.x) ? trace.x : [];
+    const ys = Array.isArray(trace?.y) ? trace.y : [];
+    const n = Math.min(xs.length, ys.length);
+    if (n < 16) return null;
+
+    const tLo = Number.isFinite(tMin) ? tMin : Number(xs[0]);
+    const tHi = Number.isFinite(tMax) ? tMax : Number(xs[n - 1]);
+    if (!(tHi > tLo)) return null;
+
+    const samples = [];
+    for (let i = 0; i < n; i++) {
+        const t = Number(xs[i]);
+        const y = Number(ys[i]);
+        if (!Number.isFinite(t) || !Number.isFinite(y)) continue;
+        if (t < tLo || t > tHi) continue;
+        samples.push({ t, y });
+    }
+    if (samples.length < 16) return null;
+
+    let mean = 0;
+    for (const s of samples) mean += s.y;
+    mean /= samples.length;
+
+    const crossings = [];
+    for (let i = 1; i < samples.length; i++) {
+        const a = samples[i - 1].y - mean;
+        const b = samples[i].y - mean;
+        if (a === 0 || a * b > 0) continue;
+        const t0 = samples[i - 1].t;
+        const t1 = samples[i].t;
+        const frac = Math.abs(a) / (Math.abs(a) + Math.abs(b));
+        crossings.push(t0 + frac * (t1 - t0));
+    }
+    if (crossings.length < 3) return null;
+
+    const halfPeriods = [];
+    for (let i = 1; i < crossings.length; i++) {
+        const dt = crossings[i] - crossings[i - 1];
+        if (dt > 0) halfPeriods.push(dt);
+    }
+    if (!halfPeriods.length) return null;
+
+    halfPeriods.sort((a, b) => a - b);
+    const medianHalf = halfPeriods[Math.floor(halfPeriods.length / 2)];
+    const period = medianHalf * 2;
+    if (!(period > 0)) return null;
+    const hz = 1 / period;
+    return Number.isFinite(hz) && hz > 0 ? hz : null;
+}
+
+function resolveWaveformFrequencyHz(waveform, tMin, tMax) {
+    const m = lastWaveformSimMeta || {};
+    const candidates = [
+        m.frequency_hz,
+        m.input_frequency_hz,
+        m.source_params?.frequency,
+        waveform?.meta?.frequency_hz,
+        waveform?.meta?.input_frequency_hz,
+        lastCircuitData?.circuit_data?.source_params?.frequency,
+        lastCircuitData?.circuit_data?.meta?.input_frequency_hz,
+    ];
+    for (const c of candidates) {
+        const n = Number(c);
+        if (Number.isFinite(n) && n > 0) return n;
+    }
+    const { inTrace } = pickInputOutputTraces(waveform?.traces || []);
+    if (inTrace) {
+        const est = estimateFrequencyFromTrace(inTrace, tMin, tMax);
+        if (est > 0) return est;
+    }
+    return null;
+}
+
+function getWaveformDisplayWindow(waveform, xScaleMin, xScaleMax) {
+    let tStart = xScaleMin;
+    let tEnd = xScaleMax;
+    if (!Number.isFinite(tStart) || !Number.isFinite(tEnd)) {
+        let dataMin = Infinity;
+        let dataMax = -Infinity;
+        for (const tr of waveform?.traces || []) {
+            for (const x of tr.x || []) {
+                const v = Number(x);
+                if (!Number.isFinite(v)) continue;
+                if (v < dataMin) dataMin = v;
+                if (v > dataMax) dataMax = v;
+            }
+        }
+        tStart = Number.isFinite(dataMin) ? dataMin : 0;
+        tEnd = Number.isFinite(dataMax) ? dataMax : tStart + 1e-3;
+    }
+    if (!(tEnd > tStart)) tEnd = tStart + 1e-9;
+    return { tStartS: tStart, tEndS: tEnd };
+}
+
+/**
+ * Points = TimeRange × f × N  (N = WF_SMOOTH.RESOLUTION, mặc định 128).
+ */
+function computeDisplayPointCount(timeRangeS, frequencyHz, resolutionN = WF_SMOOTH.RESOLUTION) {
+    const dt = Number(timeRangeS);
+    const f = Number(frequencyHz);
+    const N = Number(resolutionN);
+    if (!(dt > 0) || !Number.isFinite(f) || f <= 0 || !Number.isFinite(N) || N <= 0) {
+        return { totalPoints: WF_SMOOTH.MIN_TOTAL, resolutionN: N, capped: false };
+    }
+    let nEff = Math.max(WF_SMOOTH.MIN_PPC, N);
+    let totalPoints = Math.max(2, Math.ceil(dt * f * nEff) + 1);
+    let capped = false;
+    if (totalPoints > WF_SMOOTH.MAX_TOTAL) {
+        nEff = Math.max(WF_SMOOTH.MIN_PPC, WF_SMOOTH.MAX_TOTAL / (dt * f));
+        totalPoints = Math.max(2, Math.ceil(dt * f * nEff) + 1);
+        capped = true;
+    }
+    totalPoints = Math.min(WF_SMOOTH.MAX_TOTAL, Math.max(WF_SMOOTH.MIN_TOTAL, totalPoints));
+    return { totalPoints, resolutionN: nEff, capped };
+}
+
+function computeWaveformSamplePlan({ tStartS, tEndS, frequencyHz, rawPointCount }) {
+    const timeRangeS = tEndS - tStartS;
+    if (!(timeRangeS > 0)) {
+        return { resample: false, applied: false };
+    }
+
+    const f = Number(frequencyHz);
+    let periodS = null;
+    let cycles = null;
+    let pointsPerCycle = null;
+    let totalPoints;
+    let resolutionCapped = false;
+
+    if (Number.isFinite(f) && f > 0) {
+        periodS = 1 / f;
+        cycles = timeRangeS * f;
+        const planned = computeDisplayPointCount(timeRangeS, f, WF_SMOOTH.RESOLUTION);
+        totalPoints = planned.totalPoints;
+        pointsPerCycle = planned.resolutionN;
+        resolutionCapped = planned.capped;
+    } else {
+        totalPoints = Math.max(WF_SMOOTH.MIN_TOTAL, Math.ceil(timeRangeS * 4000));
+    }
+
+    const stepS = timeRangeS / Math.max(totalPoints - 1, 1);
+    const rawSparse = Number.isFinite(f) && f > 0 && rawPointCount > 0
+        && rawPointCount < Math.ceil(timeRangeS * f * WF_SMOOTH.MIN_PPC);
+
+    return {
+        resample: Number.isFinite(f) && f > 0,
+        resampleMode: 'linear',
+        applied: false,
+        userTimeWindow: waveformTimeRange.startS !== null || waveformTimeRange.endS !== null,
+        frequencyHz: Number.isFinite(f) && f > 0 ? f : null,
+        periodS,
+        cycles,
+        pointsPerCycle,
+        resolutionN: pointsPerCycle,
+        resolutionCapped,
+        totalPoints,
+        timeRangeS,
+        dtS: timeRangeS,
+        tStartS,
+        tEndS,
+        stepS,
+        rawPointCount: rawPointCount || 0,
+        rawSparse,
+        formula: Number.isFinite(f) && f > 0
+            ? `Points = ${timeRangeS.toExponential(3)} × ${f} × ${pointsPerCycle}`
+            : null,
+    };
+}
+
+function interpTraceAt(trace, t) {
+    const xs = trace?.x || [];
+    const ys = trace?.y || [];
+    const n = Math.min(xs.length, ys.length);
+    if (n === 0) return NaN;
+    const tNum = Number(t);
+    const x0n = Number(xs[0]);
+    const xNn = Number(xs[n - 1]);
+    if (tNum <= x0n) return Number(ys[0]);
+    if (tNum >= xNn) return Number(ys[n - 1]);
+
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi - 1) {
+        const mid = (lo + hi) >> 1;
+        if (Number(xs[mid]) <= tNum) lo = mid;
+        else hi = mid;
+    }
+    const xa = Number(xs[lo]);
+    const xb = Number(xs[hi]);
+    const ya = Number(ys[lo]);
+    const yb = Number(ys[hi]);
+    if (xb === xa) return ya;
+    const u = (tNum - xa) / (xb - xa);
+    return ya + u * (yb - ya);
+}
+
+function resampleTraceLinear(trace, plan) {
+    const xs = [];
+    const ys = [];
+    for (let i = 0; i < plan.totalPoints; i++) {
+        const t = plan.tStartS + i * plan.stepS;
+        xs.push(t);
+        ys.push(interpTraceAt(trace, t));
+    }
+    return { ...trace, x: xs, y: ys };
+}
+
+/** Giảm số điểm hiển thị nhưng giữ biên đỉnh (tránh gain nhìn bị sai). */
+function resampleTraceMinMax(trace, plan) {
+    const srcX = trace?.x || [];
+    const srcY = trace?.y || [];
+    const n = Math.min(srcX.length, srcY.length);
+    if (n <= plan.totalPoints) return trace;
+
+    const t0 = plan.tStartS;
+    const t1 = plan.tEndS;
+    const bucketCount = Math.max(2, Math.floor(plan.totalPoints / 2));
+    const span = Math.max(t1 - t0, 1e-15);
+    const bucketW = span / bucketCount;
+    const buckets = Array.from({ length: bucketCount }, () => []);
+
+    for (let i = 0; i < n; i++) {
+        const tx = Number(srcX[i]);
+        const ty = Number(srcY[i]);
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) continue;
+        if (tx < t0 || tx > t1) continue;
+        let b = Math.floor((tx - t0) / bucketW);
+        if (b >= bucketCount) b = bucketCount - 1;
+        buckets[b].push({ x: tx, y: ty });
+    }
+
+    const xs = [];
+    const ys = [];
+    for (const bucket of buckets) {
+        if (!bucket.length) continue;
+        let minPt = bucket[0];
+        let maxPt = bucket[0];
+        for (const pt of bucket) {
+            if (pt.y < minPt.y) minPt = pt;
+            if (pt.y > maxPt.y) maxPt = pt;
+        }
+        if (minPt.x <= maxPt.x) {
+            xs.push(minPt.x, maxPt.x);
+            ys.push(minPt.y, maxPt.y);
+        } else {
+            xs.push(maxPt.x, minPt.x);
+            ys.push(maxPt.y, minPt.y);
+        }
+    }
+    return { ...trace, x: xs, y: ys };
+}
+
+function resampleTraceForDisplay(trace, plan) {
+    if (!plan?.resample) return trace;
+    return resampleTraceLinear(trace, plan);
+}
+
+function countRawPointsInWindow(trace, tStart, tEnd) {
+    const xs = trace?.x || [];
+    let count = 0;
+    for (const x of xs) {
+        const v = Number(x);
+        if (Number.isFinite(v) && v >= tStart && v <= tEnd) count++;
+    }
+    return count;
+}
+
+/** Lọc + nội suy tuyến tính để đạt độ mịn mục tiêu trong cửa sổ hiển thị. */
+function prepareWaveformForDisplay(waveform, { xScaleMin, xScaleMax, canvasWidthPx }) {
+    if (!waveform || !Array.isArray(waveform.traces) || !waveform.traces.length) {
+        return { waveform, plan: null };
+    }
+
+    const win = getWaveformDisplayWindow(waveform, xScaleMin, xScaleMax);
+    const freq = resolveWaveformFrequencyHz(waveform, win.tStartS, win.tEndS);
+    const ref = waveform.traces[0];
+    const rawInWindow = countRawPointsInWindow(ref, win.tStartS, win.tEndS)
+        || (ref?.x?.length || 0);
+
+    const plan = computeWaveformSamplePlan({
+        ...win,
+        frequencyHz: freq,
+        rawPointCount: rawInWindow,
+    });
+
+    if (!plan.resample) {
+        return { waveform, plan: { ...plan, applied: false } };
+    }
+
+    const traces = waveform.traces.map((tr) => resampleTraceForDisplay(tr, plan));
+    return {
+        waveform: { ...waveform, traces },
+        plan: { ...plan, applied: true },
+    };
+}
+
+function updateWaveformSmoothInfo(plan) {
+    let el = document.getElementById('wfSmoothInfo');
+    const toolbar = document.getElementById('waveformToolbar');
+    if (!toolbar) return;
+
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'wfSmoothInfo';
+        el.className = 'wf-smooth-info';
+        toolbar.appendChild(el);
+    }
+
+    if (!plan) {
+        el.hidden = true;
+        return;
+    }
+
+    const parts = [];
+    if (plan.frequencyHz) {
+        const f = plan.frequencyHz;
+        const fLabel = f >= 1000 ? `${(f / 1000).toFixed(3)} kHz` : `${f.toFixed(1)} Hz`;
+        parts.push(`f = ${fLabel}`);
+    }
+    if (plan.timeRangeS != null) {
+        parts.push(`Δt = ${formatTimeAxisLabel(plan.timeRangeS)}`);
+    }
+    if (plan.cycles != null) {
+        parts.push(`${plan.cycles.toFixed(2)} chu kỳ`);
+    }
+    if (plan.resolutionN) {
+        parts.push(`N = ${Number(plan.resolutionN).toFixed(1)}`);
+    }
+    if (plan.totalPoints) {
+        parts.push(`${plan.totalPoints} điểm (= Δt×f×N)`);
+    }
+    if (plan.rawSparse) {
+        parts.push('⚠ dữ liệu gốc thưa — chạy lại mô phỏng');
+    } else if (plan.resolutionCapped) {
+        parts.push('N giảm do giới hạn hiển thị');
+    }
+    if (plan.applied) {
+        parts.push('đã nội suy theo công thức');
+    } else if (plan.resample === false) {
+        parts.push('chưa có tần số — không nội suy');
+    }
+
+    const dataMaxS = getWaveformDataMaxSeconds(lastWaveformPayload || null);
+    const viewEndS = waveformTimeRange.endS;
+    if (Number.isFinite(viewEndS) && viewEndS > MAX_TRAN_STOP_S * 1.001) {
+        parts.push(`⚠ tối đa ${MAX_WAVEFORM_MS} ms`);
+    } else if (Number.isFinite(viewEndS) && dataMaxS > 0 && viewEndS > dataMaxS * 1.001) {
+        parts.push(`⚠ dữ liệu chỉ đến ${formatTimeAxisLabel(dataMaxS)} — chạy lại mô phỏng`);
+    }
+
+    if (!parts.length) {
+        el.hidden = true;
+        return;
+    }
+
+    el.hidden = false;
+    el.textContent = `Độ mịn: ${parts.join(' · ')}`;
+}
+
+function getWaveformDataMaxSeconds(waveform) {
+    const traces = Array.isArray(waveform?.traces) ? waveform.traces : [];
+    let dataMaxS = 0;
+    for (const t of traces) {
+        const m = traceTimeMaxS(t);
+        if (m > dataMaxS) dataMaxS = m;
+    }
+    return dataMaxS;
+}
+
+/**
+ * Format a time value (in seconds) for the x-axis tick labels.
+ * Automatically picks the most readable unit (ms, µs, s).
+ */
+function formatTimeAxisLabel(valueS) {
+    const abs = Math.abs(valueS);
+    if (abs === 0) return '0';
+    if (abs < 1e-3) return `${(valueS * 1e6).toPrecision(3)} µs`;
+    if (abs < 1) return `${(valueS * 1e3).toPrecision(4)} ms`;
+    return `${valueS.toPrecision(4)} s`;
+}
+
 function renderWaveform(waveform) {
     const canvas = document.getElementById('waveformCanvas');
     const empty = document.getElementById('waveformEmpty');
     if (!canvas || !waveform || !Array.isArray(waveform.traces)) return;
 
+    // Show the toolbar once we have data
+    ensureWaveformToolbar(waveform);
+
+    // Compute x-axis range from waveformTimeRange state
+    const xScaleMin = waveformTimeRange.startS !== null ? waveformTimeRange.startS : undefined;
+    const xScaleMax = waveformTimeRange.endS !== null   ? waveformTimeRange.endS   : undefined;
+
+    const canvasW = canvas.clientWidth || canvas.getBoundingClientRect().width || 800;
+    const prepared = prepareWaveformForDisplay(waveform, { xScaleMin, xScaleMax, canvasWidthPx: canvasW });
+    const displayWaveform = prepared.waveform;
+    lastWaveformSmoothPlan = prepared.plan;
+    updateWaveformSmoothInfo(prepared.plan);
+
     // If CDN Chart.js is blocked (tracking prevention / offline), draw directly on canvas.
     if (typeof Chart === 'undefined') {
-        renderWaveformFallbackCanvas(canvas, waveform);
+        renderWaveformFallbackCanvas(canvas, displayWaveform, xScaleMin, xScaleMax);
         if (empty) empty.style.display = 'none';
-        updateWaveformNotice(waveform);
-        updateWaveformDebug(waveform, { event: 'render-fallback', chartBlocked: true });
+        updateWaveformNotice(displayWaveform);
+        updateWaveformDebug(lastWaveformPayload || displayWaveform, {
+            event: 'render-fallback',
+            chartBlocked: true,
+            smoothPlan: prepared.plan,
+        });
         return;
     }
 
-    const datasets = waveform.traces.map((trace, idx) => ({
+    const datasets = displayWaveform.traces.map((trace, idx) => ({
         label: trace.unit ? `${trace.name} (${trace.unit})` : trace.name,
         data: (trace.x || []).map((x, i) => ({ x, y: (trace.y || [])[i] })),
         borderColor: pickChartColor(idx),
         backgroundColor: 'transparent',
         borderWidth: 2,
         pointRadius: 0,
-        tension: 0,
+        tension: 0.15,
     }));
 
     if (waveformChart) {
@@ -3302,24 +3935,213 @@ function renderWaveform(waveform) {
             scales: {
                 x: {
                     type: 'linear',
-                    title: { display: true, text: waveform.x_label || 'time_s' },
+                    min: xScaleMin,
+                    max: xScaleMax,
+                    title: { display: true, text: waveform.x_label || 'time (s)' },
+                    ticks: {
+                        callback: (v) => formatTimeAxisLabel(v),
+                        maxTicksLimit: 8,
+                    },
                 },
                 y: {
-                    title: { display: true, text: 'Amplitude' },
+                    title: { display: true, text: 'Biên độ (V)' },
                 },
             },
             plugins: {
                 legend: { display: true, position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        title: (items) => `t = ${formatTimeAxisLabel(items[0]?.parsed?.x ?? 0)}`,
+                    },
+                },
             },
         },
     });
 
     if (empty) empty.style.display = 'none';
-    updateWaveformNotice(waveform);
-    updateWaveformDebug(waveform, { event: 'render' });
+    updateWaveformNotice(displayWaveform);
+    updateWaveformDebug(lastWaveformPayload || displayWaveform, {
+        event: 'render',
+        xScaleMin,
+        xScaleMax,
+        smoothPlan: prepared.plan,
+    });
 }
 
-function renderWaveformFallbackCanvas(canvas, waveform) {
+const WF_PRESET_MS = ['auto', '1', '5', '10', '15', '20'];
+
+function _wfPresetLabel(ms) {
+    if (ms === 'auto') return 'Auto';
+    const n = Number(ms);
+    if (!Number.isFinite(n)) return ms;
+    return `${n} ms`;
+}
+
+function _syncWaveformPresetButtons(presetGroup) {
+    const sig = WF_PRESET_MS.join(',');
+    if (presetGroup.dataset.wfPresetSig === sig && presetGroup.querySelector('.wf-preset-btn')) {
+        return false;
+    }
+    presetGroup.dataset.wfPresetSig = sig;
+    const activeEndMs = waveformTimeRange.endS !== null
+        ? String(Math.round(waveformTimeRange.endS * 1000))
+        : 'auto';
+    presetGroup.innerHTML = WF_PRESET_MS.map((ms) => {
+        const isAuto = ms === 'auto'
+            && waveformTimeRange.startS === null
+            && waveformTimeRange.endS === null;
+        const isActive = isAuto || (ms === activeEndMs && waveformTimeRange.startS === 0);
+        return `<button type="button" class="wf-preset-btn${isActive ? ' wf-preset-active' : ''}" data-ms="${ms}" title="${ms === 'auto' ? 'Tự động (0 → 20 ms)' : `0 → ${ms} ms`}">${_wfPresetLabel(ms)}</button>`;
+    }).join('');
+    return true;
+}
+
+/**
+ * Ensure waveform toolbar DOM exists (handles stale cached index.html).
+ * Returns the toolbar element or null.
+ */
+function ensureWaveformToolbarElement() {
+    const panel = document.querySelector('#tab-waveform .waveform-panel');
+    if (!panel) return null;
+
+    let toolbar = document.getElementById('waveformToolbar');
+    if (!toolbar) {
+        toolbar = document.createElement('div');
+        toolbar.id = 'waveformToolbar';
+        toolbar.className = 'waveform-toolbar';
+        toolbar.hidden = true;
+        const canvasWrap = panel.querySelector('.waveform-canvas-wrap');
+        if (canvasWrap) {
+            panel.insertBefore(toolbar, canvasWrap);
+        } else {
+            panel.appendChild(toolbar);
+        }
+    }
+
+    toolbar.classList.add('waveform-toolbar');
+
+    // Rebuild preset row if missing (old cached HTML)
+    if (!toolbar.querySelector('#waveformPresets')) {
+        const presetsRow = document.createElement('div');
+        presetsRow.className = 'wf-toolbar-row wf-toolbar-presets';
+        presetsRow.innerHTML = `
+            <span class="wf-toolbar-label"><i class="fas fa-clock"></i> Thời gian hiển thị:</span>
+            <div id="waveformPresets" class="wf-preset-group"></div>`;
+        toolbar.appendChild(presetsRow);
+    }
+
+    const presetGroup = toolbar.querySelector('#waveformPresets');
+    if (presetGroup && _syncWaveformPresetButtons(presetGroup)) {
+        toolbar.dataset.listenersAttached = '';
+    }
+
+    // Rebuild custom range row if missing — this was the main gap on cached HTML
+    if (!document.getElementById('wfRangeEnd') || !document.getElementById('wfCustomRow')) {
+        const oldCustom = toolbar.querySelector('#wfCustomRow');
+        if (oldCustom) oldCustom.remove();
+
+        const customRow = document.createElement('div');
+        customRow.className = 'wf-toolbar-row wf-toolbar-custom';
+        customRow.id = 'wfCustomRow';
+        customRow.innerHTML = `
+            <span class="wf-toolbar-label"><i class="fas fa-sliders"></i> Tùy chỉnh:</span>
+            <label class="wf-range-label" for="wfRangeStart">Từ</label>
+            <input id="wfRangeStart" class="wf-range-input" type="number" min="0" step="any" value="0" title="Thời gian bắt đầu (ms)">
+            <label class="wf-range-label" for="wfRangeEnd">đến</label>
+            <input id="wfRangeEnd" class="wf-range-input" type="number" min="0" max="20" step="any" placeholder="≤20 ms" title="Thời gian kết thúc (ms, tối đa 20)">
+            <span class="wf-range-unit">ms</span>
+            <button type="button" id="wfRangeApply" class="wf-range-apply"><i class="fas fa-check"></i> Áp dụng</button>`;
+        toolbar.appendChild(customRow);
+        toolbar.dataset.listenersAttached = '';
+    }
+
+    return toolbar;
+}
+
+/** Wire toolbar controls once at startup (and after DOM repair). */
+function initWaveformToolbar() {
+    const toolbar = ensureWaveformToolbarElement();
+    if (!toolbar) return;
+
+    if (toolbar.dataset.listenersAttached === '1') return;
+    toolbar.dataset.listenersAttached = '1';
+
+    toolbar.querySelectorAll('.wf-preset-btn').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            toolbar.querySelectorAll('.wf-preset-btn').forEach((b) => b.classList.remove('wf-preset-active'));
+            btn.classList.add('wf-preset-active');
+
+            const ms = btn.dataset.ms;
+            if (ms === 'auto') {
+                waveformTimeRange = { startS: null, endS: null };
+                const s = document.getElementById('wfRangeStart');
+                const e = document.getElementById('wfRangeEnd');
+                if (s) s.value = '0';
+                if (e) e.value = '';
+            } else {
+                const endMs = clampWaveformEndMs(Number(ms), 0);
+                const endS = endMs / 1000;
+                waveformTimeRange = { startS: 0, endS };
+                const s = document.getElementById('wfRangeStart');
+                const e = document.getElementById('wfRangeEnd');
+                if (s) s.value = '0';
+                if (e) e.value = String(endMs);
+            }
+            if (lastWaveformPayload) renderWaveform(lastWaveformPayload);
+        });
+    });
+
+    const applyBtn = document.getElementById('wfRangeApply');
+    if (applyBtn) {
+        applyBtn.addEventListener('click', () => {
+            const startMs = parseFloat(document.getElementById('wfRangeStart')?.value ?? '0') || 0;
+            const rawEndMs = parseFloat(document.getElementById('wfRangeEnd')?.value ?? '');
+            const endMs = clampWaveformEndMs(rawEndMs, startMs);
+            if (!Number.isFinite(rawEndMs) || endMs <= startMs) {
+                document.getElementById('wfRangeEnd')?.focus();
+                return;
+            }
+            const endInput = document.getElementById('wfRangeEnd');
+            if (endInput) endInput.value = String(endMs);
+            waveformTimeRange = { startS: startMs / 1000, endS: endMs / 1000 };
+            toolbar.querySelectorAll('.wf-preset-btn').forEach((b) => b.classList.remove('wf-preset-active'));
+            if (lastWaveformPayload) renderWaveform(lastWaveformPayload);
+        });
+    }
+
+    const endInput = document.getElementById('wfRangeEnd');
+    if (endInput) {
+        endInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') document.getElementById('wfRangeApply')?.click();
+        });
+    }
+}
+
+/**
+ * Show the time-range toolbar when waveform data is available.
+ */
+function ensureWaveformToolbar(waveform) {
+    initWaveformToolbar();
+    const toolbar = ensureWaveformToolbarElement();
+    if (!toolbar) return;
+
+    toolbar.hidden = false;
+    toolbar.removeAttribute('style');
+
+    const traces = Array.isArray(waveform?.traces) ? waveform.traces : [];
+    let dataMaxS = 0;
+    for (const t of traces) {
+        const m = traceTimeMaxS(t);
+        if (m > dataMaxS) dataMaxS = m;
+    }
+
+    const autoBtn = toolbar.querySelector('[data-ms="auto"]');
+    if (autoBtn) {
+        autoBtn.title = `Tự động khớp dữ liệu (0 → ${formatTimeAxisLabel(dataMaxS)})`;
+    }
+}
+
+function renderWaveformFallbackCanvas(canvas, waveform, xScaleMin, xScaleMax) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -3353,6 +4175,9 @@ function renderWaveformFallbackCanvas(canvas, waveform) {
     }
 
     if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) return;
+    // Apply user-selected time range if set
+    if (xScaleMin !== undefined && Number.isFinite(xScaleMin)) xMin = xScaleMin;
+    if (xScaleMax !== undefined && Number.isFinite(xScaleMax)) xMax = xScaleMax;
     if (xMin === xMax) xMax = xMin + 1;
     if (yMin === yMax) yMax = yMin + 1;
 
@@ -3494,9 +4319,10 @@ function updateWaveformNotice(waveform) {
 }
 
 function traceStats(trace) {
-    const y = Array.isArray(trace?.y) ? trace.y.filter((v) => Number.isFinite(v)) : [];
-    const x = Array.isArray(trace?.x) ? trace.x.filter((v) => Number.isFinite(v)) : [];
-    if (y.length === 0 || x.length === 0) {
+    const xs = Array.isArray(trace?.x) ? trace.x : [];
+    const ys = Array.isArray(trace?.y) ? trace.y : [];
+    const n = Math.min(xs.length, ys.length);
+    if (n === 0) {
         return {
             points: 0,
             min: NaN,
@@ -3505,13 +4331,38 @@ function traceStats(trace) {
             xMax: NaN,
         };
     }
+    let ymin = Infinity;
+    let ymax = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const y = Number(ys[i]);
+        if (!Number.isFinite(y)) continue;
+        if (y < ymin) ymin = y;
+        if (y > ymax) ymax = y;
+    }
+    const xMin = Number(xs[0]);
+    const xMax = Number(xs[n - 1]);
     return {
-        points: Math.min(x.length, y.length),
-        min: Math.min(...y),
-        max: Math.max(...y),
-        xMin: Math.min(...x),
-        xMax: Math.max(...x),
+        points: n,
+        min: ymin,
+        max: ymax,
+        xMin: Number.isFinite(xMin) ? xMin : NaN,
+        xMax: Number.isFinite(xMax) ? xMax : arrayMax(xs),
     };
+}
+
+function acRms(trace) {
+    const y = Array.isArray(trace?.y) ? trace.y.map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
+    const n = y.length;
+    if (!n) return NaN;
+    let mean = 0;
+    for (const v of y) mean += v;
+    mean /= n;
+    let acc = 0;
+    for (const v of y) {
+        const d = v - mean;
+        acc += d * d;
+    }
+    return Math.sqrt(acc / n);
 }
 
 function signalMetrics(trace) {
@@ -3615,6 +4466,18 @@ function updateWaveformDebug(waveform, extra = {}) {
         lines.push('Chart.js blocked/unavailable -> using fallback canvas renderer');
     }
 
+    const sp = extra.smoothPlan || lastWaveformSmoothPlan;
+    if (sp) {
+        lines.push('--- smoothness ---');
+        if (sp.frequencyHz) lines.push(`frequency_hz=${sp.frequencyHz}`);
+        if (sp.periodS) lines.push(`period_s=${sp.periodS}`);
+        if (sp.cycles != null) lines.push(`cycles_in_window=${sp.cycles}`);
+        if (sp.pointsPerCycle) lines.push(`points_per_cycle=${sp.pointsPerCycle}`);
+        if (sp.totalPoints) lines.push(`display_points=${sp.totalPoints}`);
+        if (sp.rawPointCount != null) lines.push(`raw_points_in_window=${sp.rawPointCount}`);
+        lines.push(`resampled=${sp.applied ? 'yes' : 'no'}`);
+    }
+
     for (let i = 0; i < traces.length; i++) {
         const t = traces[i];
         const s = traceStats(t);
@@ -3623,19 +4486,41 @@ function updateWaveformDebug(waveform, extra = {}) {
         );
     }
 
-    const { inTrace, outTrace } = pickInputOutputTraces(traces);
+    const gm = extra.gainMetrics
+        || lastSimulationResult?.analysis?.gain_metrics
+        || lastWaveformSimMeta?.analysis?.gain_metrics;
+    if (gm && typeof gm === 'object') {
+        lines.push('--- gain (backend, raw sim) ---');
+        if (gm.input_probe) lines.push(`input_probe=${gm.input_probe}`);
+        if (gm.output_probe) lines.push(`output_probe=${gm.output_probe}`);
+        if (gm.measurement_samples != null) lines.push(`measurement_samples=${gm.measurement_samples}`);
+        if (gm.vin_rms_ac != null) lines.push(`vin_rms_ac=${gm.vin_rms_ac}`);
+        if (gm.vout_rms_ac != null) lines.push(`vout_rms_ac=${gm.vout_rms_ac}`);
+        if (gm.gain_rms != null) lines.push(`gain_rms=${gm.gain_rms}`);
+        if (gm.measured_av != null) lines.push(`measured_av=${gm.measured_av}`);
+        if (gm.expected_av != null) lines.push(`expected_av=${gm.expected_av}`);
+        if (gm.rel_error_pct != null) lines.push(`rel_error_pct=${gm.rel_error_pct}`);
+        if (gm.equation_match != null) lines.push(`equation_match=${gm.equation_match}`);
+    }
+
+    const rawTraces = Array.isArray(lastWaveformPayload?.traces) ? lastWaveformPayload.traces : traces;
+    const { inTrace, outTrace } = pickInputOutputTraces(rawTraces);
     if (inTrace && outTrace) {
         const inM = signalMetrics(inTrace);
         const outM = signalMetrics(outTrace);
-        const gain = (Number.isFinite(inM.p2p) && inM.p2p > 1e-12 && Number.isFinite(outM.p2p))
+        const inAcRms = acRms(inTrace);
+        const outAcRms = acRms(outTrace);
+        const gainP2p = (Number.isFinite(inM.p2p) && inM.p2p > 1e-12 && Number.isFinite(outM.p2p))
             ? (outM.p2p / inM.p2p)
             : NaN;
+        const gainRms = (inAcRms > 1e-12 && Number.isFinite(outAcRms)) ? (outAcRms / inAcRms) : NaN;
         const polarity = estimatePolarity(inTrace, outTrace);
 
-        lines.push('--- quick_validation ---');
+        lines.push('--- quick_validation (raw traces) ---');
         lines.push(`input_trace=${inTrace.name}, output_trace=${outTrace.name}`);
         lines.push(`vin_p2p=${inM.p2p}, vout_p2p=${outM.p2p}`);
-        lines.push(`gain_estimate_abs=${Number.isFinite(gain) ? gain : 'NaN'}`);
+        lines.push(`gain_estimate_p2p=${Number.isFinite(gainP2p) ? gainP2p : 'NaN'}`);
+        lines.push(`gain_estimate_rms_ac=${Number.isFinite(gainRms) ? gainRms : 'NaN'}`);
         lines.push(`phase_relation=${polarity}`);
     }
 

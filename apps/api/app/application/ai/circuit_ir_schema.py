@@ -927,12 +927,12 @@ class CircuitIR(BaseModel):
                     )
 
         # ── BJT topology wiring guards ─────────────────────────────────────
-        # These enforce the distinguishing structural features of each BJT
-        # configuration so simulation/PCB don't run on a mis-wired topology.
-        # The validators are gated to only fire when the IR is detailed enough
-        # to distinguish topologies — i.e. it contains the biasing network
-        # (RB1+RB2 or R1+R2) and at least one signal-coupling capacitor.
-        # Minimal/legacy test fixtures with just (Q1 + RL) pass through.
+        # Hallmark checks are derived from topology_wiring_spec so that adding
+        # a new topology only requires updating that single data file.
+        # Guards are only active when the IR is detailed enough to distinguish
+        # topologies (bias divider + at least one coupling cap present).
+        from app.application.ai.topology_wiring_spec import get_spec
+
         resistor_refs = {
             c.ref.strip().upper()
             for c in self.components
@@ -962,18 +962,17 @@ class CircuitIR(BaseModel):
                     return False
                 if token in {"VCC", "VDD", "V+", "VPLUS", "VS+", "VS_PLUS", "VCC_RAIL", "VDD_RAIL"}:
                     return True
-                # Names like "VCC_12V", "VDD_5V" — anything starting with VCC/VDD.
                 return token.startswith("VCC") or token.startswith("VDD") or token.startswith("V+")
 
+            topo_spec = get_spec(family)
+
             if family == "common_collector":
-                # Hallmark: Q1:C tied directly to the supply rail (no RC load).
+                # spec hallmark: Q1:C must connect to supply rail (no RC load)
                 if q1_c_net and not _is_supply_rail(q1_c_net):
-                    raise ValueError(
-                        "validation_errors: bjt.cc.Q1_C_must_connect_directly_to_supply_rail"
-                    )
-                # Hallmark 2: no collector load resistor connected between Q1:C
-                # and the supply rail. If any non-supply component shares Q1:C
-                # net, that's typically RC — which would make this CE, not CC.
+                    code = "bjt.cc.Q1_C_must_connect_directly_to_supply_rail"
+                    desc = topo_spec.hallmarks[0].description if topo_spec and topo_spec.hallmarks else code
+                    raise ValueError(f"validation_errors: {code} — {desc}")
+                # Verify no foreign component (e.g. RC) sits between Q1:C and VCC
                 if q1_c_net and _is_supply_rail(q1_c_net):
                     for net in self.nets:
                         if net.net_name != q1_c_net:
@@ -983,28 +982,22 @@ class CircuitIR(BaseModel):
                             if not node_str:
                                 continue
                             ref = node_str.split(":", 1)[0]
-                            # The only acceptable refs on the supply rail are
-                            # the transistor collector, power_supply symbols,
-                            # decoupling caps, and bias divider top resistor
-                            # (RB1 or R1). Skip if matches.
                             if ref in {"Q1", "VCC", "VDD", "V+", "VS+"}:
                                 continue
                             if ref.startswith("VCC") or ref.startswith("VDD"):
                                 continue
                             if ref.startswith("C") and len(ref) <= 4:
-                                # Likely decoupling cap; let it through.
                                 continue
                             if ref in {"RB1", "R1"}:
                                 continue
-                # Hallmark 3: Q1:E must NOT be directly grounded — it needs RE
-                # to develop the output. (Otherwise it's a switch, not amplifier.)
+                # spec hallmark: Q1:E must not be directly grounded
                 if q1_e_net and q1_e_net.strip() == "0":
-                    raise ValueError(
-                        "validation_errors: bjt.cc.Q1_E_must_not_connect_directly_to_ground_use_RE"
-                    )
+                    code = "bjt.cc.Q1_E_must_not_connect_directly_to_ground_use_RE"
+                    desc = topo_spec.hallmarks[1].description if topo_spec and len(topo_spec.hallmarks) > 1 else code
+                    raise ValueError(f"validation_errors: {code} — {desc}")
 
             elif family == "common_base":
-                # Hallmark: mandatory base-bypass capacitor between Q1:B and 0.
+                # spec hallmark 0: mandatory base-bypass cap between Q1:B and 0
                 if q1_b_net:
                     base_bypass_found = False
                     for net in self.nets:
@@ -1017,33 +1010,30 @@ class CircuitIR(BaseModel):
                             ref, _ = node_str.split(":", 1)
                             if not ref.startswith("C"):
                                 continue
-                            # Find the OTHER pin of this capacitor.
                             other_pin = "2" if node_str.endswith(":1") else "1"
-                            other_key = f"{ref}:{other_pin}"
-                            other_net = net_by_pin.get(other_key, "")
+                            other_net = net_by_pin.get(f"{ref}:{other_pin}", "")
                             if other_net == q1_b_net:
                                 base_bypass_found = True
                                 break
                         if base_bypass_found:
                             break
                     if not base_bypass_found:
-                        raise ValueError(
-                            "validation_errors: bjt.cb.missing_base_bypass_capacitor_to_GND"
-                        )
-                # Hallmark 2: input coupling cap CIN feeds the EMITTER, not the base.
+                        code = "bjt.cb.missing_base_bypass_capacitor_to_GND"
+                        desc = topo_spec.hallmarks[0].description if topo_spec and topo_spec.hallmarks else code
+                        raise ValueError(f"validation_errors: {code} — {desc}")
+                # spec hallmark 1: CIN:2 must connect to emitter, NOT base
                 cin2_net = net_by_pin.get("CIN:2", "")
                 if cin2_net and q1_e_net and cin2_net != q1_e_net:
-                    raise ValueError(
-                        "validation_errors: bjt.cb.CIN2_must_share_net_with_Q1_E_emitter"
-                    )
+                    code = "bjt.cb.CIN2_must_share_net_with_Q1_E_emitter"
+                    desc = topo_spec.hallmarks[1].description if topo_spec and len(topo_spec.hallmarks) > 1 else code
+                    raise ValueError(f"validation_errors: {code} — {desc}")
 
             elif family == "common_emitter":
-                # Hallmark: Q1:C should NOT be tied directly to the supply rail
-                # (then there's no RC load and it would behave like CC).
+                # spec hallmark: Q1:C must NOT tie directly to VCC (needs RC load)
                 if q1_c_net and _is_supply_rail(q1_c_net):
-                    raise ValueError(
-                        "validation_errors: bjt.ce.Q1_C_must_not_connect_directly_to_supply_rail_use_RC"
-                    )
+                    code = "bjt.ce.Q1_C_must_not_connect_directly_to_supply_rail_use_RC"
+                    desc = topo_spec.hallmarks[0].description if topo_spec and topo_spec.hallmarks else code
+                    raise ValueError(f"validation_errors: {code} — {desc}")
 
         if missing_refs:
             logger.warning("Missing component refs in nets: %s", sorted(set(missing_refs)))

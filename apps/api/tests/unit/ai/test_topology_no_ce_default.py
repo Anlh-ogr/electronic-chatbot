@@ -32,6 +32,13 @@ def nlu() -> NLUService:
         ("Mạch emitter follower BJT VCC 9V", "common_collector"),
         ("Thiết kế mạch BJT common base gain 20 VCC 12V", "common_base"),
         ("Mạch CB gain 15 VCC 10V", "common_base"),
+        (
+            "Thiết kế mạch khuếch đại BJT mắc B chung sử dụng nguồn 12V. "
+            "Tín hiệu vào hình sin 50mV, tần số 100kHz. "
+            "Mạch cần có độ lợi điện áp khoảng 8 lần",
+            "common_base",
+        ),
+        ("Thiết kế mạch BJT mắc base chung VCC 12V", "common_base"),
         ("Op-amp đảo gain 10 VCC 15V", "inverting"),
         ("Mạch khuếch đại đảo gain 8 nguồn 12V", "inverting"),
         ("Op-amp không đảo gain 5 VCC 12V", "non_inverting"),
@@ -43,6 +50,35 @@ def nlu() -> NLUService:
 def test_nlu_detects_explicit_topology(nlu: NLUService, text: str, expected: str) -> None:
     intent = nlu._rule_based_parse(text)
     assert intent.circuit_type == expected, f"text={text!r} got {intent.circuit_type!r}"
+
+
+def test_nlu_does_not_invent_gain_or_vcc_when_missing(nlu: NLUService) -> None:
+    intent = nlu._rule_based_parse("Thiết kế mạch BJT common base")
+    assert intent.circuit_type == "common_base"
+    assert intent.gain_target is None
+    assert intent.vcc is None
+
+
+def test_nlu_cb_prompt_parses_gain_from_do_loi(nlu: NLUService) -> None:
+    text = (
+        "Thiết kế mạch khuếch đại BJT mắc B chung sử dụng nguồn 12V. "
+        "Độ lợi điện áp khoảng 8"
+    )
+    intent = nlu._rule_based_parse(text)
+    assert intent.circuit_type == "common_base"
+    assert intent.gain_target == 8.0
+    assert intent.vcc == 12.0
+
+
+def test_nlu_cb_prompt_parses_gain_with_lan_suffix(nlu: NLUService) -> None:
+    text = (
+        "Thiết kế mạch khuếch đại BJT mắc B chung sử dụng nguồn 12V. "
+        "Mạch cần có độ lợi điện áp khoảng 8 lần"
+    )
+    intent = nlu._rule_based_parse(text)
+    assert intent.circuit_type == "common_base"
+    assert intent.gain_target == 8.0
+    assert intent.vcc == 12.0
 
 
 def test_nlu_no_default_ce_for_generic_bjt_amplifier(nlu: NLUService) -> None:

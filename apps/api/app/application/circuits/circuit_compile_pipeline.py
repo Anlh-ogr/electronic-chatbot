@@ -139,6 +139,9 @@ def build_llm_requirements(
         parts.append(extra_prompt.strip())
 
     merged = "\n".join(p for p in parts if p)
+    from app.application.ai.topology_execution import append_topology_constraints_to_requirements
+
+    merged = append_topology_constraints_to_requirements(merged, intent.circuit_type or intent.topology)
     return augment_requirements_with_solver(intent, merged)
 
 

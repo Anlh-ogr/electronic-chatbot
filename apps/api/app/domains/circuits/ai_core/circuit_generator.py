@@ -512,9 +512,14 @@ class CircuitGenerator:
 
         # Populate schema defaults used by simulation_service.
         circuit.setdefault("analysis_type", "transient")
-        circuit.setdefault("tran_step", "10us")
-        circuit.setdefault("tran_stop", "10ms")
         circuit.setdefault("tran_start", "0")
+        try:
+            from app.application.ai.transient_window import apply_transient_window_defaults
+
+            apply_transient_window_defaults(circuit, overwrite=False)
+        except Exception:
+            circuit.setdefault("tran_step", "10us")
+            circuit.setdefault("tran_stop", "20ms")
         if "nodes_to_monitor" not in circuit or not isinstance(circuit.get("nodes_to_monitor"), list):
             in_nodes = self._input_nodes(circuit, node_map)
             out_nodes = self._output_nodes(circuit)

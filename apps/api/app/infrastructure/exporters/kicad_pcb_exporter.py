@@ -184,6 +184,13 @@ class KiCadPCBExporter(ExporterPort):
                 placements, (board_width, board_height) = strict_pcb.finalize_board_size(
                     circuit, placements
                 )
+                placements = strict_pcb.repair_placement_overlaps(
+                    circuit,
+                    placements,
+                    anchor,
+                    board_width,
+                    board_height,
+                )
                 self._last_board_size_mm = (board_width, board_height)
                 overlap_final = strict_pcb.count_courtyard_overlaps(circuit, placements)
 

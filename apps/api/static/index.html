@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Electronic Circuit Chatbot</title>
-    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260517kicanvas">
+    <link rel="stylesheet" href="/static/css/chatbot.css?v=20260608smooth">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -269,6 +269,37 @@
                             <p>Chưa có dữ liệu waveform</p>
                             <p class="sub-text">Dùng lệnh /simulate để chạy ngspice trực tiếp trong chatbot</p>
                         </div>
+
+                        <!-- Time-range toolbar (hidden until first waveform arrives) -->
+                        <div id="waveformToolbar" class="waveform-toolbar" hidden>
+                            <div class="wf-toolbar-row wf-toolbar-presets">
+                                <span class="wf-toolbar-label">
+                                    <i class="fas fa-clock"></i> Thời gian hiển thị:
+                                </span>
+                                <div id="waveformPresets" class="wf-preset-group">
+                                    <button type="button" class="wf-preset-btn wf-preset-active" data-ms="auto" title="Tự động (0 → 20 ms)">Auto</button>
+                                    <button type="button" class="wf-preset-btn" data-ms="1">1 ms</button>
+                                    <button type="button" class="wf-preset-btn" data-ms="5">5 ms</button>
+                                    <button type="button" class="wf-preset-btn" data-ms="10">10 ms</button>
+                                    <button type="button" class="wf-preset-btn" data-ms="15">15 ms</button>
+                                    <button type="button" class="wf-preset-btn" data-ms="20">20 ms</button>
+                                </div>
+                            </div>
+                            <div class="wf-toolbar-row wf-toolbar-custom" id="wfCustomRow">
+                                <span class="wf-toolbar-label">
+                                    <i class="fas fa-sliders"></i> Tùy chỉnh:
+                                </span>
+                                <label class="wf-range-label" for="wfRangeStart">Từ</label>
+                                <input id="wfRangeStart" class="wf-range-input" type="number" min="0" step="any" value="0" title="Thời gian bắt đầu (ms)">
+                                <label class="wf-range-label" for="wfRangeEnd">đến</label>
+                                <input id="wfRangeEnd" class="wf-range-input" type="number" min="0" max="20" step="any" placeholder="≤20 ms" title="Thời gian kết thúc (ms, tối đa 20)">
+                                <span class="wf-range-unit">ms</span>
+                                <button type="button" id="wfRangeApply" class="wf-range-apply">
+                                    <i class="fas fa-check"></i> Áp dụng
+                                </button>
+                            </div>
+                        </div>
+
                         <div class="waveform-canvas-wrap">
                             <canvas id="waveformCanvas"></canvas>
                         </div>
@@ -298,6 +329,6 @@
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
     <script src="/static/js/markdown.js?v=20260318"></script>
     <script src="/static/js/circuit_animation.js?v=20260512gsap"></script>
-    <script src="/static/js/chatbot.js?v=20260517elpis2"></script>
+    <script src="/static/js/chatbot.js?v=20260608wf20ms"></script>
 </body>
 </html>

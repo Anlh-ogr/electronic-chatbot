@@ -46,6 +46,12 @@ from app.application.ai.nlu_service import NLUService, CircuitIntent
 from app.application.ai.nlg_service import NLGService
 from app.application.ai.constraint_validator import ConstraintValidator
 from app.application.ai.repair_engine import RepairEngine
+from app.application.ai.transient_window import (
+    DEFAULT_MAX_POINTS,
+    apply_transient_window_defaults,
+    compute_transient_window,
+    format_time_seconds,
+)
 from app.application.ai.simulation_service import (
     NgSpiceSimulationService,
     NgspiceCompilerService,
@@ -570,6 +576,13 @@ class ChatbotService:
                     )
                 if ir_result is None:
                     raise ValueError("LLM khong tra ve CircuitIR hop le")
+
+                if isinstance(ir_result, dict):
+                    from app.application.ai.bjt_ir_wiring_repair import repair_bjt_ir_wiring
+                    from app.application.ai.opamp_ir_wiring_repair import repair_opamp_ir_wiring
+
+                    ir_result = repair_bjt_ir_wiring(ir_result, requirements=attempt_prompt)
+                    ir_result = repair_opamp_ir_wiring(ir_result, requirements=attempt_prompt)
 
                 ir_obj = CircuitIR.model_validate(ir_result)
                 if not ir_obj.is_valid_request:
@@ -2219,7 +2232,7 @@ class ChatbotService:
         return self._safe_text(generated, f"❌ Loi tai buoc '{stage}': {error_msg}")
 
     def _apply_reasonable_defaults(self, intent: CircuitIntent) -> List[str]:
-        """Apply conservative defaults for incomplete but reasonable design requests."""
+        """Suy luận ràng buộc từ prompt — không gán gain/VCC/tần số mặc định."""
         notes: List[str] = []
         raw_text = (intent.raw_text or "").lower()
 
@@ -2258,32 +2271,6 @@ class ChatbotService:
                 notes.append(f"Zout yeu cau <= {float(zout_max):g} ohm, tu bat output buffer")
             if "low_output_impedance" not in intent.extra_requirements:
                 intent.extra_requirements.append("low_output_impedance")
-
-        ctype = (intent.circuit_type or "").strip().lower()
-        if not isinstance(intent.gain_target, (int, float)) or intent.gain_target <= 0:
-            default_gain = 10.0
-            if ctype in {"common_emitter", "common_source", "common_base", "common_collector"}:
-                default_gain = 20.0
-            elif ctype in {"inverting", "non_inverting", "differential", "instrumentation"}:
-                default_gain = 5.0
-            elif ctype in {"multi_stage", "darlington"}:
-                if isinstance(intent.hard_constraints.get("gain_min"), (int, float)) and isinstance(intent.hard_constraints.get("gain_max"), (int, float)):
-                    default_gain = (float(intent.hard_constraints["gain_min"]) + float(intent.hard_constraints["gain_max"])) / 2.0
-                else:
-                    default_gain = 24.0
-            intent.gain_target = float(default_gain)
-            notes.append(f"Thieu gain, he thong tu gia dinh gain_target={default_gain:g}")
-
-        if not isinstance(intent.vcc, (int, float)) or intent.vcc <= 0:
-            default_vcc = 12.0
-            if intent.supply_mode == "single_supply" or intent.device_preference == "opamp":
-                default_vcc = 5.0
-            intent.vcc = float(default_vcc)
-            notes.append(f"Thieu VCC, he thong tu gia dinh VCC={default_vcc:g}V")
-
-        if not intent.frequency and any(tag in (intent.raw_text or "").lower() for tag in ["ac", "sin", "transient"]):
-            intent.frequency = 1000.0
-            notes.append("Thieu tan so kich, he thong tu gia dinh f=1kHz")
 
         return notes
 
@@ -4185,10 +4172,13 @@ class ChatbotService:
             sim_payload = dict(circuit_data)
             # Keep backward compatibility if generator does not provide schema fields yet.
             sim_payload.setdefault("analysis_type", "transient")
-            sim_payload.setdefault("tran_step", "10us")
-            sim_payload.setdefault("tran_stop", "10ms")
             sim_payload.setdefault("tran_start", "0")
             sim_payload.setdefault("nodes_to_monitor", self._default_simulation_probes(circuit_data))
+            apply_transient_window_defaults(
+                sim_payload,
+                max_points=DEFAULT_MAX_POINTS,
+                overwrite=True,
+            )
 
             sim = NgSpiceSimulationService().simulate_from_circuit_data(sim_payload)
             sim_dict = sim.to_dict()
@@ -4294,23 +4284,13 @@ class ChatbotService:
         if reltol is not None:
             circuit_data["reltol"] = reltol
 
-        if freq and freq > 0:
-            # stop_time = cycles / frequency
-            if cycles and cycles > 0:
-                stop_s = float(cycles) / float(freq)
-                circuit_data["tran_stop"] = f"{stop_s:.9g}"
-            else:
-                circuit_data.setdefault("tran_stop", "10ms")
-
-            # step_time = period / points_per_cycle
-            if points_per_cycle and points_per_cycle > 0:
-                step_s = (1.0 / float(freq)) / float(points_per_cycle)
-                circuit_data["tran_step"] = f"{step_s:.9g}"
-            else:
-                circuit_data.setdefault("tran_step", "10us")
-        else:
-            circuit_data.setdefault("tran_stop", "10ms")
-            circuit_data.setdefault("tran_step", "10us")
+        stop_s, step_s = compute_transient_window(
+            freq if freq and freq > 0 else None,
+            cycles=cycles,
+            points_per_cycle=points_per_cycle,
+        )
+        circuit_data["tran_stop"] = format_time_seconds(stop_s)
+        circuit_data["tran_step"] = format_time_seconds(step_s)
 
         source_params = dict(circuit_data.get("source_params") or {})
         source_params.setdefault("offset", 0.0)

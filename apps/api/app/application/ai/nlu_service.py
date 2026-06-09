@@ -199,15 +199,16 @@ CIRCUIT_TYPE_KEYWORDS = {
         r"common[\s_-]*emitter", r"\bce\b", r"emitter\s*chung", r"common_emitter",
         r"bjt\s*ce", r"tầng\s*ce", r"mạch\s*ce", r"khuếch\s*đại\s*ce",
         # MỚI
-        r"mạch\s*transistor", r"e\s*chung", r"mắc\s*kiểu\s*e\s*chung",
+        r"(?<![a-z])e\s*chung\b", r"mắc\s*kiểu\s*e\s*chung", r"mắc\s*e\s*chung",
         r"cực\s*phát\s*chung", r"grounded[\s_-]*emitter",
-        r"ce\s*amplifier", r"voltage\s*amp\s*bjt",
+        r"ce\s*amplifier",
     ],
     "common_base": [
         r"common[\s_-]*base", r"\bcb\b", r"base\s*chung", r"common_base",
         r"bjt\s*cb", r"tầng\s*cb", r"khuếch\s*đại\s*cb",
         # MỚI
-        r"b\s*chung", r"mạch\s*b\s*chung", r"cực\s*nền\s*chung",
+        r"b\s*chung", r"mạch\s*b\s*chung", r"mắc\s*b\s*chung", r"mắc\s*base\s*chung",
+        r"cực\s*b\s*chung", r"cực\s*nền\s*chung",
         r"cực\s*gốc\s*chung", r"grounded[\s_-]*base", r"cb\s*amplifier",
     ],
     "common_collector": [
@@ -363,16 +364,14 @@ class NLUService:
         # Phân tích yêu cầu user theo 2 nhánh: rule-based và LLM, sau đó hợp nhất.
         rule_intent = self._rule_based_parse(user_text)
 
-        # Nhánh LLM theo mode đang chọn
+        # Nhánh LLM: bổ sung trường rule-based chưa bắt được; topology/số liệu ưu tiên rule.
         if self._router:
             try:
                 llm_intent = self._llm_extract(user_text, mode=mode)
-                # kiểm tra mức độ tin cậy -> cao hơn thì merge
-                if llm_intent and llm_intent.confidence > rule_intent.confidence:
+                if llm_intent:
                     merged = self._merge_intents(rule_intent, llm_intent)
                     merged.source = "merged"
                     return merged
-        
             except Exception as e:
                 logger.warning(f"NLU: Khởi tạo LLM service thất bại, sử dụng base: {e}")
                 rule_intent.warnings.append(f"LLM fallback: {e}")
@@ -455,22 +454,31 @@ class NLUService:
                 unique_actions.append(act)
         return unique_actions
 
-    def _detect_topology(self, text: str) -> str:
-        # Nhận diện mạch từ key
-        priority_order = ["instrumentation", "differential", "non_inverting", "inverting",
-                          "class_ab", "class_a", "class_b", "class_c", "class_d",
-                          "common_emitter", "common_base", "common_collector",
-                          "common_source", "common_drain", "common_gate",
-                          "darlington", "multi_stage",]
-        
-        # ưu tiên nhận diện các loại mạch đặc thù trước (instrumentation, differential, non-inverting, inverting) rồi mới đến các loại mạch chung chung (common emitter/source/collector/gate).
-        for topo in priority_order:
-            patterns = CIRCUIT_TYPE_KEYWORDS.get(topo, [])
-            for pat in patterns:
-                if re.search(pat, text, re.IGNORECASE):
-                    return topo
+    def _score_topology_pattern(self, pattern: str, rank: int, total: int) -> int:
+        # Pattern đứng đầu danh sách = alias rõ ràng hơn; pattern dài hơn = cụ thể hơn.
+        return (total - rank) * 1000 + len(pattern)
 
-        return "unknown"
+    def _detect_topology(self, text: str) -> str:
+        # Không dùng priority cố định — chỉ gán topology khi có khớp rõ ràng, không mơ hồ.
+        winners: List[tuple[str, int]] = []
+
+        for topo, patterns in CIRCUIT_TYPE_KEYWORDS.items():
+            best_score = -1
+            for rank, pat in enumerate(patterns):
+                if re.search(pat, text, re.IGNORECASE):
+                    score = self._score_topology_pattern(pat, rank, len(patterns))
+                    best_score = max(best_score, score)
+            if best_score >= 0:
+                winners.append((topo, best_score))
+
+        if not winners:
+            return "unknown"
+
+        top_score = max(score for _, score in winners)
+        top_matches = [topo for topo, score in winners if score == top_score]
+        if len(top_matches) != 1:
+            return "unknown"
+        return top_matches[0]
 
     def _extract_number(self, text: str, patterns: List[str]) -> Optional[float]:
         # Extract giá trị đầu tiên match từ danh sách patterns.
@@ -522,6 +530,8 @@ class NLUService:
                 pass
 
         intent.gain_target = self._extract_number(text, [
+            r"độ\s*lợi\s*(?:điện\s*áp)?\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
+            r"độ\s*lợi\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*(-?[0-9]+(?:\.[0-9]+)?)\s*(?:lần|times|x)\b",
             r"gain\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"gain\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
             r"khuếch\s*đại\s*(?:khoảng|tầm|xấp\s*xỉ)?\s*[=:]?\s*(-?[0-9]+(?:\.[0-9]+)?)",
@@ -1048,28 +1058,26 @@ class NLUService:
         else:
             merged.intent_type = rule.intent_type
 
-        # Ưu tiên LLM cho circuit_type nếu không phải unknown
-        if llm.circuit_type and llm.circuit_type != "unknown":
-            merged.circuit_type = llm.circuit_type
-            merged.topology = llm.topology
-        else:
-            merged.circuit_type = rule.circuit_type
-            merged.topology = rule.topology
+        rule_topo = rule.circuit_type if rule.circuit_type and rule.circuit_type != "unknown" else None
+        llm_topo = llm.circuit_type if llm.circuit_type and llm.circuit_type != "unknown" else None
 
-        # Số liệu: ưu tiên LLM, fallback rule
-        merged.gain_target = llm.gain_target if llm.gain_target is not None else rule.gain_target
-        if (
-            rule.gain_target is not None
-            and llm.gain_target is not None
-            and abs(rule.gain_target) >= 5
-            and abs(llm.gain_target) < 5
-            and re.search(r"(?:gain|av|khuếch\s*đại)", rule.raw_text, re.IGNORECASE)
-        ):
-            merged.gain_target = rule.gain_target
-        merged.vcc = self._normalize_supply_voltage(llm.vcc)
+        # Topology: ưu tiên rule-based (parse trực tiếp từ prompt), LLM chỉ bổ sung khi rule không bắt được.
+        if rule_topo:
+            merged.circuit_type = rule_topo
+            merged.topology = rule.topology or rule_topo
+        elif llm_topo:
+            merged.circuit_type = llm_topo
+            merged.topology = llm.topology or llm_topo
+        else:
+            merged.circuit_type = "unknown"
+            merged.topology = "unknown"
+
+        # Số liệu: ưu tiên rule-based nếu đã parse được từ prompt.
+        merged.gain_target = rule.gain_target if rule.gain_target is not None else llm.gain_target
+        merged.vcc = self._normalize_supply_voltage(rule.vcc)
         if merged.vcc is None:
-            merged.vcc = self._normalize_supply_voltage(rule.vcc)
-        merged.frequency = llm.frequency if llm.frequency is not None else rule.frequency
+            merged.vcc = self._normalize_supply_voltage(llm.vcc)
+        merged.frequency = rule.frequency if rule.frequency is not None else llm.frequency
         merged.input_channels = llm.input_channels if llm.input_channels > 1 else rule.input_channels
         merged.channel_inputs = llm.channel_inputs if llm.channel_inputs else rule.channel_inputs
         merged.voltage_range = llm.voltage_range if llm.voltage_range else rule.voltage_range

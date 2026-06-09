@@ -146,7 +146,7 @@ class DebugHistoryResponse(BaseModel):
 class SimulationAnalysisRequest(BaseModel):
     type: str = Field(default="transient", description="Simulation type. Currently supports: transient")
     step: str = Field(default="10us", description="Transient step time")
-    stop: str = Field(default="10ms", description="Transient stop time")
+    stop: str = Field(default="20ms", description="Transient stop time (max 20 ms)")
     start: str = Field(default="0", description="Transient start time")
 
 
@@ -668,12 +668,32 @@ async def simulate_circuit(request: SimulationRequest) -> SimulationResponse:
                     detail={"error": "unsupported_analysis", "message": "Only transient analysis is supported"},
                 )
 
+            from app.application.ai.transient_window import (
+                apply_transient_window_defaults,
+                compute_transient_window,
+                extract_frequency_hz,
+                format_time_seconds,
+            )
+
+            netlist_only: Dict[str, Any] = {
+                "source_params": request.source_params or {},
+            }
+            apply_transient_window_defaults(
+                netlist_only,
+                max_points=simulator._max_points,
+                overwrite=True,
+            )
+            stop_s, step_s = compute_transient_window(
+                extract_frequency_hz(netlist_only),
+                max_points=simulator._max_points,
+            )
+
             result = simulator.simulate_transient(
                 netlist=request.netlist,
                 probes=request.probes,
-                step=request.analysis.step,
-                stop=request.analysis.stop,
-                start=request.analysis.start,
+                step=format_time_seconds(step_s),
+                stop=format_time_seconds(stop_s),
+                start="0",
             )
 
         payload = result.to_dict()
@@ -783,12 +803,34 @@ async def simulate_circuit_stream(request: SimulationRequest) -> StreamingRespon
                         detail={"error": "unsupported_analysis", "message": "Only transient analysis is supported"},
                     )
 
+                from app.application.ai.transient_window import (
+                    apply_transient_window_defaults,
+                    format_time_seconds,
+                    compute_transient_window,
+                    extract_frequency_hz,
+                )
+
+                netlist_only: Dict[str, Any] = {
+                    "source_params": request.source_params or {},
+                }
+                apply_transient_window_defaults(
+                    netlist_only,
+                    max_points=simulator._max_points,
+                    overwrite=True,
+                )
+                stop_s, step_s = compute_transient_window(
+                    extract_frequency_hz(netlist_only),
+                    max_points=simulator._max_points,
+                )
+                step = format_time_seconds(step_s)
+                stop = format_time_seconds(stop_s)
+
                 result = simulator.simulate_transient(
                     netlist=request.netlist,
                     probes=request.probes,
-                    step=request.analysis.step,
-                    stop=request.analysis.stop,
-                    start=request.analysis.start,
+                    step=step,
+                    stop=stop,
+                    start="0",
                 )
 
             yield to_sse_event("result", result.to_dict())

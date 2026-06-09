@@ -27,6 +27,7 @@ from app.application.ai.circuit_ir_schema import CircuitIR
 from pydantic import BaseModel, ValidationError
 
 from app.application.ai.schema_utils import prepare_vertex_schema
+from app.application.ai.topology_wiring_spec import build_wiring_rules_block, build_inventory_block
 
 response_schema = prepare_vertex_schema(
     CircuitIR.model_json_schema(),
@@ -425,53 +426,24 @@ class LLMRouter:
             14. Keep output compact.
             15. signal_flow.input_node and signal_flow.output_node MUST equal the actual small-signal net_name strings in nets[] and MUST each appear in probe_nodes (exact SPICE node spellings).
             16. Each physical pin must belong to exactly one net. Never assign the same component pin to two different nets.
-            17. For BJT common-emitter AC coupling capacitors, use these exact pin/net assignments:
-            - CIN:1 → IN_SIG (external input)
-            - CIN:2 → BASE_Q1 (connects to Q1:B / BJT base node)
-            - COUT:1 → COLLECTOR_Q1 (connects to Q1:C / BJT collector node)
-            - COUT:2 → OUT_SIG (external output)
-            Never put CIN:1, CIN:2, COUT:1, or COUT:2 on more than one net.
-            18. For BJT common_collector (emitter follower):
-            - Q1:C MUST connect directly to VCC. DO NOT place any collector load resistor (no RC) between Q1:C and VCC.
-            - Q1:B → BASE_Q1 (shared by RB1:2 and RB2:1 and CIN:2).
-            - Q1:E → EMITTER_Q1 (shared by RE:1 and COUT:1).
-            - COUT:1 → EMITTER_Q1, COUT:2 → OUT_SIG. Output is taken from the emitter; voltage gain ≈ 1.
-            19. For BJT common_base:
-            - Q1:E → EMITTER_Q1 (shared by CIN:2 and RE:1). Input is injected at the emitter via CIN.
-            - Q1:B → BASE_Q1 (shared by RB1:2 and RB2:1). MANDATORY base-bypass capacitor: CB:1 → BASE_Q1, CB:2 → 0. Without CB, the stage is NOT common-base.
-            - Q1:C → COLLECTOR_Q1 (shared by RC:2 and COUT:1). Output is taken from the collector.
-            - CIN:1 → IN_SIG, CIN:2 → EMITTER_Q1. COUT:1 → COLLECTOR_Q1, COUT:2 → OUT_SIG.
-            20. For opamp_inverting:
-            - U1:+ → 0 (non-inverting input tied directly to ground reference).
-            - RIN:1 → IN_SIG, RIN:2 → U1_INV_IN.
-            - RF:1 → OUT_SIG (feedback path FROM output), RF:2 → U1_INV_IN (summing junction).
-            - U1:- → U1_INV_IN. U1:OUT → OUT_SIG.
-            - Av = -RF/RIN. The signal path is DC-coupled — DO NOT add CIN/COUT AC coupling caps for op-amp circuits.
-            21. For opamp_non_inverting:
-            - U1:+ → IN_SIG. U1:- → U1_INV_IN.
-            - RG:1 → 0, RG:2 → U1_INV_IN.
-            - RF:1 → OUT_SIG, RF:2 → U1_INV_IN.
-            - U1:OUT → OUT_SIG.
-            - Av = 1 + RF/RG. DC-coupled signal path — DO NOT add AC coupling caps.
-            22. For opamp_differential:
-            - Inputs are IN_PLUS_SIG and IN_MINUS_SIG (both small-signal). Output is OUT_SIG.
-            - R1:1 → IN_MINUS_SIG, R1:2 → U1_INV_IN. R2:1 → U1_INV_IN, R2:2 → OUT_SIG.
-            - R3:1 → IN_PLUS_SIG, R3:2 → U1_NON_INV_IN. R4:1 → U1_NON_INV_IN, R4:2 → 0.
-            - U1:- → U1_INV_IN. U1:+ → U1_NON_INV_IN. U1:OUT → OUT_SIG.
-            - For balanced differential gain, MUST satisfy R1 = R3 (input pair matched) AND R2 = R4 (feedback/ground pair matched). Av_diff = R2/R1.
-            - signal_flow.input_node MAY name either IN_PLUS_SIG or IN_MINUS_SIG; ensure probe_nodes lists BOTH.
+            TOPOLOGY WIRING RULES (rules 17+ — derived from topology_wiring_spec):
+            Each topology has EXACTLY ONE correct wiring. NEVER mix wiring conventions between topologies.
+            Follow the rules for the topology you have been asked to build and ONLY those rules.
+
+{wiring_rules}
+
             23. Op-amp decoupling caps (rule 13 expansion):
             - Single supply: 1 × 0.1uF cap from VCC to 0.
             - Dual supply: 1 × 0.1uF cap from VS+ (positive rail) to 0 AND 1 × 0.1uF cap from VS- (negative rail) to 0.
             These decoupling caps are NOT counted as signal-path coupling capacitors — they are local supply bypass only.
 
             EXPECTED COMPONENT INVENTORY (per topology, minimum required count — fewer than this is invalid):
-            - common_emitter:   1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE OR RE1+RE2 per rule 12) + 2×capacitor coupling (CIN, COUT) + 1×capacitor bypass (CE across RE2) + 1×voltage_source (VTB or VIN) + 1×power_supply (VCC) + 1×ground
-            - common_collector: 1×bjt_npn (Q1) + 3×resistor (RB1, RB2, RE)                          + 2×capacitor coupling (CIN, COUT)                                       + 1×voltage_source              + 1×power_supply              + 1×ground   [NO RC, NO bypass cap]
-            - common_base:      1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE)                      + 2×capacitor coupling (CIN, COUT) + 1×capacitor base-bypass (CB to GND) + 1×voltage_source              + 1×power_supply              + 1×ground
-            - opamp_inverting:     1×opamp_ic (U1) + 2×resistor (RIN, RF)                + 1×capacitor decoupling (0.1uF VCC→0) [+ 1 more if dual supply] + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
-            - opamp_non_inverting: 1×opamp_ic (U1) + 2×resistor (RG, RF)                 + 1×capacitor decoupling [+ 1 if dual]                          + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
-            - opamp_differential:  1×opamp_ic (U1) + 4×resistor (R1, R2, R3, R4 matched pairs R1=R3, R2=R4) + 1×capacitor decoupling [+ 1 if dual]      + 1×voltage_source + 1×power_supply + 1×ground   [NO signal-path coupling caps]
+            - common_emitter:   1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE OR RE1+RE2 per rule 12) + 2×capacitor coupling (CIN, COUT) + 1×capacitor bypass (CE across RE2) + 1×voltage_source + 1×power_supply + 1×ground
+            - common_collector: 1×bjt_npn (Q1) + 3×resistor (RB1, RB2, RE) + 2×capacitor coupling (CIN, COUT) + 1×voltage_source + 1×power_supply + 1×ground [NO RC, NO bypass cap]
+            - common_base:      1×bjt_npn (Q1) + 4×resistor (RB1, RB2, RC, RE) + 2×capacitor coupling (CIN, COUT) + 1×capacitor base-bypass (CB:1→BASE_Q1, CB:2→0) + 1×voltage_source + 1×power_supply + 1×ground
+            - opamp_inverting:     1×opamp_ic (U1) + 2×resistor (RIN, RF) + 1×cap decoupling + 1×voltage_source + 1×power_supply + 1×ground [NO signal-path coupling caps]
+            - opamp_non_inverting: 1×opamp_ic (U1) + 2×resistor (RG, RF) + 1×cap decoupling + 1×voltage_source + 1×power_supply + 1×ground [NO signal-path coupling caps]
+            - opamp_differential:  1×opamp_ic (U1) + 4×resistor (R1=R3, R2=R4 matched pairs) + 1×cap decoupling + 1×voltage_source + 1×power_supply + 1×ground [NO signal-path coupling caps]
 
             JSON SHAPE:
             {
@@ -530,6 +502,12 @@ class LLMRouter:
 
             Generate the complete CircuitIR JSON for the user request.
             """.strip()
+
+        # Inject wiring rules derived from topology_wiring_spec (single source of truth)
+        system_prompt = system_prompt.replace(
+            "{wiring_rules}",
+            build_wiring_rules_block(),
+        )
 
         last_error_fields: List[str] = []
         last_error_message = ""
@@ -701,6 +679,12 @@ class LLMRouter:
             normalized["architecture"] = architecture_copy
 
         normalized["nets"] = LLMRouter._repair_duplicate_opamp_output_nets(normalized.get("nets"))
+
+        from app.application.ai.bjt_ir_wiring_repair import repair_bjt_ir_wiring
+        from app.application.ai.opamp_ir_wiring_repair import repair_opamp_ir_wiring
+
+        normalized = repair_bjt_ir_wiring(normalized)
+        normalized = repair_opamp_ir_wiring(normalized)
 
         return normalized
 

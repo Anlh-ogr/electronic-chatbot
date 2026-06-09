@@ -30,6 +30,10 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from app.application.ai.circuit_ir_schema import CircuitIR
+from app.application.ai.transient_window import (
+    apply_transient_window_defaults,
+    parse_time_seconds,
+)
 
 logger = logging.getLogger(__name__)
 def log_stage(stage_name: str, **kwargs):
@@ -220,11 +224,11 @@ class NgSpiceSimulationService:
         if self._timeout_seconds < 10:
             self._timeout_seconds = 10
         env_max_points = os.getenv("NGSPICE_MAX_POINTS")
-        self._max_points = int(env_max_points) if env_max_points else 2500
+        self._max_points = int(env_max_points) if env_max_points else 262144
         if self._max_points < 500:
             self._max_points = 500
         env_max_output_points = os.getenv("NGSPICE_RETURN_MAX_POINTS")
-        self._max_output_points = int(env_max_output_points) if env_max_output_points else 1200
+        self._max_output_points = int(env_max_output_points) if env_max_output_points else self._max_points
         if self._max_output_points < 300:
             self._max_output_points = 300
 
@@ -272,6 +276,14 @@ class NgSpiceSimulationService:
         probes = self._extract_nodes_to_monitor(circuit_data)
         if not probes:
             probes = self._infer_default_probes(circuit_data)
+
+        # Always normalize to the 5 s window + frequency-aware step (Points = TimeRange × f × N).
+        apply_transient_window_defaults(
+            circuit_data,
+            max_points=self._max_points,
+            overwrite=True,
+        )
+
         step, stop, start = self._extract_transient_window(circuit_data)
         reltol = self._extract_reltol(circuit_data)
         source_params = circuit_data.get("source_params")
@@ -309,7 +321,7 @@ class NgSpiceSimulationService:
         netlist: str,
         probes: Optional[List[str]] = None,
         step: str = "10us",
-        stop: str = "10ms",
+        stop: str = "20ms",
         start: str = "0",
         reltol: str = "1e-3",
         expected_gain: Optional[float] = None,
@@ -403,8 +415,6 @@ class NgSpiceSimulationService:
 
         elapsed = (time.perf_counter() - started) * 1000.0
         raw_points = len(traces[0].x) if traces else 0
-        traces = self._downsample_traces(traces)
-        points = len(traces[0].x) if traces else 0
         x_unit = self._choose_time_unit(traces[0].x[-1] if traces and traces[0].x else 0.0)
         metrics = self._estimate_gain_metrics(
             traces=traces,
@@ -412,6 +422,8 @@ class NgSpiceSimulationService:
             expected_gain=expected_gain,
             probe_io_hint=probe_io_hint,
         )
+        traces = self._downsample_traces(traces)
+        points = len(traces[0].x) if traces else 0
 
         # Structured NGSPICE log for CI / runtime observability
         try:
@@ -607,8 +619,8 @@ class NgSpiceSimulationService:
             "10us",
         )
         stop = _coerce(
-            circuit_data.get("tran_stop", circuit_data.get("stop_time", circuit_data.get("stop", "10ms"))),
-            "10ms",
+            circuit_data.get("tran_stop", circuit_data.get("stop_time", circuit_data.get("stop", "20ms"))),
+            "20ms",
         )
         start = _coerce(
             circuit_data.get("tran_start", circuit_data.get("start_time", circuit_data.get("start", "0"))),
@@ -709,21 +721,57 @@ class NgSpiceSimulationService:
         return "in"
 
     def _downsample_traces(self, traces: List[WaveformTrace]) -> List[WaveformTrace]:
+        """Reduce points for chart transport while preserving peaks via min-max buckets."""
         if not traces:
             return traces
         points = len(traces[0].x)
         if points <= self._max_output_points:
             return traces
 
-        step = max(1, points // self._max_output_points)
-        sampled_indices = list(range(0, points, step))
-        if sampled_indices[-1] != points - 1:
-            sampled_indices.append(points - 1)
+        ref_x = traces[0].x
+        x0 = float(ref_x[0])
+        x1 = float(ref_x[-1])
+        span = max(x1 - x0, 1e-15)
+        bucket_count = max(2, self._max_output_points // 2)
+        bucket_w = span / float(bucket_count)
+
+        bucket_indices: List[List[int]] = [[] for _ in range(bucket_count)]
+        for idx, x_val in enumerate(ref_x):
+            rel = float(x_val) - x0
+            b = int(rel / bucket_w) if bucket_w > 0 else 0
+            if b >= bucket_count:
+                b = bucket_count - 1
+            bucket_indices[b].append(idx)
+
+        ordered_indices: List[int] = []
+        seen: set[int] = set()
+        for bucket in bucket_indices:
+            if not bucket:
+                continue
+            ymin_i = bucket[0]
+            ymax_i = bucket[0]
+            ymin_v = traces[0].y[ymin_i]
+            ymax_v = traces[0].y[ymax_i]
+            for i in bucket:
+                yv = traces[0].y[i]
+                if yv < ymin_v:
+                    ymin_v = yv
+                    ymin_i = i
+                if yv > ymax_v:
+                    ymax_v = yv
+                    ymax_i = i
+            for i in sorted({ymin_i, ymax_i}):
+                if i not in seen:
+                    seen.add(i)
+                    ordered_indices.append(i)
+
+        if ordered_indices[-1] != points - 1:
+            ordered_indices.append(points - 1)
 
         new_traces: List[WaveformTrace] = []
         for trace in traces:
-            new_x = [trace.x[i] for i in sampled_indices]
-            new_y = [trace.y[i] for i in sampled_indices]
+            new_x = [trace.x[i] for i in ordered_indices]
+            new_y = [trace.y[i] for i in ordered_indices]
             new_traces.append(WaveformTrace(name=trace.name, x=new_x, y=new_y, unit=trace.unit))
         return new_traces
 
@@ -1456,19 +1504,29 @@ class NgSpiceSimulationService:
         if sample_count < 8:
             return {"status": "insufficient_samples", "sample_count": sample_count}
 
-        start_idx = max(0, int(sample_count * 0.2))
-        x_in = input_trace.x[start_idx:sample_count]
-        y_in = input_trace.y[start_idx:sample_count]
-        y_out = output_trace.y[start_idx:sample_count]
+        settle_idx = max(0, int(sample_count * 0.2))
+        x_all = input_trace.x[settle_idx:sample_count]
+        y_in_all = input_trace.y[settle_idx:sample_count]
+        y_out_all = output_trace.y[settle_idx:sample_count]
+        if len(y_in_all) < 8 or len(y_out_all) < 8:
+            return {"status": "insufficient_steady_state_samples"}
+
+        x_in, y_in, y_out = self._select_gain_measurement_window(x_all, y_in_all, y_out_all)
         if len(y_in) < 8 or len(y_out) < 8:
             return {"status": "insufficient_steady_state_samples"}
 
         vin_pp = self._peak_to_peak(y_in)
         vout_pp = self._peak_to_peak(y_out)
-        if vin_pp <= 0:
-            return {"status": "invalid_input_signal", "vin_pp": vin_pp}
+        vin_rms_ac, vout_rms_ac = self._rms_ac_pair(y_in, y_out)
+        if vin_pp <= 0 and vin_rms_ac <= 1e-12:
+            return {"status": "invalid_input_signal", "vin_pp": vin_pp, "vin_rms_ac": vin_rms_ac}
 
-        gain_abs = vout_pp / vin_pp
+        gain_pp = (vout_pp / vin_pp) if vin_pp > 1e-12 else float("nan")
+        gain_rms = (vout_rms_ac / vin_rms_ac) if vin_rms_ac > 1e-12 else float("nan")
+        gain_abs = gain_rms if math.isfinite(gain_rms) else gain_pp
+        if not math.isfinite(gain_abs):
+            return {"status": "invalid_gain_estimate", "vin_pp": vin_pp, "vout_pp": vout_pp}
+
         corr = self._normalized_correlation(y_in, y_out)
         is_inverting = corr < 0
         measured_gain = -gain_abs if is_inverting else gain_abs
@@ -1479,8 +1537,13 @@ class NgSpiceSimulationService:
             "input_probe": input_trace.name,
             "output_probe": output_trace.name,
             "window_start_s": x_in[0] if x_in else 0.0,
+            "measurement_samples": len(y_in),
             "vin_pp": vin_pp,
             "vout_pp": vout_pp,
+            "vin_rms_ac": vin_rms_ac,
+            "vout_rms_ac": vout_rms_ac,
+            "gain_pp": gain_pp if math.isfinite(gain_pp) else None,
+            "gain_rms": gain_rms if math.isfinite(gain_rms) else None,
             "measured_av": measured_gain,
             "measured_abs_av": gain_abs,
             "phase_shift_deg": phase_deg,
@@ -1511,6 +1574,87 @@ class NgSpiceSimulationService:
         if not values:
             return 0.0
         return max(values) - min(values)
+
+    @classmethod
+    def _select_gain_measurement_window(
+        cls,
+        x_vals: List[float],
+        y_in: List[float],
+        y_out: List[float],
+        *,
+        min_cycles: int = 3,
+        max_cycles: int = 8,
+    ) -> Tuple[List[float], List[float], List[float]]:
+        """Use the last few steady-state cycles so gain is not diluted by settling."""
+        n = min(len(x_vals), len(y_in), len(y_out))
+        if n < 8:
+            return x_vals[:n], y_in[:n], y_out[:n]
+
+        period_s = cls._estimate_period_seconds(x_vals[:n], y_in[:n])
+        if period_s is None or period_s <= 0:
+            tail = max(8, n // 5)
+            return x_vals[n - tail : n], y_in[n - tail : n], y_out[n - tail : n]
+
+        t_end = float(x_vals[n - 1])
+        t_start = float(x_vals[0])
+        span = max(t_end - t_start, period_s)
+        cycles_avail = span / period_s
+        use_cycles = int(max(min_cycles, min(max_cycles, math.floor(cycles_avail))))
+        window_s = use_cycles * period_s
+        cut_t = t_end - window_s
+
+        start_idx = 0
+        for i in range(n):
+            if float(x_vals[i]) >= cut_t:
+                start_idx = i
+                break
+        return x_vals[start_idx:n], y_in[start_idx:n], y_out[start_idx:n]
+
+    @staticmethod
+    def _estimate_period_seconds(x_vals: List[float], y_vals: List[float]) -> Optional[float]:
+        n = min(len(x_vals), len(y_vals))
+        if n < 16:
+            return None
+
+        mean_y = sum(y_vals) / n
+        crossings: List[float] = []
+        for i in range(1, n):
+            a = y_vals[i - 1] - mean_y
+            b = y_vals[i] - mean_y
+            if a == 0.0:
+                continue
+            if (a < 0.0 < b) or (a > 0.0 > b):
+                t0 = float(x_vals[i - 1])
+                t1 = float(x_vals[i])
+                if t1 <= t0:
+                    continue
+                frac = abs(a) / (abs(a) + abs(b))
+                crossings.append(t0 + frac * (t1 - t0))
+
+        if len(crossings) < 3:
+            return None
+        periods = [crossings[i] - crossings[i - 1] for i in range(1, len(crossings))]
+        periods = [p for p in periods if p > 0]
+        if not periods:
+            return None
+        periods.sort()
+        return periods[len(periods) // 2]
+
+    @staticmethod
+    def _rms_ac_pair(y_in: List[float], y_out: List[float]) -> Tuple[float, float]:
+        n = min(len(y_in), len(y_out))
+        if n == 0:
+            return 0.0, 0.0
+        mean_in = sum(y_in[:n]) / n
+        mean_out = sum(y_out[:n]) / n
+        acc_in = 0.0
+        acc_out = 0.0
+        for i in range(n):
+            di = y_in[i] - mean_in
+            do = y_out[i] - mean_out
+            acc_in += di * di
+            acc_out += do * do
+        return math.sqrt(acc_in / n), math.sqrt(acc_out / n)
 
     @staticmethod
     def _normalized_correlation(a: List[float], b: List[float]) -> float:
@@ -2205,12 +2349,24 @@ class NgspiceCompilerService:
             if not self._has_explicit_rail_voltage_to_ground(ir, pin_net_map, vcc_net):
                 lines.append(f"VVCC_TB {vcc_net} 0 DC {power_voltage}")
             
-        # Signal input stimulus (50mV amplitude for better BJT convergence)
+        # Signal input stimulus — amplitude/frequency from IR metadata when available.
         _supply_nets = {"VCC","VDD","VBB","VBAT","VSUPPLY","V+","VCC1","VCC2","VPOWER"}
+        stim_hz = meta.get("input_frequency_hz") or meta.get("frequency_hz")
+        if stim_hz is None:
+            calc = getattr(ir.analysis, "calculated_values", None)
+            if calc is not None:
+                stim_hz = getattr(calc, "bandwidth_Hz", None)
+        try:
+            freq_val = float(stim_hz) if stim_hz is not None else 1000.0
+        except (TypeError, ValueError):
+            freq_val = 1000.0
+        if freq_val >= 100_000:
+            tran_step = meta.get("tran_step") or "0.1u"
+            tran_stop = meta.get("tran_stop") or "0.2m"
+        stim_amp = str(meta.get("input_amplitude_v") or "50m")
         if analog_mode and input_node.upper() not in _supply_nets:
-            lines.append(f"VTB {input_node} 0 SINE(0 50m 1k)")
+            lines.append(f"VTB {input_node} 0 SINE(0 {stim_amp} {freq_val:g})")
 
-        # Add .control block with solver options and op analysis
         lines.append(".control")
         lines.append("set wr_singlescale")
         lines.append("set noaskquit")
@@ -2218,7 +2374,7 @@ class NgspiceCompilerService:
         lines.append("option maxord=2")
         lines.append("option gmin=1e-12")
         lines.append("option rshunt=1e12")
-        lines.append("op")  # Compute operating point first to aid convergence
+        lines.append("op")
         lines.append(f"tran {tran_step} {tran_stop}")
         lines.append(f"wrdata output.tsv v({input_node}) v({output_node})")
         lines.append("quit")

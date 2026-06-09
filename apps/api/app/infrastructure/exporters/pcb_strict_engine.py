@@ -274,12 +274,88 @@ def _separate_placements(
     return out
 
 
+def _clamp_placements_to_board(
+    circuit: Circuit,
+    placements: Dict[str, Tuple[float, float]],
+    board_w: float,
+    board_h: float,
+) -> Dict[str, Tuple[float, float]]:
+    """Keep each component courtyard inside the board outline (with margin)."""
+    min_b = BOARD_MARGIN_MM
+    max_x = board_w - BOARD_MARGIN_MM
+    max_y = board_h - BOARD_MARGIN_MM
+    out: Dict[str, Tuple[float, float]] = {}
+    for cid, (x, y) in placements.items():
+        nx, ny = float(x), float(y)
+        for _ in range(6):
+            x0, y0, x1, y1 = _world_courtyard(circuit, cid, (nx, ny))
+            if x0 < min_b:
+                nx += min_b - x0
+            if y0 < min_b:
+                ny += min_b - y0
+            x0, y0, x1, y1 = _world_courtyard(circuit, cid, (nx, ny))
+            if x1 > max_x:
+                nx -= x1 - max_x
+            if y1 > max_y:
+                ny -= y1 - max_y
+        out[cid] = (_snap(nx), _snap(ny))
+    return out
+
+
+def repair_placement_overlaps(
+    circuit: Circuit,
+    placements: Dict[str, Tuple[float, float]],
+    anchor: Optional[str],
+    board_w: float,
+    board_h: float,
+) -> Dict[str, Tuple[float, float]]:
+    """Re-separate courtyards after board translation / sizing (fixes post-finalize overlaps)."""
+    fixed: Set[str] = {anchor} if anchor else set()
+    out = _clamp_placements_to_board(circuit, placements, board_w, board_h)
+    out = _separate_placements(circuit, out, fixed)
+    out = _clamp_placements_to_board(circuit, out, board_w, board_h)
+
+    if count_courtyard_overlaps(circuit, out) > 0:
+        cys = {cid: _world_courtyard(circuit, cid, out[cid]) for cid in out}
+        remaining: List[Tuple[str, str]] = []
+        ids = list(out.keys())
+        for i, ia in enumerate(ids):
+            for ib in ids[i + 1 :]:
+                if _rects_overlap(cys[ia], cys[ib], gap=MIN_COURTYARD_CLEARANCE_MM):
+                    remaining.append((ia, ib))
+        if remaining:
+            out, _ = _force_relocate_overlaps(
+                circuit,
+                out,
+                cys,
+                fixed,
+                remaining,
+                board_w=board_w,
+                board_h=board_h,
+            )
+            out = _clamp_placements_to_board(circuit, out, board_w, board_h)
+            out = _separate_placements(circuit, out, fixed)
+
+    overlap_left = count_courtyard_overlaps(circuit, out)
+    if overlap_left:
+        logger.warning(
+            "PCB_PLACEMENT: %d courtyard overlap(s) remain after repair on %.1fx%.1fmm board",
+            overlap_left,
+            board_w,
+            board_h,
+        )
+    return out
+
+
 def _force_relocate_overlaps(
     circuit: Circuit,
     out: Dict[str, Tuple[float, float]],
     cys: Dict[str, Tuple[float, float, float, float]],
     fixed: Set[str],
     overlapping_pairs: List[Tuple[str, str]],
+    *,
+    board_w: Optional[float] = None,
+    board_h: Optional[float] = None,
 ) -> Tuple[Dict[str, Tuple[float, float]], Dict[str, Tuple[float, float, float, float]]]:
     """Move offending non-fixed components to the first free grid slot.
 
@@ -287,17 +363,21 @@ def _force_relocate_overlaps(
     never lands inside another courtyard. Idempotent — components that are
     already non-overlapping are left untouched.
     """
-    # Compute working envelope from current placements.
     rects = list(cys.values())
     if not rects:
         return out, cys
-    min_x = min(r[0] for r in rects) - 4.0
-    min_y = min(r[1] for r in rects) - 4.0
-    max_x = max(r[2] for r in rects) + 4.0
-    max_y = max(r[3] for r in rects) + 4.0
-    # Don't blow past the manufacturable cap.
-    max_x = min(max_x, MAX_BOARD_W - BOARD_MARGIN_MM)
-    max_y = min(max_y, MAX_BOARD_H - BOARD_MARGIN_MM)
+    if board_w is not None and board_h is not None:
+        min_x = BOARD_MARGIN_MM
+        min_y = BOARD_MARGIN_MM
+        max_x = board_w - BOARD_MARGIN_MM
+        max_y = board_h - BOARD_MARGIN_MM
+    else:
+        min_x = min(r[0] for r in rects) - 4.0
+        min_y = min(r[1] for r in rects) - 4.0
+        max_x = max(r[2] for r in rects) + 4.0
+        max_y = max(r[3] for r in rects) + 4.0
+        max_x = min(max_x, MAX_BOARD_W - BOARD_MARGIN_MM)
+        max_y = min(max_y, MAX_BOARD_H - BOARD_MARGIN_MM)
 
     movable_offenders: List[str] = []
     seen: Set[str] = set()
@@ -310,7 +390,7 @@ def _force_relocate_overlaps(
             break
 
     def _free_slot(cid: str) -> Optional[Tuple[float, float]]:
-        step = 4.0
+        step = max(GRID_SNAP, 2.0)
         y = min_y
         while y <= max_y:
             x = min_x

@@ -334,10 +334,11 @@ class ParameterSolver:
         vcc = float((meta or {}).get("vcc") or 12.0)
         ic_ma = float(hints.get("ic_ma") or 1.0)
         re_ac = 26.0 / ic_ma
-        rc_dc = (0.45 * vcc) / (ic_ma / 1000.0)
         re_dc = (0.10 * vcc) / (ic_ma / 1000.0)
-        rc = self._snap(rc_dc)
         re = self._snap(re_dc)
+        rc_target = gain * re_ac if gain > 0 else (0.45 * vcc) / (ic_ma / 1000.0)
+        rc_max = (0.45 * vcc) / (ic_ma / 1000.0)
+        rc = self._snap(min(rc_target, rc_max))
         r1, r2 = self._bjt_voltage_divider_bias(vcc, ic_ma, rc, re)
         
         result.values = {"RC": rc, "RE": re, "R1": r1, "R2": r2}
