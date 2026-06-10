@@ -630,7 +630,7 @@ class TopologyPlanner:
         
         return 1.0
     
-    # Tính mức độ bao phủ capability: tỷ lệ capabilities yêu cầu có trong metadata
+    # Tính mức độ bao phủ capability: tỷ lệ capabilities yêu cầu có trong metadata [0 1]
     def _compute_capability_score(self, hints: Dict[str, Any], required_caps: List[str]) -> float:
         if not required_caps:
             return 1.0
@@ -640,7 +640,7 @@ class TopologyPlanner:
         
         return len(req & meta_caps) / len(req)
         
-    # Tính mức độ overlap: block pattern (template) - block pattern (grammar)
+    # Tính mức độ overlap: block pattern (template) - block pattern (grammar) [0 1]
     def _compute_pattern_score(self, function_structure: Dict[str, Any], planned_blocks: List[str]) -> float:
         ordered = function_structure.get("pattern_signature", {}).get("ordered_block_types", [])
 
